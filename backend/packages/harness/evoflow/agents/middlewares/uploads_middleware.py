@@ -37,7 +37,26 @@ class UploadsMiddleware(AgentMiddleware[UploadsMiddlewareState]):
         super().__init__()
         self._paths = Paths(base_dir) if base_dir else get_paths()
 
-    def _create_files_message(self, new_files: list[dict], historical_files: list[dict]) -> str:
+    def _read_attachment_text(self, file: dict, uploads_dir: Path | None) -> str:
+        if not uploads_dir:
+            return ""
+        path = uploads_dir / str(file.get("filename") or "")
+        if not path.is_file() or path.suffix.lower() in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".heic", ".heif"}:
+            return ""
+        try:
+            from evoflow.knowledge.parser import parse_file
+
+            text = parse_file(path).strip()
+            if len(text) > 30000:
+                text = text[:30000] + "\n[文件内容已截断]"
+            return text
+        except Exception:
+            logger.exception("Failed to extract uploaded file %s", path.name)
+            return ""
+
+    def _create_files_message(
+        self, new_files: list[dict], historical_files: list[dict], uploads_dir: Path | None
+    ) -> str:
         lines = ["<uploaded_files>"]
 
         lines.append("The following files were uploaded in this message:")
@@ -48,6 +67,15 @@ class UploadsMiddleware(AgentMiddleware[UploadsMiddlewareState]):
                 size_str = f"{size_kb:.1f} KB" if size_kb < 1024 else f"{size_kb / 1024:.1f} MB"
                 lines.append(f"- {file['filename']} ({size_str})")
                 lines.append(f"  Path: {file['path']}")
+                if Path(file["filename"]).suffix.lower() in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".heic", ".heif"}:
+                    lines.append("  Image attached; inspect the image itself.")
+                else:
+                    extracted = self._read_attachment_text(file, uploads_dir)
+                    if extracted:
+                        lines.append("  Extracted content:")
+                        lines.append(extracted)
+                    else:
+                        lines.append("  Content extraction failed; the file is still available at the path above.")
                 lines.append("")
         else:
             lines.append("(empty)")
@@ -179,7 +207,7 @@ class UploadsMiddleware(AgentMiddleware[UploadsMiddlewareState]):
         if not new_files and not historical_files:
             return None
 
-        block = self._create_files_message(new_files, historical_files)
+        block = self._create_files_message(new_files, historical_files, uploads_dir)
         updated = self._inject_block(last, block)
         logger.info(
             "uploaded_files injected before_model: new=%s historical=%s uploads_dir=%s",

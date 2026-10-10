@@ -21,7 +21,8 @@ from evoflow.knowledge.owned.embedding_bind import model_config_for_base_row
 from evoflow.knowledge.owned.ids import new_id, utc_now
 from evoflow.knowledge.owned.kb_conn import db_for_kb, kb_dir_for_kb
 from evoflow.knowledge.owned.metadata import extract_tags, parse_frontmatter
-from evoflow.knowledge.owned.retrieve import delete_fts_for_doc, index_fts, pack_embedding
+from evoflow.knowledge.owned.retrieve import delete_fts_for_doc, index_fts, pack_embedding, purge_document_index
+from evoflow.knowledge.owned import vector_index
 from evoflow.knowledge.parser import parse_file
 
 logger = logging.getLogger(__name__)
@@ -57,8 +58,16 @@ async def run_parse_index(
     doc_d = dict(doc)
     now = utc_now()
     with db_for_kb(kb_id) as conn:
+        # Keep the last successful chunks searchable while this document is rebuilt.
+        # The replacement happens only after parsing/chunking/indexing succeeds.
         conn.execute(
-            "UPDATE kb_documents SET parse_status='processing', error_message='', updated_at=? WHERE id=?",
+            """
+            UPDATE kb_documents
+            SET parse_status=CASE WHEN chunk_count > 0 THEN 'completed' ELSE 'processing' END,
+                index_status='building', keyword_status='building', vector_status='building',
+                index_error='', error_message='', updated_at=?
+            WHERE id=?
+            """,
             (now, doc_id),
         )
 
@@ -73,8 +82,14 @@ async def run_parse_index(
     except Exception as exc:
         with db_for_kb(kb_id) as conn:
             conn.execute(
-                "UPDATE kb_documents SET parse_status='failed', error_message=?, updated_at=? WHERE id=?",
-                (str(exc)[:2000], utc_now(), doc_id),
+                """
+                UPDATE kb_documents
+                SET parse_status='failed', index_status=CASE WHEN chunk_count > 0 THEN 'ready' ELSE 'failed' END,
+                    keyword_status=CASE WHEN chunk_count > 0 THEN 'ready' ELSE 'failed' END,
+                    vector_status=CASE WHEN chunk_count > 0 THEN 'degraded' ELSE 'failed' END,
+                    index_error=?, error_message=?, updated_at=? WHERE id=?
+                """,
+                (str(exc)[:2000], str(exc)[:2000], utc_now(), doc_id),
             )
         raise
 
@@ -117,15 +132,16 @@ async def run_parse_index(
     )
 
     with db_for_kb(kb_id) as conn:
-        # clear old
-        old_ids = [r["id"] for r in conn.execute("SELECT id FROM kb_chunks WHERE doc_id=?", (doc_id,)).fetchall()]
-        delete_fts_for_doc(conn, doc_id)
-        if old_ids:
-            placeholders = ",".join("?" * len(old_ids))
-            conn.execute(f"DELETE FROM kb_chunk_embeddings WHERE chunk_id IN ({placeholders})", old_ids)
-        conn.execute("DELETE FROM kb_chunks WHERE doc_id=?", (doc_id,))
+        # Stage the replacement beside the last ready version. New rows remain
+        # disabled until embedding succeeds, so failed rebuilds keep old search.
+        old_ids = [r["id"] for r in conn.execute("SELECT id FROM kb_chunks WHERE doc_id=? AND enabled=1", (doc_id,)).fetchall()]
+        conn.execute("DELETE FROM kb_chunks WHERE doc_id=? AND enabled=0", (doc_id,))
         conn.execute("DELETE FROM kb_assets WHERE doc_id=?", (doc_id,))
 
+        ordinal_offset = int(conn.execute(
+            "SELECT COALESCE(MAX(ordinal), -1) + 1 FROM kb_chunks WHERE doc_id=?",
+            (doc_id,),
+        ).fetchone()[0])
         chunk_rows: list[tuple] = []
         for i, piece in enumerate(pieces):
             cid = new_id("chk_")
@@ -134,13 +150,13 @@ async def run_parse_index(
                     cid,
                     kb_id,
                     doc_id,
-                    i,
+                    ordinal_offset + i,
                     piece.content,
                     piece.context_header,
                     piece.token_estimate,
                     piece.heading_path,
                     piece.chunk_kind,
-                    1,
+                    0,
                     now,
                     now,
                 )
@@ -156,16 +172,19 @@ async def run_parse_index(
         )
         insert_assets(conn, assets)
         link_assets_to_chunks(conn, assets, chunk_rows)
-        for cid, _kb, _doc, _ord, content, header, *_rest in chunk_rows:
-            fts_text = f"{header}\n{content}".strip() if header else content
-            index_fts(conn, chunk_id=cid, kb_id=kb_id, doc_id=doc_id, content=fts_text)
-
     if not pieces:
         with db_for_kb(kb_id) as conn:
+            if old_ids:
+                vector_index.delete_chunk_ids(conn, [str(cid) for cid in old_ids])
+                placeholders = ",".join("?" * len(old_ids))
+                conn.execute(f"DELETE FROM kb_chunk_embeddings WHERE chunk_id IN ({placeholders})", old_ids)
+                conn.execute(f"DELETE FROM kb_chunks_fts WHERE chunk_id IN ({placeholders})", old_ids)
+                conn.execute(f"DELETE FROM kb_chunks WHERE id IN ({placeholders})", old_ids)
             conn.execute(
                 """
-                UPDATE kb_documents SET parse_status='completed', chunk_count=0,
-                  error_message='', updated_at=? WHERE id=?
+                UPDATE kb_documents SET parse_status='completed', index_status='ready',
+                  keyword_status='ready', vector_status='ready', chunk_count=0,
+                  index_error='', error_message='', updated_at=? WHERE id=?
                 """,
                 (utc_now(), doc_id),
             )
@@ -176,7 +195,7 @@ async def run_parse_index(
     chunk_ids: list[str] = []
     with db_for_kb(kb_id) as conn:
         rows = conn.execute(
-            "SELECT id FROM kb_chunks WHERE doc_id=? ORDER BY ordinal",
+            "SELECT id FROM kb_chunks WHERE doc_id=? AND enabled=0 ORDER BY ordinal",
             (doc_id,),
         ).fetchall()
         chunk_ids = [str(r["id"]) for r in rows]
@@ -186,12 +205,19 @@ async def run_parse_index(
         note = f"已分块并可关键词检索；向量化已跳过（{reason[:180]}）"
         now = utc_now()
         with db_for_kb(kb_id) as conn:
+            if old_ids:
+                vector_index.delete_chunk_ids(conn, [str(cid) for cid in old_ids])
+                placeholders = ",".join("?" * len(old_ids))
+                conn.execute(f"DELETE FROM kb_chunk_embeddings WHERE chunk_id IN ({placeholders})", old_ids)
+                conn.execute(f"DELETE FROM kb_chunks_fts WHERE chunk_id IN ({placeholders})", old_ids)
+                conn.execute(f"DELETE FROM kb_chunks WHERE id IN ({placeholders})", old_ids)
             conn.execute(
                 """
-                UPDATE kb_documents SET parse_status='completed', chunk_count=?,
-                  error_message=?, updated_at=? WHERE id=?
+                UPDATE kb_documents SET parse_status='completed', index_status='ready',
+                  keyword_status='ready', vector_status='degraded', chunk_count=?,
+                  index_error=?, error_message=?, updated_at=? WHERE id=?
                 """,
-                (len(chunk_ids), note[:2000], now, doc_id),
+                (len(chunk_ids), note[:2000], note[:2000], now, doc_id),
             )
         jobs.update_progress(
             job_id,
@@ -260,7 +286,26 @@ async def run_parse_index(
     model_name = str(base_d.get("embedding_model") or "")
     now = utc_now()
     with db_for_kb(kb_id) as conn:
-        for cid, vec in zip(chunk_ids, vectors, strict=True):
+        vector_rows = [(cid, list(vec)) for cid, vec in zip(chunk_ids, vectors, strict=True)]
+        vector_indexed = vector_index.insert_many(
+            conn,
+            kb_id=kb_id,
+            dim=dim,
+            model=model_name,
+            rows=vector_rows,
+        )
+        # Commit the replacement only after every new vector is present.
+        if old_ids:
+            vector_index.delete_chunk_ids(conn, [str(cid) for cid in old_ids])
+            placeholders = ",".join("?" * len(old_ids))
+            conn.execute(f"DELETE FROM kb_chunk_embeddings WHERE chunk_id IN ({placeholders})", old_ids)
+            conn.execute(f"DELETE FROM kb_chunks_fts WHERE chunk_id IN ({placeholders})", old_ids)
+            conn.execute(f"DELETE FROM kb_chunks WHERE id IN ({placeholders})", old_ids)
+        conn.execute("UPDATE kb_chunks SET enabled=1 WHERE doc_id=? AND enabled=0", (doc_id,))
+        for cid, _kb, _doc, _ord, content, header, *_rest in chunk_rows:
+            fts_text = f"{header}\n{content}".strip() if header else content
+            index_fts(conn, chunk_id=cid, kb_id=kb_id, doc_id=doc_id, content=fts_text)
+        for cid, vec in vector_rows:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO kb_chunk_embeddings(
@@ -271,8 +316,9 @@ async def run_parse_index(
             )
         conn.execute(
             """
-            UPDATE kb_documents SET parse_status='completed', chunk_count=?,
-              error_message='', updated_at=? WHERE id=?
+            UPDATE kb_documents SET parse_status='completed', index_status='ready',
+              keyword_status='ready', vector_status='ready', chunk_count=?,
+              index_error='', error_message='', updated_at=? WHERE id=?
             """,
             (len(chunk_ids), now, doc_id),
         )

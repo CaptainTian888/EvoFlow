@@ -23,8 +23,25 @@ def enqueue(
     payload: dict[str, Any] | None = None,
     run_after: str | None = None,
 ) -> dict[str, Any]:
-    job_id = new_id("job_")
     now = utc_now()
+    # Coalesce concurrent rebuild requests for the same document. This keeps
+    # sync, manual rebuild, and retry paths from issuing duplicate embeddings.
+    if doc_id and type in ("parse_index", "reindex"):
+        with db() as conn:
+            existing = conn.execute(
+                """
+                SELECT * FROM kb_jobs
+                WHERE kb_id=? AND doc_id=? AND type IN ('parse_index', 'reindex')
+                  AND state IN ('queued', 'running')
+                ORDER BY CASE state WHEN 'running' THEN 0 ELSE 1 END, created_at DESC
+                LIMIT 1
+                """,
+                (kb_id, doc_id),
+            ).fetchone()
+        if existing:
+            return _job_row(existing) or {"id": existing["id"], "state": existing["state"]}
+
+    job_id = new_id("job_")
     with db() as conn:
         conn.execute(
             """
@@ -226,22 +243,30 @@ def complete(job_id: str, *, error: str | None = None, permanent: bool = False) 
                     conn.execute(
                         """
                         UPDATE kb_documents
-                        SET parse_status='failed', error_message=?, updated_at=?
+                        SET parse_status='failed',
+                            index_status=CASE WHEN chunk_count > 0 THEN 'ready' ELSE 'failed' END,
+                            keyword_status=CASE WHEN chunk_count > 0 THEN 'ready' ELSE 'failed' END,
+                            vector_status=CASE WHEN chunk_count > 0 THEN 'degraded' ELSE 'failed' END,
+                            index_error=?, error_message=?, updated_at=?
                         WHERE id=? AND deleted_at IS NULL
                           AND parse_status IN ('pending', 'processing')
                         """,
-                        (error[:2000], now, doc_id),
+                        (error[:2000], error[:2000], now, doc_id),
                     )
                     _mirror_doc_status(
                         kb_id,
                         doc_id,
                         """
                         UPDATE kb_documents
-                        SET parse_status='failed', error_message=?, updated_at=?
+                        SET parse_status='failed',
+                            index_status=CASE WHEN chunk_count > 0 THEN 'ready' ELSE 'failed' END,
+                            keyword_status=CASE WHEN chunk_count > 0 THEN 'ready' ELSE 'failed' END,
+                            vector_status=CASE WHEN chunk_count > 0 THEN 'degraded' ELSE 'failed' END,
+                            index_error=?, error_message=?, updated_at=?
                         WHERE id=? AND deleted_at IS NULL
                           AND parse_status IN ('pending', 'processing')
                         """,
-                        (error[:2000], now, doc_id),
+                        (error[:2000], error[:2000], now, doc_id),
                     )
         else:
             conn.execute(

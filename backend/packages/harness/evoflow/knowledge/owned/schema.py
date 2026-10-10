@@ -77,6 +77,10 @@ CREATE TABLE IF NOT EXISTS kb_documents (
   folder_path     TEXT NOT NULL DEFAULT '',
   sort_order      INTEGER NOT NULL DEFAULT 0,
   parse_status    TEXT NOT NULL DEFAULT 'pending',
+  index_status    TEXT NOT NULL DEFAULT 'pending',
+  keyword_status  TEXT NOT NULL DEFAULT 'pending',
+  vector_status   TEXT NOT NULL DEFAULT 'pending',
+  index_error     TEXT NOT NULL DEFAULT '',
   error_message   TEXT NOT NULL DEFAULT '',
   chunk_count     INTEGER NOT NULL DEFAULT 0,
   summary_status  TEXT NOT NULL DEFAULT 'none',
@@ -426,6 +430,10 @@ CREATE TABLE IF NOT EXISTS kb_documents (
   folder_path     TEXT NOT NULL DEFAULT '',
   sort_order      INTEGER NOT NULL DEFAULT 0,
   parse_status    TEXT NOT NULL DEFAULT 'pending',
+  index_status    TEXT NOT NULL DEFAULT 'pending',
+  keyword_status  TEXT NOT NULL DEFAULT 'pending',
+  vector_status   TEXT NOT NULL DEFAULT 'pending',
+  index_error     TEXT NOT NULL DEFAULT '',
   error_message   TEXT NOT NULL DEFAULT '',
   chunk_count     INTEGER NOT NULL DEFAULT 0,
   summary_status  TEXT NOT NULL DEFAULT 'none',
@@ -529,6 +537,10 @@ def ensure_kb_schema(conn: sqlite3.Connection) -> None:
         ("source_rel_path", "TEXT NOT NULL DEFAULT ''"),
         ("storage_mode", "TEXT NOT NULL DEFAULT 'copy'"),
         ("source_abs_path", "TEXT NOT NULL DEFAULT ''"),
+        ("index_status", "TEXT NOT NULL DEFAULT 'pending'"),
+        ("keyword_status", "TEXT NOT NULL DEFAULT 'pending'"),
+        ("vector_status", "TEXT NOT NULL DEFAULT 'pending'"),
+        ("index_error", "TEXT NOT NULL DEFAULT ''"),
     ):
         if col not in doc_cols:
             conn.execute(f"ALTER TABLE kb_documents ADD COLUMN {col} {decl}")

@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 import mimetypes
 import sqlite3
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +36,27 @@ from evoflow.knowledge.owned.retrieve import (
 from evoflow.knowledge.owned.worker import ensure_owned_kb_worker_started
 
 logger = logging.getLogger(__name__)
+
+_QUERY_EMBED_CACHE: dict[tuple[str, ...], tuple[float, list[float]]] = {}
+_QUERY_EMBED_CACHE_LOCK = threading.Lock()
+_QUERY_EMBED_CACHE_TTL_S = 300.0
+_QUERY_EMBED_CACHE_MAX = 128
+
+
+async def _cached_query_embedding(cache_key: tuple[str, ...], loader: Any) -> list[float]:
+    now = time.monotonic()
+    with _QUERY_EMBED_CACHE_LOCK:
+        cached = _QUERY_EMBED_CACHE.get(cache_key)
+        if cached and now - cached[0] < _QUERY_EMBED_CACHE_TTL_S:
+            return list(cached[1])
+    vec = list(await loader())
+    with _QUERY_EMBED_CACHE_LOCK:
+        if len(_QUERY_EMBED_CACHE) >= _QUERY_EMBED_CACHE_MAX:
+            oldest = min(_QUERY_EMBED_CACHE, key=lambda key: _QUERY_EMBED_CACHE[key][0])
+            _QUERY_EMBED_CACHE.pop(oldest, None)
+        _QUERY_EMBED_CACHE[cache_key] = (now, vec)
+    return list(vec)
+
 
 _CHUNK_SIZE_MIN = 64
 _CHUNK_SIZE_MAX = 8192
@@ -137,6 +160,60 @@ def _resolved_storage_dir(d: dict[str, Any]) -> str:
         return str(d.get("storage_dir") or "")
 
 
+def _vector_stats(kb_id: str, model: str = "", dim: int | None = None) -> dict[str, int | bool]:
+    """Return complete vector coverage for active, completed document chunks."""
+    empty = {
+        "totalChunks": 0,
+        "embeddedChunks": 0,
+        "missingEmbeddingChunks": 0,
+        "vectorized": False,
+    }
+    if not kb_id:
+        return empty
+    try:
+        with db_for_kb(kb_id) as conn:
+            total = int(
+                conn.execute(
+                    """
+                    SELECT COUNT(*) FROM kb_chunks c
+                    JOIN kb_documents d ON d.id=c.doc_id
+                    WHERE c.kb_id=? AND c.enabled=1 AND d.deleted_at IS NULL
+                      AND d.parse_status='completed'
+                    """,
+                    (kb_id,),
+                ).fetchone()[0]
+            )
+            clauses = [
+                "e.kb_id=?", "e.dim=?", "c.enabled=1", "d.deleted_at IS NULL",
+                "d.parse_status='completed'",
+            ]
+            params: list[Any] = [kb_id, int(dim or 0)]
+            if model:
+                clauses.append("e.model=?")
+                params.append(model)
+            embedded = int(
+                conn.execute(
+                    f"""
+                    SELECT COUNT(*) FROM kb_chunk_embeddings e
+                    JOIN kb_chunks c ON c.id=e.chunk_id
+                    JOIN kb_documents d ON d.id=e.doc_id
+                    WHERE {' AND '.join(clauses)}
+                    """,
+                    params,
+                ).fetchone()[0]
+            ) if dim else 0
+        return {
+            "totalChunks": total,
+            "embeddedChunks": embedded,
+            "missingEmbeddingChunks": max(0, total - embedded),
+            "vectorized": total > 0 and embedded == total,
+            "status": "ready" if total > 0 and embedded == total else ("partial" if embedded else "missing"),
+        }
+    except Exception:
+        logger.debug("vector stats lookup failed for kb=%s", kb_id, exc_info=True)
+        return empty
+
+
 def _row_base(row: Any) -> dict[str, Any]:
     d = dict(row)
     ref = str(d.get("embedding_api_key_ref") or "")
@@ -171,6 +248,11 @@ def _row_base(row: Any) -> dict[str, Any]:
         "embeddingDim": d.get("embedding_dim"),
         "hasEmbeddingApiKey": has_key,
         "vectorEnabled": bool(d.get("vector_enabled")),
+        **_vector_stats(
+            str(d.get("id") or ""),
+            model=str(d.get("embedding_model") or ""),
+            dim=int(d.get("embedding_dim") or 0) or None,
+        ),
         "keywordEnabled": bool(d.get("keyword_enabled")),
         "wikiEnabled": bool(d.get("wiki_enabled")),
         "graphEnabled": bool(d.get("graph_enabled")),
@@ -221,6 +303,10 @@ def _row_doc(row: Any) -> dict[str, Any]:
         "sourceRelPath": d.get("source_rel_path") or "",
         "sortOrder": int(d.get("sort_order") or 0),
         "parseStatus": d.get("parse_status"),
+        "indexStatus": d.get("index_status") or "pending",
+        "keywordStatus": d.get("keyword_status") or "pending",
+        "vectorStatus": d.get("vector_status") or "pending",
+        "indexError": d.get("index_error") or "",
         "errorMessage": d.get("error_message") or "",
         "chunkCount": d.get("chunk_count") or 0,
         "summaryStatus": d.get("summary_status"),
@@ -2204,8 +2290,22 @@ async def search(
                 with db() as conn:
                     row = conn.execute("SELECT * FROM kb_bases WHERE id=?", (kb_id,)).fetchone()
                 mc = _model_config_for_base(dict(row or {}))
-                qvec = await get_embedding(query, mc, expected_dim=int(base["embeddingDim"]))
-                vector_hits = search_vector(kb_id, qvec, top_k=fetch_k)
+                cache_key = (
+                    kb_id,
+                    str(base.get("embeddingModel") or ""),
+                    str(getattr(mc, "base_url", "") or ""),
+                    query.strip().casefold(),
+                )
+                qvec = await _cached_query_embedding(
+                    cache_key,
+                    lambda: get_embedding(query, mc, expected_dim=int(base["embeddingDim"])),
+                )
+                vector_hits = search_vector(
+                    kb_id,
+                    qvec,
+                    top_k=fetch_k,
+                    model=str(base.get("embeddingModel") or ""),
+                )
             except Exception:
                 degraded = True
                 if mode != "hybrid":
@@ -2226,7 +2326,15 @@ async def search(
             h["rank"] = i + 1
             h["rrf_score"] = h.get("score") or 0
     else:
-        fused = rrf_fuse(keyword_hits, vector_hits, top_k=fetch_k)
+        # Exact terms, identifiers, and quoted phrases should outrank merely
+        # related semantic matches in the default hybrid mode.
+        fused = rrf_fuse(
+            keyword_hits,
+            vector_hits,
+            top_k=fetch_k,
+            w_kw=1.35,
+            w_vec=0.85,
+        )
 
     kg_boosted = False
     if base.get("graphEnabled") and mode in ("hybrid", "keyword", "fulltext", "semantic", "vector"):

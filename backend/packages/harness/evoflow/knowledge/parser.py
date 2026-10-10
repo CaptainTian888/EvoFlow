@@ -56,20 +56,56 @@ def parse_file(file_path: str | Path) -> str:
 
 
 def _convert_with_markitdown(p: Path) -> str:
-    """Convert a file to text using markitdown."""
+    """Convert a file to text, with lightweight fallbacks for common formats."""
     try:
         from markitdown import MarkItDown
 
-        md = MarkItDown()
-        result = md.convert(str(p))
+        result = MarkItDown().convert(str(p))
         text = result.text_content or ""
-        if not text.strip():
-            logger.warning("markitdown returned empty content for %s", p.name)
-        return text
-    except ImportError:
-        raise RuntimeError(f"markitdown is not installed. Run 'pip install markitdown[all]' to enable parsing of {p.suffix} files.")
-    except Exception as e:
-        raise RuntimeError(f"Failed to parse {p.name} with markitdown: {e}") from e
+        if text.strip():
+            return text
+        logger.warning("markitdown returned empty content for %s; trying fallback", p.name)
+    except Exception as exc:
+        logger.warning("markitdown failed for %s: %s; trying fallback", p.name, exc)
+
+    try:
+        if p.suffix.lower() == ".pdf":
+            import pdfplumber
+
+            with pdfplumber.open(str(p)) as pdf:
+                return "\n\n".join((page.extract_text() or "") for page in pdf.pages).strip()
+        if p.suffix.lower() in {".docx", ".xlsx"}:
+            return _convert_office_fallback(p)
+    except ImportError as exc:
+        raise RuntimeError(f"无法解析 {p.name}：缺少文档解析依赖（{exc.name}）") from exc
+    except Exception as exc:
+        raise RuntimeError(f"无法解析 {p.name}：{exc}") from exc
+
+    raise RuntimeError(f"无法解析 {p.name}：MarkItDown 未提取到正文")
+
+
+def _convert_office_fallback(p: Path) -> str:
+    """Extract basic text when optional MarkItDown converters are unavailable."""
+    if p.suffix.lower() == ".xlsx":
+        from openpyxl import load_workbook
+
+        book = load_workbook(p, read_only=True, data_only=True)
+        try:
+            rows = []
+            for sheet in book.worksheets:
+                rows.append(f"## {sheet.title}")
+                rows.extend(" | ".join("" if value is None else str(value) for value in row) for row in sheet.iter_rows(values_only=True))
+            return "\n".join(rows).strip()
+        finally:
+            book.close()
+
+    from zipfile import ZipFile
+    from xml.etree import ElementTree
+
+    with ZipFile(p) as archive:
+        xml = archive.read("word/document.xml")
+    root = ElementTree.fromstring(xml)
+    return "\n".join(node.text or "" for node in root.iter() if node.tag.endswith("}t")).strip()
 
 
 def supported_extensions() -> set[str]:

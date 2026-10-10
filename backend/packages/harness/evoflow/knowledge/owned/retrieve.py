@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import heapq
 import logging
 import math
 import struct
@@ -9,6 +10,7 @@ from typing import Any
 
 from evoflow.knowledge.owned.assets import assets_for_chunks
 from evoflow.knowledge.owned.kb_conn import db_for_kb
+from evoflow.knowledge.owned import vector_index
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +63,7 @@ def purge_document_index(conn: Any, doc_id: str) -> None:
     delete_fts_for_doc(conn, doc_id)
     old_ids = [r["id"] for r in conn.execute("SELECT id FROM kb_chunks WHERE doc_id=?", (doc_id,)).fetchall()]
     if old_ids:
+        vector_index.delete_chunk_ids(conn, old_ids)
         placeholders = ",".join("?" * len(old_ids))
         conn.execute(
             f"DELETE FROM kb_chunk_embeddings WHERE chunk_id IN ({placeholders})",
@@ -96,7 +99,8 @@ def search_keyword(kb_id: str, query: str, *, top_k: int = 20) -> list[dict[str,
                 FROM kb_chunks_fts f
                 JOIN kb_chunks c ON c.id = f.chunk_id
                 JOIN kb_documents d ON d.id = f.doc_id AND d.deleted_at IS NULL
-                WHERE f.kb_id = ? AND c.enabled = 1 AND kb_chunks_fts MATCH ?
+                WHERE f.kb_id = ? AND c.enabled = 1 AND d.parse_status = 'completed'
+                  AND kb_chunks_fts MATCH ?
                 ORDER BY rank
                 LIMIT ?
                 """,
@@ -114,7 +118,7 @@ def search_keyword(kb_id: str, query: str, *, top_k: int = 20) -> list[dict[str,
                 SELECT c.id AS chunk_id, c.doc_id, c.content, 0 AS rank
                 FROM kb_chunks c
                 JOIN kb_documents d ON d.id = c.doc_id AND d.deleted_at IS NULL
-                WHERE c.kb_id=? AND c.enabled=1 AND c.content LIKE ?
+                WHERE c.kb_id=? AND c.enabled=1 AND d.parse_status='completed' AND c.content LIKE ?
                 LIMIT ?
                 """,
                 (kb_id, like, top_k),
@@ -138,20 +142,69 @@ def search_vector(
     query_vec: list[float],
     *,
     top_k: int = 20,
+    model: str = "",
 ) -> list[dict[str, Any]]:
     if not query_vec:
         return []
-    scored: list[tuple[float, dict[str, Any]]] = []
+    candidate_limit = max(int(top_k or 20), 1)
     with db_for_kb(kb_id) as conn:
+        dim = len(query_vec)
+        vec_hits = vector_index.recall_ids(
+            conn,
+            kb_id=kb_id,
+            dim=dim,
+            model=model,
+            query_vec=query_vec,
+            top_k=candidate_limit,
+        )
+        if vec_hits is not None:
+            ids = [chunk_id for chunk_id, _distance in vec_hits]
+            if not ids:
+                return []
+            placeholders = ",".join("?" * len(ids))
+            rows = conn.execute(
+                f"""
+                SELECT e.chunk_id, e.doc_id, e.dim, e.embedding, c.content, c.context_header
+                FROM kb_chunk_embeddings e
+                JOIN kb_chunks c ON c.id=e.chunk_id
+                JOIN kb_documents d ON d.id=e.doc_id AND d.deleted_at IS NULL
+                WHERE e.chunk_id IN ({placeholders}) AND e.dim=?
+                  AND (? = '' OR e.model = ?)
+                  AND c.enabled=1 AND d.parse_status='completed'
+                """,
+                [*ids, dim, str(model or ""), str(model or "")],
+            ).fetchall()
+            by_id = {str(row["chunk_id"]): row for row in rows}
+            hits: list[dict[str, Any]] = []
+            for rank, (chunk_id, distance) in enumerate(vec_hits, 1):
+                row = by_id.get(chunk_id)
+                if not row:
+                    continue
+                hits.append({
+                    "chunk_id": chunk_id,
+                    "kb_id": kb_id,
+                    "doc_id": row["doc_id"],
+                    "content": row["content"],
+                    "context_header": row["context_header"] or "",
+                    "score": 1.0 - distance,
+                    "source": "vector",
+                    "rank": rank,
+                })
+            return hits
+
+        # Fallback for installations where sqlite-vec is unavailable.
+        # Keep only the best candidates while scanning.
+        scored: list[tuple[float, int, dict[str, Any]]] = []
         rows = conn.execute(
             """
             SELECT e.chunk_id, e.doc_id, e.dim, e.embedding, c.content, c.context_header
             FROM kb_chunk_embeddings e
             JOIN kb_chunks c ON c.id = e.chunk_id
             JOIN kb_documents d ON d.id = e.doc_id AND d.deleted_at IS NULL
-            WHERE e.kb_id=? AND c.enabled=1
+            WHERE e.kb_id=? AND c.enabled=1 AND d.parse_status='completed'
+              AND (? = '' OR e.model = ?)
             """,
-            (kb_id,),
+            (kb_id, str(model or ""), str(model or "")),
         ).fetchall()
         for row in rows:
             dim = int(row["dim"])
@@ -159,23 +212,23 @@ def search_vector(
                 continue
             vec = unpack_embedding(bytes(row["embedding"]), dim)
             score = cosine(query_vec, vec)
-            scored.append(
-                (
-                    score,
-                    {
-                        "chunk_id": row["chunk_id"],
-                        "kb_id": kb_id,
-                        "doc_id": row["doc_id"],
-                        "content": row["content"],
-                        "context_header": row["context_header"] or "",
-                        "score": score,
-                        "source": "vector",
-                    },
-                )
-            )
+            hit = {
+                "chunk_id": row["chunk_id"],
+                "kb_id": kb_id,
+                "doc_id": row["doc_id"],
+                "content": row["content"],
+                "context_header": row["context_header"] or "",
+                "score": score,
+                "source": "vector",
+            }
+            entry = (score, id(hit), hit)
+            if len(scored) < candidate_limit:
+                heapq.heappush(scored, entry)
+            elif score > scored[0][0]:
+                heapq.heapreplace(scored, entry)
     scored.sort(key=lambda x: x[0], reverse=True)
     hits: list[dict[str, Any]] = []
-    for i, (_s, hit) in enumerate(scored[:top_k]):
+    for i, (_score, _tie, hit) in enumerate(scored[:top_k]):
         hit["rank"] = i + 1
         hits.append(hit)
     return hits
@@ -290,7 +343,7 @@ def search_title(kb_id: str, query: str, *, top_k: int = 20) -> list[dict[str, A
         docs = conn.execute(
             """
             SELECT id FROM kb_documents
-            WHERE kb_id=? AND deleted_at IS NULL
+            WHERE kb_id=? AND deleted_at IS NULL AND parse_status='completed'
               AND (title LIKE ? OR file_name LIKE ? OR folder_path LIKE ?
                    OR IFNULL(summary_text,'') LIKE ?)
             ORDER BY updated_at DESC
