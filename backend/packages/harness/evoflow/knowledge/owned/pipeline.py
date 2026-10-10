@@ -132,6 +132,9 @@ async def run_parse_index(
     )
 
     with db_for_kb(kb_id) as conn:
+        # Serialize staging so concurrent retries cannot allocate the same
+        # (doc_id, ordinal) range before either writer commits.
+        conn.execute("BEGIN IMMEDIATE")
         # Stage the replacement beside the last ready version. New rows remain
         # disabled until embedding succeeds, so failed rebuilds keep old search.
         old_ids = [r["id"] for r in conn.execute("SELECT id FROM kb_chunks WHERE doc_id=? AND enabled=1", (doc_id,)).fetchall()]
