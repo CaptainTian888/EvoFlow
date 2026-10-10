@@ -723,11 +723,16 @@ def reindex_base(
     # Chunks/embeddings/documents are KB-local.
     with db_for_kb(kb_id) as kb_conn:
         if force or row["embedding_dim"] is None:
-            kb_conn.execute("DELETE FROM kb_chunk_embeddings WHERE kb_id=?", (kb_id,))
+            # Existing chunks remain searchable until each replacement job
+            # commits successfully in the pipeline.
             kb_conn.execute(
                 """
                 UPDATE kb_documents
-                SET parse_status='pending', error_message='', updated_at=?
+                SET parse_status=CASE WHEN chunk_count > 0 THEN 'completed' ELSE 'pending' END,
+                    index_status=CASE WHEN chunk_count > 0 THEN 'building' ELSE 'pending' END,
+                    keyword_status=CASE WHEN chunk_count > 0 THEN 'building' ELSE 'pending' END,
+                    vector_status=CASE WHEN chunk_count > 0 THEN 'building' ELSE 'pending' END,
+                    index_error='', error_message='', updated_at=?
                 WHERE kb_id=? AND deleted_at IS NULL
                 """,
                 (now, kb_id),

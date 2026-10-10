@@ -191,11 +191,17 @@ def main() -> int:
         check("hybrid result has source metadata", all(item.get("chunkId") and item.get("docId") for item in hybrid.get("items") or []), json.dumps(hybrid, ensure_ascii=False)[:500])
 
         reindex = json_response(request("POST", f"/api/knowledge/owned/bases/{kb_id}/reindex", json={}))
-        reindex_jobs = reindex.get("jobs") or reindex.get("items") or []
-        check("reindex queued", bool(reindex_jobs) or bool(reindex.get("queued")) or bool(reindex.get("reindexQueued")), json.dumps(reindex, ensure_ascii=False)[:500])
-        for job in reindex_jobs:
-            if isinstance(job, dict) and job.get("id"):
-                wait_job(str(job["id"]))
+        check("reindex queued", int(reindex.get("reindexQueued") or 0) == len(docs), json.dumps(reindex, ensure_ascii=False)[:500])
+        reindex_docs = json_response(request("GET", f"/api/knowledge/owned/bases/{kb_id}/documents")).get("items") or []
+        reindex_job_ids = [str(item.get("latestJobId") or "") for item in reindex_docs if item.get("latestJobId")]
+        check("reindex jobs exposed", len(reindex_job_ids) == len(docs), json.dumps(reindex_docs, ensure_ascii=False)[:700])
+        for job_id in reindex_job_ids:
+            wait_job(job_id)
+        final_docs = [
+            json_response(request("GET", f"/api/knowledge/owned/documents/{item['id']}"))
+            for item in reindex_docs
+        ]
+        check("reindex documents ready", all(item.get("indexStatus") == "ready" for item in final_docs), json.dumps(final_docs, ensure_ascii=False)[:700])
         check("post-reindex keyword retrieval", bool(search(kb_id, CASES["pdf"][1], "keyword").get("items")))
 
         delete_id = str(docs["txt"]["id"])
