@@ -174,6 +174,45 @@ export function filterDeliverableOutputs(items) {
   return out
 }
 
+/** Basenames like ``_outcome_report_Step4`` / ``_summary_report`` are worker
+ * bookkeeping drops, not user deliverables — demote to process artifacts. */
+const PROCESS_ARTIFACT_BASENAME_RE = /^_(?:outcome_report|summary|report|review_outcome)[\w-]*/i
+
+export function isProcessArtifactBasename(value) {
+  const name = String(value || '')
+    .trim()
+    .replace(/\\/g, '/')
+    .split('?')[0]
+    .split('/')
+    .pop() || ''
+  return PROCESS_ARTIFACT_BASENAME_RE.test(name)
+}
+
+/**
+ * Split resolved deliverables into { primary, process }:
+ * - ``primary``: files the user is meant to consume (final deliverables)
+ * - ``process``: intermediate review/analysis reports + worker bookkeeping drops
+ *   (e.g. ``_outcome_report_*``), worth keeping reachable but not headline.
+ */
+export function splitDeliverableOutputs(items) {
+  const list = Array.isArray(items) ? items : []
+  const primary = []
+  const process = []
+  for (const item of list) {
+    if (!item || typeof item !== 'object') continue
+    const value = String(item.value || '').trim()
+    const label = String(item.label || '').trim()
+    const looksProcess =
+      isProcessArtifactBasename(value) ||
+      isProcessArtifactBasename(label) ||
+      /^outcome_report$/i.test(String(item.key || '').trim()) ||
+      /^step[0-9_-]*outcome$/i.test(String(item.key || '').trim())
+    if (looksProcess) process.push(item)
+    else primary.push(item)
+  }
+  return { primary, process }
+}
+
 const PREVIEWABLE_EXT_RE = /\.(md|markdown|txt|json|ya?ml|csv|html?|py|js|ts|tsx|jsx|css|xml|log)$/i
 
 /** Strip leftover brackets from agent pseudo-JSON typos. */
@@ -689,6 +728,53 @@ export function resolveTaskOutputItems(task) {
     }
   }
   return filterDeliverableOutputs(items)
+}
+
+function answerRefOutputsOf(task) {
+  if (!task || typeof task !== 'object') return []
+  const ref = String(task.answer_from_ref || task.answerFromRef || '').trim()
+  if (!ref || ref === '__rollup__') return []
+  const subs = Array.isArray(task.subtasks) ? task.subtasks : []
+  const answerStep = subs.find((st) => {
+    if (!st || typeof st !== 'object') return false
+    if (isRollupSubtaskRow(st)) return false
+    return (
+      String(st.ref || '').trim() === ref ||
+      String(st.semantic_ref || '').trim() === ref ||
+      String(st?.worker_profile?.semantic_ref || '').trim() === ref
+    )
+  })
+  if (!answerStep) return []
+  return filterDeliverableOutputs(taskOutputsOf(answerStep))
+}
+
+/**
+ * Layered view for task detail UI:
+ * - ``primary``: what the user should look at (answer-step / rollup deliverables only)
+ * - ``process``: intermediate step reports + worker bookkeeping drops (collapsed by default)
+ */
+export function resolveTaskDeliverableLayers(task) {
+  const all = resolveTaskOutputItems(task)
+  if (!isWorkflowAppTaskRow(task)) return { primary: all, process: [] }
+
+  // Explicit answer sink: answer-step outputs are the headline; everything else
+  // (upstream review/analysis reports) becomes process artifacts.
+  const fromAnswer = answerRefOutputsOf(task)
+  if (fromAnswer.length) {
+    const have = new Set(fromAnswer.map((i) => deliverableDedupeKey(i.value)))
+    const process = all.filter((i) => !have.has(deliverableDedupeKey(i.value)))
+    return { primary: fromAnswer, process }
+  }
+
+  const { primary, process } = splitDeliverableOutputs(all)
+  return { primary, process }
+}
+
+function isWorkflowAppTaskRow(task) {
+  if (!task || typeof task !== 'object') return false
+  const src = String(task.source || '').trim().toLowerCase()
+  if (src === 'workflow') return true
+  return !!String(task.source_app_id || '').trim()
 }
 
 /**

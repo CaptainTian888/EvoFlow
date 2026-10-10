@@ -4005,6 +4005,33 @@ html.dark .config-section-title {
   gap: 8px;
 }
 
+/* 过程产物折叠区（次级展示，默认收起） */
+.td-process-fold {
+  margin-top: 10px;
+  border-top: 1px dashed var(--border, #e5e7eb);
+  padding-top: 8px;
+}
+
+.td-process-fold .td-process-summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-secondary, #6b7280);
+  user-select: none;
+  padding: 4px 0;
+}
+
+.td-process-fold .td-process-summary:hover {
+  color: var(--text-primary, #111827);
+}
+
+.td-process-fold[open] .td-process-summary {
+  margin-bottom: 8px;
+}
+
+.td-process-fold .td-output-row {
+  opacity: 0.82;
+}
+
 .td-output-row {
   display: flex;
   align-items: center;

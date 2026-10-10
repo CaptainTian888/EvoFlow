@@ -5735,11 +5735,9 @@ export class WsClient {
     }
     for (const att of imageAtts) {
       blocks.push({
-        type: 'image',
-        source: {
-          type: 'base64',
-          media_type: att.mimeType || 'image/png',
-          data: att.content,
+        type: 'image_url',
+        image_url: {
+          url: `data:${att.mimeType || 'image/png'};base64,${att.content}`,
         },
       })
     }

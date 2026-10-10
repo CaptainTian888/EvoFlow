@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { takeCompleteSseFrames, createSseFrameQueue } from '../src/lib/sse-frame-batch.js'
 
 describe('takeCompleteSseFrames', () => {
@@ -10,6 +10,28 @@ describe('takeCompleteSseFrames', () => {
 })
 
 describe('createSseFrameQueue', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('limits regular dispatch to maxPerSlice and reschedules', () => {
+    vi.useFakeTimers()
+    const seen = []
+    const q = createSseFrameQueue((f) => seen.push(f), { maxPerSlice: 2 })
+    q.push('one')
+    q.push('two')
+    q.push('three')
+    q.push('four')
+
+    expect(seen).toEqual([])
+    vi.runOnlyPendingTimers()
+    expect(seen).toEqual(['one', 'two'])
+    expect(q.pending).toBe(2)
+    vi.runOnlyPendingTimers()
+    expect(seen).toEqual(['one', 'two', 'three', 'four'])
+    expect(q.pending).toBe(0)
+  })
+
   it('flush drains all frames synchronously', () => {
     const seen = []
     const q = createSseFrameQueue((f) => seen.push(f))

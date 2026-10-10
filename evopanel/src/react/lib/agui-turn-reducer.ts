@@ -384,6 +384,41 @@ function isAgUiToolResultMessage(msg: AgUiSnapshotMessage | null | undefined): b
   return role === 'tool' || role === 'toolresult' || role === 'tool_result'
 }
 
+/**
+ * A bridge can replay an open message in MESSAGES_SNAPSHOT under a new ID.
+ * Only merge when the text has a strong contiguous overlap; independent closed
+ * messages must remain separate timeline entries.
+ */
+function snapshotTextOverlapLength(a: string, b: string): number {
+  const left = String(a || '')
+  const right = String(b || '')
+  if (!left || !right) return 0
+  const max = Math.min(left.length, right.length)
+  if (max >= 32 && (left.startsWith(right) || right.startsWith(left))) return max
+  for (let size = max; size >= 32; size--) {
+    if (left.endsWith(right.slice(0, size)) || right.endsWith(left.slice(0, size))) return size
+  }
+  return 0
+}
+
+function findOpenSnapshotAlias(
+  state: AgUiTurnState,
+  role: 'assistant' | 'reasoning',
+  content: string,
+): string | null {
+  let bestId: string | null = null
+  let bestOverlap = 0
+  for (const [id, message] of state.messages) {
+    if (message.role !== role || message.closed) continue
+    const overlap = snapshotTextOverlapLength(message.content, content)
+    if (overlap > bestOverlap) {
+      bestId = id
+      bestOverlap = overlap
+    }
+  }
+  return bestId
+}
+
 function resolveToolCallIdFromSnapshotMessage(msg: AgUiSnapshotMessage): string {
   const fromField = String(msg.toolCallId || msg.tool_call_id || '').trim()
   if (fromField) return fromField
@@ -1216,6 +1251,7 @@ export function applyAgUiEvent(state: AgUiTurnState, event: AGUIEvent): AgUiTurn
   if (t === EventType.MESSAGES_SNAPSHOT) {
     const msgs = (event as { messages?: AgUiSnapshotMessage[] }).messages
     if (Array.isArray(msgs) && msgs.length) {
+      const snapshotMessageAliases = new Map<string, string>()
       for (const msg of msgs) {
         if (isAgUiToolResultMessage(msg)) {
           applyToolResultFromSnapshotMessage(state, msg)
@@ -1250,24 +1286,54 @@ export function applyAgUiEvent(state: AgUiTurnState, event: AGUIEvent): AgUiTurn
         if (!messageId || !content.trim()) continue
         // Skip messages already sealed to compactedParts
         if (state.sealedMessageIds.has(messageId)) continue
+        const aliasId = findOpenSnapshotAlias(state, role, content)
+        const targetMessageId = aliasId || messageId
+        if (aliasId && aliasId !== messageId) snapshotMessageAliases.set(messageId, aliasId)
         const cap =
           role === 'reasoning'
             ? capStreamTailText(content, STREAM_REASONING_TEXT_CAP)
             : capStreamTailText(content, STREAM_ASSISTANT_BODY_CAP)
-        const existing = state.messages.get(messageId)
+        const existing = state.messages.get(targetMessageId)
         if (existing) {
-          existing.content = cap
-          existing.closed = true
+          // MESSAGES_SNAPSHOT is not guaranteed to contain the full live message.
+          // During streaming some bridges emit only the latest tail; replacing the
+          // accumulated content here makes the row jump from the full body to a
+          // short suffix and also causes the live slot to flicker into a new row.
+          const current = String(existing.content || '')
+          const next = cap
+          const mergedContent =
+            !current || next.startsWith(current)
+              ? next
+              : current.startsWith(next)
+                ? current
+                : next.length > current.length
+                  ? next
+                  : current
+          existing.content = mergedContent
+          // A snapshot can be emitted between CONTENT deltas. Keep a message
+          // that is already open live; TEXT_MESSAGE_END/RUN_FINISHED closes it.
+          existing.closed = existing.closed === true
           existing.role = role
         } else {
-          state.messages.set(messageId, { messageId, role, content: cap, closed: true })
+          state.messages.set(targetMessageId, {
+            messageId: targetMessageId,
+            role,
+            content: cap,
+            closed: true,
+          })
         }
       }
       // Rebuild order excluding sealed entries
-      const snapOrder = orderFromMessagesSnapshot(msgs).filter((entry) => {
-        if (entry.kind === 'tool') return !state.sealedToolIds.has(entry.toolCallId)
-        return !state.sealedMessageIds.has(entry.messageId)
-      })
+      const snapOrder = orderFromMessagesSnapshot(msgs)
+        .map((entry) => {
+          if (entry.kind === 'tool') return entry
+          const alias = snapshotMessageAliases.get(entry.messageId)
+          return alias ? { ...entry, messageId: alias } : entry
+        })
+        .filter((entry) => {
+          if (entry.kind === 'tool') return !state.sealedToolIds.has(entry.toolCallId)
+          return !state.sealedMessageIds.has(entry.messageId)
+        })
       if (snapOrder.length) {
         state.order = mergeSnapshotOrderPreservingLive(state.order, snapOrder)
       }

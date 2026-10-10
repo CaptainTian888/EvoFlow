@@ -31,6 +31,8 @@ import {
   taskSummaryText,
   parseTaskResultSections,
   resolveTaskOutputItems,
+  resolveTaskDeliverableLayers,
+  renderOutputItemCardsHtml,
   taskInputRefsOf,
   renderTaskOutputCardsHtml,
   renderTaskInputRefsCardsHtml,
@@ -4327,10 +4329,23 @@ function renderWorkItemOutcomeCards(task, statusGroup) {
   }
 
   if (outputs.length) {
+    const layers = resolveTaskDeliverableLayers(task)
+    const primary = layers.primary.length ? layers.primary : outputs
+    const process = layers.process.filter(
+      (p) => !primary.some((q) => String(q.value || '') === String(p.value || '')),
+    )
     cards.push(`
       <section class="td-card">
         <h2 class="td-card-title">本岗交付物</h2>
-        ${renderTaskOutputCardsHtml(task, esc, { enablePreview: true })}
+        ${renderOutputItemCardsHtml(primary, esc, { enablePreview: true })}
+        ${
+          process.length
+            ? `<details class="td-process-fold">
+                <summary class="td-process-summary">过程产物（${process.length}）</summary>
+                ${renderOutputItemCardsHtml(process, esc, { enablePreview: true })}
+              </details>`
+            : ''
+        }
       </section>`)
   }
 

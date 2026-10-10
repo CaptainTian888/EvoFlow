@@ -2876,6 +2876,41 @@ function render() {
   }
 }
 
+let _streamRenderFrame = 0
+let _streamRenderPending = false
+function scheduleStreamRender() {
+  _streamRenderPending = true
+  if (_streamRenderFrame) return
+  const flush = () => {
+    _streamRenderFrame = 0
+    if (!_streamRenderPending) return
+    _streamRenderPending = false
+    render()
+  }
+  if (typeof requestAnimationFrame === 'function') {
+    _streamRenderFrame = requestAnimationFrame(flush)
+  } else {
+    _streamRenderFrame = setTimeout(flush, 16)
+  }
+}
+
+function cancelStreamRender() {
+  if (!_streamRenderFrame) return
+  if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(_streamRenderFrame)
+  clearTimeout(_streamRenderFrame)
+  _streamRenderFrame = 0
+  _streamRenderPending = false
+}
+
+function renderForState(st) {
+  if (st.streaming && st.isOpen && st.activeView === 'chat' && resolveSelectedContact(st) === 'xiaomi') {
+    scheduleStreamRender()
+    return
+  }
+  cancelStreamRender()
+  render()
+}
+
 function findAttention(id) {
   return (getState().attentionItems || []).find((x) => x.id === id)
 }
@@ -3772,7 +3807,7 @@ export function mountGlobalAssistant() {
     _routeBound = true
   }
   if (_unsub) _unsub()
-  _unsub = subscribe(() => render())
+  _unsub = subscribe(renderForState)
 
   render()
   void refreshXiaomiObsEnabled()

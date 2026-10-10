@@ -1928,12 +1928,16 @@ export default function KnowledgeOwnedPage() {
             </div>
           </div>
 
-          {selected && !selected.embeddingDim ? (
+          {selected && selected.documentCount > 0 && !selected.vectorized ? (
             <div className="ko-sync-popup is-idle" data-testid="ko-embedding-pending">
               <div className="ko-sync-popup__body">
-                <strong>尚未向量化</strong>
+                <strong>
+                  {selected.embeddedChunks > 0 ? "向量索引未完成" : "尚未向量化"}
+                </strong>
                 <span>
-                  库内文档还未按向量模型建索引。可在「库设置」选择 Agent Plan / 向量模型页中的模型，再点「立即向量化」。
+                  {selected.embeddedChunks > 0
+                    ? `已完成 ${selected.embeddedChunks}/${selected.totalChunks || 0} 个分块，仍缺 ${selected.missingEmbeddingChunks || 0} 个。`
+                    : "库内文档还未按向量模型建索引。可在「库设置」选择 Agent Plan / 向量模型页中的模型，再点「立即向量化」。"}
                 </span>
               </div>
               <button className="ko-btn primary" disabled={busy} onClick={openBaseSettings} type="button">

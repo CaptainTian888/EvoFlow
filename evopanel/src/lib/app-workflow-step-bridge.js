@@ -237,7 +237,9 @@ export function resolveWorkflowSubtaskStatus(subtaskStatus, ref, bridge) {
 }
 
 /**
- * Run-level deliverables for overview: run outputs → rollup → answer node → last successful step.
+ * Run-level deliverables for overview: run outputs → answer node → rollup → last successful step.
+ * Answer node wins over rollup: the answer sink is what the user asked for; the rollup
+ * synthesis is bookkeeping and should not bury the final deliverable.
  */
 export function collectWorkflowRunDeliverables(status, planSteps, options = {}) {
   const runtime = Array.isArray(status?.steps) ? status.steps : []
@@ -248,6 +250,16 @@ export function collectWorkflowRunDeliverables(status, planSteps, options = {}) 
 
   const hasHtml = runItems.some((it) => /\.html?$/i.test(String(it.value || '')))
   if (!hasHtml) {
+    const bridgeForAnswer = buildWorkflowStepBridge(planSteps, runtime)
+    const answerRefEarly = String(
+      options.answerFromRef || status?.answer_from_ref || '',
+    ).trim()
+    if (answerRefEarly) {
+      const canonicalEarly = resolveWorkflowStepRef(answerRefEarly, bridgeForAnswer)
+      const ansStepEarly = runtime.find((s) => String(s?.ref || '').trim() === canonicalEarly)
+      const fromAnswerEarly = stepOutputs(ansStepEarly)
+      if (fromAnswerEarly.length) return fromAnswerEarly
+    }
     const rollup = runtime.find(
       (s) => s?.is_rollup_step || String(s?.ref || '').trim() === '__rollup__',
     )

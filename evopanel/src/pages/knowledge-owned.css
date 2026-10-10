@@ -2097,7 +2097,7 @@ button.ko-tag.is-active {
   background: var(--kb-card-bg);
   box-shadow: var(--kb-card-shadow);
   backdrop-filter: blur(16px);
-  overflow: hidden;
+  overflow: visible;
 }
 
 .ko-data-list__item {

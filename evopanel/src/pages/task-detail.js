@@ -26,7 +26,7 @@ import { mountTaskPlanModalBridge, unmountTaskPlanModalBridge, openTaskPlanModal
 import { taskDescriptionForDisplay } from '../lib/task-placeholder.js'
 import { resolveAssignedAgentDisplayName } from '../lib/tool-display.js'
 import { normalizeSubtaskResultForDisplay } from '../lib/subtask-result-display.js'
-import { taskSummaryText, renderTaskOutputCardsHtml, renderTaskInputRefsCardsHtml, parseTaskResultSections, resolveTaskOutputItems, taskInputRefsOf } from '../lib/task-summary.js'
+import { taskSummaryText, renderTaskOutputCardsHtml, renderTaskInputRefsCardsHtml, parseTaskResultSections, resolveTaskOutputItems, resolveTaskDeliverableLayers, renderOutputItemCardsHtml, taskInputRefsOf } from '../lib/task-summary.js'
 import {
   taskHandlersOf,
   normalizeTaskHandlers,
@@ -613,10 +613,23 @@ function renderTaskOutcomePanel(page, state) {
   }
 
   if (outputs.length) {
+    const layers = resolveTaskDeliverableLayers(task)
+    const primary = layers.primary.length ? layers.primary : outputs
+    const process = layers.process.filter(
+      (p) => !primary.some((q) => String(q.value || '') === String(p.value || '')),
+    )
     cards.push(`
       <section class="td-card">
         <h2 class="td-card-title">本岗交付物</h2>
-        ${renderTaskOutputCardsHtml(task, escapeHtml, { enablePreview: true })}
+        ${renderOutputItemCardsHtml(primary, escapeHtml, { enablePreview: true })}
+        ${
+          process.length
+            ? `<details class="td-process-fold">
+                <summary class="td-process-summary">过程产物（${process.length}）</summary>
+                ${renderOutputItemCardsHtml(process, escapeHtml, { enablePreview: true })}
+              </details>`
+            : ''
+        }
       </section>`)
   }
 

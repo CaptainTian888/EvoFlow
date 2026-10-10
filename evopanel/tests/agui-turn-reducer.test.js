@@ -530,6 +530,55 @@ describe('applyAgUiEvent', () => {
     expect(proj.openText).toBe('')
   })
 
+  it('MESSAGES_SNAPSHOT does not truncate or close an open live assistant message', () => {
+    let s = emptyAgUiTurnState('r1', 't1')
+    s = applyAgUiEvent(s, { type: 'TEXT_MESSAGE_START', messageId: 'live', role: 'assistant' })
+    s = applyAgUiEvent(s, {
+      type: 'TEXT_MESSAGE_CONTENT',
+      messageId: 'live',
+      delta: '这是已经累计到前面的完整正文。',
+    })
+    const before = s.messages.get('live')?.content
+    s = applyAgUiEvent(s, {
+      type: 'MESSAGES_SNAPSHOT',
+      messages: [{ id: 'live', role: 'assistant', content: '正文尾片' }],
+    })
+    expect(s.messages.get('live')?.content).toBe(before)
+    expect(s.messages.get('live')?.closed).toBe(false)
+    expect(projectAgUiToStreamTurnFields(s).openText).toBe(before)
+  })
+
+  it('MESSAGES_SNAPSHOT aliases a replayed open reasoning message with a new ID', () => {
+    let s = emptyAgUiTurnState('r1', 't1')
+    const reasoning = 'The user asked for a long answer. There is no topic specified, so I should clarify the request before replying.'
+    s = applyAgUiEvent(s, { type: 'REASONING_MESSAGE_START', messageId: 'live-reasoning' })
+    s = applyAgUiEvent(s, {
+      type: 'REASONING_MESSAGE_CONTENT',
+      messageId: 'live-reasoning',
+      delta: reasoning,
+    })
+    s = applyAgUiEvent(s, {
+      type: 'MESSAGES_SNAPSHOT',
+      messages: [{ id: 'snapshot-reasoning', role: 'reasoning', content: reasoning }],
+    })
+    expect(s.messages.size).toBe(1)
+    expect(s.messages.get('live-reasoning')?.content).toBe(reasoning)
+    expect(s.messages.get('live-reasoning')?.closed).toBe(false)
+    expect(s.order.filter((entry) => entry.kind === 'reasoning')).toHaveLength(1)
+  })
+
+  it('MESSAGES_SNAPSHOT accepts a longer complete assistant message', () => {
+    let s = emptyAgUiTurnState('r1', 't1')
+    s = applyAgUiEvent(s, { type: 'TEXT_MESSAGE_START', messageId: 'live', role: 'assistant' })
+    s = applyAgUiEvent(s, { type: 'TEXT_MESSAGE_CONTENT', messageId: 'live', delta: '前半' })
+    s = applyAgUiEvent(s, {
+      type: 'MESSAGES_SNAPSHOT',
+      messages: [{ id: 'live', role: 'assistant', content: '前半完整正文' }],
+    })
+    expect(s.messages.get('live')?.content).toBe('前半完整正文')
+    expect(s.messages.get('live')?.closed).toBe(false)
+  })
+
   it('TOOL_CALL_RESULT preserves truncated meta for lazy-load tools', () => {
     let s = emptyAgUiTurnState('r1', 't1')
     s = applyAgUiEvent(s, { type: 'TOOL_CALL_START', toolCallId: 'c1', toolCallName: 'read' })

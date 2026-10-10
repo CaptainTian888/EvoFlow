@@ -20,20 +20,24 @@ export function takeCompleteSseFrames(raw) {
   const frames = []
   let start = 0
   for (let i = 0; i < len - 1; i++) {
-    const c = s.charCodeAt(i)
-    if (c === 10 /* \n */ && s.charCodeAt(i + 1) === 10) {
-      // 边界 i / i+1；统一去掉每行尾随 \r（处理 CRLF）
-      const seg = s.slice(start, i)
-      frames.push(seg.endsWith('\r') ? seg.slice(0, -1) : seg)
-      start = i + 2
-      i++ // 跳过第二个 \n
-    }
+    if (s.charCodeAt(i) !== 10 /* \n */) continue
+    const next = s.charCodeAt(i + 1)
+    const delimiterEnd = next === 13 /* \r */ && s.charCodeAt(i + 2) === 10
+      ? i + 3
+      : next === 10
+        ? i + 2
+        : 0
+    if (!delimiterEnd) continue
+    const seg = s.slice(start, i)
+    frames.push(seg.endsWith('\r') ? seg.slice(0, -1) : seg)
+    start = delimiterEnd
+    i = delimiterEnd - 1
   }
   return { frames, rest: start < len ? s.slice(start) : '' }
 }
 
 /**
- * Queue SSE frames and dispatch at most `maxPerSlice` per animation frame.
+ * Queue SSE frames and dispatch at most `maxPerSlice` per paint tick.
  * Call `flush()` before stream teardown so tail events are not dropped.
  *
  * **Backpressure**: when the queue exceeds `maxQueueSize` (default 200), non-critical
@@ -55,7 +59,10 @@ function isCriticalFrame(frame) {
   return false
 }
 
-export function createSseFrameQueue(dispatchFrame, { maxPerSlice = 16, maxQueueSize = 200 } = {}) {
+export function createSseFrameQueue(
+  dispatchFrame,
+  { maxPerSlice = 16, maxQueueSize = 200 } = {},
+) {
   const queue = []
   let rafHandle = 0
   let timeoutHandle = 0
@@ -91,11 +98,12 @@ export function createSseFrameQueue(dispatchFrame, { maxPerSlice = 16, maxQueueS
   const runSlice = () => {
     rafHandle = 0
     timeoutHandle = 0
+    const limit = Math.max(1, Number(maxPerSlice) || 1)
     let n = 0
-    while (queue.length && n < maxPerSlice) {
+    while (queue.length && n < limit) {
       const frame = queue.shift()
       dispatchFrame(frame)
-      n++
+      n += 1
     }
     if (queue.length) schedule()
   }
