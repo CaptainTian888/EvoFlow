@@ -132,6 +132,28 @@ describe('applyAgUiEvent', () => {
     )
   })
 
+  it('preserves reasoning timing through end and snapshot refresh', () => {
+    let s = emptyAgUiTurnState('r1', 't1')
+    s = applyAgUiEvent(s, { type: 'REASONING_MESSAGE_START', messageId: 'timed-reasoning' })
+    s = applyAgUiEvent(s, { type: 'REASONING_MESSAGE_CONTENT', messageId: 'timed-reasoning', delta: '持续思考' })
+    const startedAtMs = s.messages.get('timed-reasoning')?.startedAtMs
+    expect(startedAtMs).toEqual(expect.any(Number))
+    s = applyAgUiEvent(s, { type: 'REASONING_MESSAGE_END', messageId: 'timed-reasoning' })
+    const endedAtMs = s.messages.get('timed-reasoning')?.endedAtMs
+    expect(endedAtMs).toEqual(expect.any(Number))
+    expect(endedAtMs).toBeGreaterThanOrEqual(startedAtMs)
+    const segment = projectAgUiToStreamTurnFields(s).timeline.find((item) => item.kind === 'reasoning')
+    expect(segment.startedAtMs).toBe(startedAtMs)
+    expect(segment.endedAtMs).toBe(endedAtMs)
+    s = applyAgUiEvent(s, {
+      type: 'MESSAGES_SNAPSHOT',
+      messages: [{ id: 'timed-reasoning', role: 'reasoning', content: '持续思考', seq: 1 }],
+    })
+    const refreshed = s.messages.get('timed-reasoning')
+    expect(refreshed?.startedAtMs).toBe(startedAtMs)
+    expect(refreshed?.endedAtMs).toBe(endedAtMs)
+  })
+
   it('projectAgUiToStreamTurnFields exposes open reasoning before message end', () => {
     let s = emptyAgUiTurnState('r1', 't1')
     s = applyAgUiEvent(s, { type: 'REASONING_MESSAGE_START', messageId: 'rm1' })

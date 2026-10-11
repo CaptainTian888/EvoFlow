@@ -97,6 +97,8 @@ export type AgUiMessage = {
   role: 'assistant' | 'reasoning'
   content: string
   closed: boolean
+  startedAtMs?: number
+  endedAtMs?: number
 }
 
 export type AgUiToolCall = {
@@ -170,6 +172,66 @@ export type AgUiTurnState = {
 }
 
 const MIND_MAP_TAG_RE = /<session_mind_map[\s\S]*?<\/session_mind_map>/gi
+
+// Wire snapshots do not consistently carry block timestamps. Keep the first/last
+// observed times by message ID so a refresh/reconciliation can restore reasoning
+// duration instead of recomputing it from the new render time.
+const reasoningTimingByMessageId = new Map<string, { startedAtMs: number; endedAtMs?: number }>()
+const REASONING_TIMING_STORAGE_KEY = 'evopanel_reasoning_timing_v1'
+
+function loadReasoningTiming(id: string): { startedAtMs: number; endedAtMs?: number } | undefined {
+  try {
+    const raw = sessionStorage.getItem(REASONING_TIMING_STORAGE_KEY)
+    const value = raw ? JSON.parse(raw) : null
+    const timing = value && typeof value === 'object' ? value[id] : undefined
+    if (timing && Number.isFinite(timing.startedAtMs)) return timing
+  } catch {
+    // Storage is optional (private mode/tests); in-memory timing still works.
+  }
+  return undefined
+}
+
+function saveReasoningTiming(id: string, timing: { startedAtMs: number; endedAtMs?: number }): void {
+  try {
+    const raw = sessionStorage.getItem(REASONING_TIMING_STORAGE_KEY)
+    const value = raw ? JSON.parse(raw) : {}
+    const next = value && typeof value === 'object' ? value : {}
+    next[id] = timing
+    const ids = Object.keys(next)
+    for (const oldId of ids.slice(0, Math.max(0, ids.length - 1000))) delete next[oldId]
+    sessionStorage.setItem(REASONING_TIMING_STORAGE_KEY, JSON.stringify(next))
+  } catch {
+    // Storage is optional.
+  }
+}
+
+function rememberReasoningStart(messageId: string, at = Date.now()): number {
+  const id = String(messageId || '').trim()
+  if (!id) return at
+  const existing = reasoningTimingByMessageId.get(id) || loadReasoningTiming(id)
+  if (existing) {
+    reasoningTimingByMessageId.set(id, existing)
+    return existing.startedAtMs
+  }
+  reasoningTimingByMessageId.set(id, { startedAtMs: at })
+  saveReasoningTiming(id, { startedAtMs: at })
+  if (reasoningTimingByMessageId.size > 1000) {
+    const oldest = reasoningTimingByMessageId.keys().next().value
+    if (oldest) reasoningTimingByMessageId.delete(oldest)
+  }
+  return at
+}
+
+function rememberReasoningEnd(messageId: string, at = Date.now()): number {
+  const id = String(messageId || '').trim()
+  if (!id) return at
+  const existing = reasoningTimingByMessageId.get(id) || loadReasoningTiming(id)
+  const timing = existing || { startedAtMs: at }
+  if (timing.endedAtMs == null) timing.endedAtMs = at
+  reasoningTimingByMessageId.set(id, timing)
+  saveReasoningTiming(id, timing)
+  return timing.endedAtMs
+}
 
 export function emptyAgUiTurnState(runId = '', threadId = ''): AgUiTurnState {
   return {
@@ -575,13 +637,15 @@ function projectCompatSegmentsFromOrder(
       if (sealedMessages && !sealedMessages.has(entry.messageId)) continue
       const text = filterMindMapLeak(msg.content)
       if (!text) {
-        if (includeOpenReasoningSlots && !msg.closed) {
-          segments.push({
+          if (includeOpenReasoningSlots && !msg.closed) {
+            segments.push({
             kind: 'reasoning',
             text: '',
             seq: nextSegSeq(entry),
             id: entry.blockId || entry.messageId,
             blockKind: entry.blockKind || 'reasoning',
+            ...(msg.startedAtMs != null ? { startedAtMs: msg.startedAtMs } : {}),
+            ...(msg.endedAtMs != null ? { endedAtMs: msg.endedAtMs } : {}),
           })
         }
         continue
@@ -592,6 +656,8 @@ function projectCompatSegmentsFromOrder(
         seq: nextSegSeq(entry),
         id: entry.blockId || entry.messageId,
         blockKind: entry.blockKind || 'reasoning',
+        ...(msg.startedAtMs != null ? { startedAtMs: msg.startedAtMs } : {}),
+        ...(msg.endedAtMs != null ? { endedAtMs: msg.endedAtMs } : {}),
       })
     } else if (entry.kind === 'text') {
       const msg = state.messages.get(entry.messageId)
@@ -694,8 +760,12 @@ function resolveLiveAssistantOpenText(state: AgUiTurnState): string {
 
 /** RUN_FINISHED / RUN_ERROR：把仍 open 的正文/思考标为 closed，进入 compatSegments。 */
 export function sealOpenAgUiMessages(state: AgUiTurnState): void {
+  const endedAtMs = Date.now()
   for (const msg of state.messages.values()) {
     if (!msg.closed) msg.closed = true
+    if (msg.role === 'reasoning' && msg.endedAtMs == null) {
+      msg.endedAtMs = rememberReasoningEnd(msg.messageId, endedAtMs)
+    }
   }
 }
 
@@ -866,7 +936,9 @@ export function applyAgUiEvent(state: AgUiTurnState, event: AGUIEvent): AgUiTurn
 
   if (t === EventType.REASONING_START || t === EventType.REASONING_MESSAGE_START) {
     const e = event as { messageId: string }
-    upsertTextMessage(state, e.messageId, 'reasoning')
+    const msg = upsertTextMessage(state, e.messageId, 'reasoning')
+    if (msg.startedAtMs == null) msg.startedAtMs = rememberReasoningStart(e.messageId)
+    msg.closed = false
     insertOrderEntry(state, {
       kind: 'reasoning',
       messageId: e.messageId,
@@ -902,7 +974,10 @@ export function applyAgUiEvent(state: AgUiTurnState, event: AGUIEvent): AgUiTurn
   if (t === EventType.REASONING_MESSAGE_END || t === EventType.REASONING_END) {
     const e = event as { messageId: string }
     const msg = state.messages.get(e.messageId)
-    if (msg) msg.closed = true
+    if (msg) {
+      msg.closed = true
+      if (msg.endedAtMs == null) msg.endedAtMs = rememberReasoningEnd(e.messageId)
+    }
     return syncAgUiCompatProjection(state)
   }
 
@@ -1294,6 +1369,9 @@ export function applyAgUiEvent(state: AgUiTurnState, event: AGUIEvent): AgUiTurn
             ? capStreamTailText(content, STREAM_REASONING_TEXT_CAP)
             : capStreamTailText(content, STREAM_ASSISTANT_BODY_CAP)
         const existing = state.messages.get(targetMessageId)
+        const snapshotReasoningTiming = role === 'reasoning'
+          ? reasoningTimingByMessageId.get(targetMessageId) || reasoningTimingByMessageId.get(messageId)
+          : undefined
         if (existing) {
           // MESSAGES_SNAPSHOT is not guaranteed to contain the full live message.
           // During streaming some bridges emit only the latest tail; replacing the
@@ -1314,12 +1392,22 @@ export function applyAgUiEvent(state: AgUiTurnState, event: AGUIEvent): AgUiTurn
           // that is already open live; TEXT_MESSAGE_END/RUN_FINISHED closes it.
           existing.closed = existing.closed === true
           existing.role = role
+          if (snapshotReasoningTiming) {
+            existing.startedAtMs ??= snapshotReasoningTiming.startedAtMs
+            existing.endedAtMs ??= snapshotReasoningTiming.endedAtMs
+          }
         } else {
           state.messages.set(targetMessageId, {
             messageId: targetMessageId,
             role,
             content: cap,
             closed: true,
+            ...(snapshotReasoningTiming?.startedAtMs != null
+              ? { startedAtMs: snapshotReasoningTiming.startedAtMs }
+              : {}),
+            ...(snapshotReasoningTiming?.endedAtMs != null
+              ? { endedAtMs: snapshotReasoningTiming.endedAtMs }
+              : {}),
           })
         }
       }
