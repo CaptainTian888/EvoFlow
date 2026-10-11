@@ -74,7 +74,35 @@ function mergeSegmentTimeline(
   if (!s.length) return [...a]
   if (assistantTimelineIsPrefixOfStream(a, s)) return [...s]
   if (assistantTimelineIsPrefixOfStream(s, a)) return [...a]
-  return [...a, ...s]
+
+  // Persisted assistant rows and the live AG-UI projection can contain the same
+  // tool round under different reasoning IDs. Concatenating them duplicates the
+  // tool card in one bubble even though tool lists are already ID-deduplicated.
+  // Keep the first timeline position and merge later tool IDs into that segment.
+  const out: MessageSegment[] = []
+  const toolSegmentById = new Map<string, MessageSegment & { kind: 'tools' }>()
+  for (const segment of [...a, ...s]) {
+    if (segment.kind !== 'tools') {
+      out.push({ ...segment })
+      continue
+    }
+    const ids: string[] = []
+    for (const rawId of segment.ids || []) {
+      const id = String(rawId || '').trim()
+      if (!id) continue
+      if (!toolSegmentById.has(id)) ids.push(id)
+    }
+    if (!ids.length) continue
+    const existing = ids.map((id) => toolSegmentById.get(id)).find(Boolean)
+    if (existing) {
+      existing.ids = [...existing.ids, ...ids.filter((id) => !existing.ids.includes(id))]
+      continue
+    }
+    const next = { ...segment, ids } as MessageSegment & { kind: 'tools' }
+    out.push(next)
+    for (const id of ids) toolSegmentById.set(id, next)
+  }
+  return out.length ? out : undefined
 }
 
 function resolveMergedStreamTailDedupeSegments(

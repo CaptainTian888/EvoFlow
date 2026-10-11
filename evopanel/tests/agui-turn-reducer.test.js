@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -25,6 +25,17 @@ function loadGoldenEvents(name) {
     .map((l) => l.trim())
     .filter(Boolean)
     .map((l) => EventSchemas.parse(JSON.parse(l)))
+}
+
+function loadRealSseEvents(logPath) {
+  if (!existsSync(logPath)) return []
+  return readFileSync(logPath, 'utf8')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith('{'))
+    .map((line) => JSON.parse(line))
+    .filter((event) => event && typeof event.type === 'string')
+    .map((event) => EventSchemas.parse(event))
 }
 
 describe('applyAgUiEvent', () => {
@@ -747,6 +758,22 @@ describe('applyAgUiEvent', () => {
     expect(texts[0]).toBe('计划段')
     expect(s.compatSegments.find((seg) => seg.id === 'plan')?.blockKind).toBe('plan_text')
     expect(s.compatSegments.find((seg) => seg.id === 'body')?.blockKind).toBe('body_text')
+  })
+})
+
+describe('real stream replay: run-e137c5407f89', () => {
+  it('keeps the real tool and body timeline unique after snapshot replay', () => {
+    const logPath = 'C:/Users/admin/.evoflow-dev/logs/stream-compare/agent_main_new-decb7590/run-e137c5407f89/sse-recv.log'
+    const events = loadRealSseEvents(logPath)
+    if (!events.length) return
+    const state = replayAgUiEvents(events, 'run-e137c5407f89', 'a36d8e99-b3e6-4445-a135-a73cfa253548')
+    const toolIds = state.order.filter((entry) => entry.kind === 'tool').map((entry) => entry.toolCallId)
+    const textEntries = state.order.filter((entry) => entry.kind === 'text')
+    expect(toolIds).toEqual(['call_e401a661b4e1479ea3f06cc3'])
+    expect(new Set(toolIds).size).toBe(toolIds.length)
+    expect(textEntries).toHaveLength(1)
+    expect(state.messages.size).toBe(3)
+    expect([...state.messages.values()].every((message) => message.closed)).toBe(true)
   })
 })
 

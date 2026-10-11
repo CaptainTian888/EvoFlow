@@ -115,6 +115,29 @@ describe('mergeAssistantRowWithStreamRow', () => {
     expect(merged.segments?.map((s) => s.kind)).toEqual(['text', 'tools', 'tools', 'text'])
   })
 
+  it('deduplicates the same tool id when assistant and live timelines overlap', () => {
+    const merged = mergeAssistantRowWithStreamRow(
+      {
+        role: 'assistant',
+        text: '已查询',
+        segments: [{ kind: 'tools', ids: ['t1'], segIndex: 0 }],
+        tools: [{ id: 't1', name: 'tasks', status: 'running' }],
+        timestamp: 1,
+      },
+      {
+        role: '_stream',
+        text: '已查询',
+        segments: [{ kind: 'tools', ids: ['t1'], segIndex: 0 }],
+        tools: [{ id: 't1', name: 'tasks', status: 'ok' }],
+        aguiTurn: { runId: 'run-x', finished: false },
+        timestamp: 2,
+      },
+    )
+    expect(merged.segments?.filter((segment) => segment.kind === 'tools')).toHaveLength(1)
+    expect(merged.segments?.flatMap((segment) => segment.kind === 'tools' ? segment.ids : [])).toEqual(['t1'])
+    expect(merged.tools?.map((tool) => tool.id)).toEqual(['t1'])
+  })
+
   it('does not drop earlier tools when stream prefix omits a middle tool id', () => {
     const merged = mergeAssistantRowWithStreamRow(
       {
