@@ -1473,8 +1473,14 @@ export const api = {
 
   // ---- Owned knowledge base (local-first, replaces Obsidian as primary) ----
   // 列表读走 preferGatewayHttp，避开聊天/流式占用时的 app-server stdio 排队
-  listOwnedKnowledgeBases: async () =>
-    gatewayProxy('GET', '/knowledge/owned/bases', null, null, { preferGatewayHttp: true }),
+  listOwnedKnowledgeBases: async (opts = {}) =>
+    gatewayProxy(
+      'GET',
+      `/knowledge/owned/bases${opts?.includeHidden ? '?includeHidden=true' : ''}`,
+      null,
+      null,
+      { preferGatewayHttp: true },
+    ),
   createOwnedKnowledgeBase: async (data) => gatewayProxy('POST', '/knowledge/owned/bases', data),
   getOwnedKnowledgeBase: async (id) =>
     gatewayProxy('GET', `/knowledge/owned/bases/${encodeURIComponent(String(id || ''))}`),

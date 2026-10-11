@@ -33,10 +33,9 @@ export function KnowledgeHero({ busy, onCreate }) {
   return (
     <header className="ko-hero">
       <div className="ko-hero__copy">
-        <p className="ko-hub-brand">EvoFlow · Knowledge</p>
         <h1 data-testid="ko-page-title">知识库</h1>
         <p className="ko-hero__sub">
-          本地优先的文档资产：上传即索引，阅读 / 概览 / 问 AI 一体完成。
+          把会被反复使用的资料放进来，让员工回答时有据可查。上传后先验证检索结果，再绑定到员工或任务。
         </p>
       </div>
       <div className="ko-hero__right">
@@ -98,24 +97,40 @@ function StatCard({ icon: Icon, label, value, hint }) {
 }
 
 export function KnowledgeStats({ bases, docCounts }) {
-  const totalDocs = useMemo(
-    () => Object.values(docCounts || {}).reduce((sum, n) => sum + (Number(n) || 0), 0),
-    [docCounts]
-  );
+  const summary = useMemo(() => {
+    return (bases || []).reduce(
+      (acc, base) => {
+        const health = base.documentHealth || {};
+        acc.total += Number(docCounts?.[base.id] ?? base.documentCount ?? 0) || 0;
+        acc.ready += Number(health.ready) || 0;
+        acc.processing += (Number(health.pending) || 0) + (Number(health.processing) || 0);
+        acc.failed += Number(health.failed) || 0;
+        return acc;
+      },
+      { total: 0, ready: 0, processing: 0, failed: 0 },
+    );
+  }, [bases, docCounts]);
   const localCount = (bases || []).filter((b) => b.embeddingMode === "local").length;
-  const health = KB_UI_PLACEHOLDERS.healthScore;
+  const health = summary.total ? Math.round((summary.ready / summary.total) * 100) : 0;
+  const healthHint = summary.failed
+    ? `${summary.failed} 个文档需要处理`
+    : summary.processing
+      ? `${summary.processing} 个文档正在索引`
+      : summary.total
+        ? "全部文档可检索"
+        : "上传资料后开始计算";
 
   return (
     <div className="ko-stats" data-testid="ko-stats">
-      <StatCard icon={Database} label="知识库" value={bases?.length ?? 0} hint="本地资产" />
-      <StatCard icon={FileText} label="文档总量" value={totalDocs} hint="已索引文件" />
-      <StatCard icon={HardDrive} label="本地嵌入" value={localCount} hint="embeddingMode=local" />
-      <StatCard icon={Sparkles} label="健康度" value={`${health}%`} hint={KB_UI_PLACEHOLDERS.healthLabel} />
+      <StatCard icon={Database} label="知识库" value={bases?.length ?? 0} hint="按用途组织资料" />
+      <StatCard icon={FileText} label="文档总量" value={summary.total} hint={`${summary.ready} 个已可检索`} />
+      <StatCard icon={HardDrive} label="处理中" value={summary.processing} hint={summary.failed ? `${summary.failed} 个失败` : "等待完成后可问答"} />
+      <StatCard icon={Sparkles} label="可用度" value={`${health}%`} hint={healthHint} />
     </div>
   );
 }
 
-function KnowledgeListItem({ base, docCount, busy, onOpen, onDelete, onRename, onSettings, onRevealDir }) {
+function KnowledgeListItem({ base, docCount, busy, onOpen, onDelete, onRename, onSettings, onRevealDir, onToggleHidden }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef(null);
 
@@ -128,7 +143,19 @@ function KnowledgeListItem({ base, docCount, busy, onOpen, onDelete, onRename, o
     return () => document.removeEventListener("mousedown", onDoc);
   }, [menuOpen]);
 
-  const status = base.syncSourceType ? "synced" : "ready";
+  const health = base.documentHealth || {};
+  const total = Number(docCount ?? base.documentCount ?? 0) || 0;
+  const failed = Number(health.failed) || 0;
+  const processing = (Number(health.pending) || 0) + (Number(health.processing) || 0);
+  const ready = Number(health.ready) || 0;
+  const status = failed ? "attention" : processing ? "processing" : total && ready === total ? "ready" : "empty";
+  const statusLabel = failed
+    ? `${failed} 个文档失败`
+    : processing
+      ? `${processing} 个文档处理中`
+      : total
+        ? `${ready} 个文档可检索`
+        : "等待上传资料";
 
   return (
     <li className="ko-data-list__item">
@@ -140,10 +167,14 @@ function KnowledgeListItem({ base, docCount, busy, onOpen, onDelete, onRename, o
           <div className="ko-data-list__title-row">
             <strong>{base.name}</strong>
             {base.builtin ? <span className="ko-badge is-builtin">内置</span> : null}
-            <span className={`ko-status-dot is-${status}`} title={status === "synced" ? "已绑定同步源" : "已就绪"} />
+            {base.hidden ? <span className="ko-badge is-hidden">已停用</span> : null}
+            <span className={`ko-status-dot is-${status}`} title={statusLabel} />
           </div>
           <span className="ko-data-list__desc">
-            {base.description || "本地知识库 · 可检索 / Wiki / 图谱"}
+            {base.description || "本地资料库 · 上传后可检索、问答和阅读"}
+          </span>
+          <span className={`ko-data-list__health is-${status}`}>
+            {status === "attention" ? "需要处理失败文档" : status === "processing" ? "资料正在建立索引" : status === "empty" ? "下一步：上传第一份资料" : "可以开始搜索或问 AI"}
           </span>
         </div>
         <div className="ko-data-list__meta">
@@ -231,6 +262,19 @@ function KnowledgeListItem({ base, docCount, busy, onOpen, onDelete, onRename, o
                 删除
               </button>
             )}
+            {base.builtin ? (
+              <button
+                disabled={busy}
+                onClick={() => {
+                  setMenuOpen(false);
+                  onToggleHidden?.(base, !base.hidden);
+                }}
+                role="menuitem"
+                type="button"
+              >
+                {base.hidden ? "恢复显示" : "停用（隐藏）"}
+              </button>
+            ) : null}
           </div>
         ) : null}
       </div>
@@ -248,7 +292,7 @@ function formatShortDate(iso) {
   }
 }
 
-export function KnowledgeList({ bases, docCounts, busy, onOpen, onDelete, onRename, onSettings, onRevealDir }) {
+export function KnowledgeList({ bases, docCounts, busy, onOpen, onDelete, onRename, onSettings, onRevealDir, onToggleHidden }) {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(() => readStoredPageSize(OWNED_KB_PAGE_SIZE_KEY));
   const baseKey = (bases || []).map((b) => b.id).join("|");
@@ -279,6 +323,7 @@ export function KnowledgeList({ bases, docCounts, busy, onOpen, onDelete, onRena
             onRename={onRename}
             onSettings={onSettings}
             onRevealDir={onRevealDir}
+            onToggleHidden={onToggleHidden}
           />
         ))}
       </ul>
@@ -335,9 +380,9 @@ export function KnowledgeList({ bases, docCounts, busy, onOpen, onDelete, onRena
   );
 }
 
-function InsightHealth({ score, label, hints }) {
+function InsightHealth({ score, label, hints, tone }) {
   return (
-    <section className="ko-insight-card">
+    <section className={`ko-insight-card ko-insight-card--health is-${tone || "ok"}`}>
       <header className="ko-insight-card__head">
         <Sparkles size={16} aria-hidden="true" />
         <h3>健康度</h3>
@@ -347,8 +392,10 @@ function InsightHealth({ score, label, hints }) {
         <span>{label}</span>
       </div>
       <ul className="ko-insight-hints">
-        {(hints || []).map((h) => (
-          <li key={h}>{h}</li>
+        {(hints || []).map((h, i) => (
+          <li key={`${h}-${i}`} className={`ko-insight-hint is-${h.kind || "ok"}`}>
+            {h.text}
+          </li>
         ))}
       </ul>
     </section>
@@ -446,14 +493,24 @@ function InsightActivity({ items, onOpen }) {
   );
 }
 
-export function KnowledgeInsights({ onAssistantPrompt, onOpen, activities }) {
-  const ph = KB_UI_PLACEHOLDERS;
+export function KnowledgeInsights({ onAssistantPrompt, onOpen, activities, bases }) {
+  // Aggregate real health across all bases instead of using the hard-coded
+  // `KB_UI_PLACEHOLDERS.healthScore` (which used to show 86 / 92 even when
+  // the banner said "失败 432").
+  const agg = useMemo(() => aggregateBasesHealth(bases || []), [bases]);
+  const trend = (KB_UI_PLACEHOLDERS && KB_UI_PLACEHOLDERS.visitTrend) || [];
+  const prompts = (KB_UI_PLACEHOLDERS && KB_UI_PLACEHOLDERS.assistantPrompts) || [];
   return (
     <aside className="ko-insights" data-testid="ko-insights">
-      <InsightHealth score={ph.healthScore} label={ph.healthLabel} hints={ph.healthHints} />
-      <InsightTrend data={ph.visitTrend} />
+      <InsightHealth
+        score={agg.score}
+        label={agg.label}
+        hints={agg.hints}
+        tone={agg.tone}
+      />
+      <InsightTrend data={trend} />
       <InsightActivity items={activities} onOpen={onOpen} />
-      <InsightAssistant prompts={ph.assistantPrompts} onPrompt={onAssistantPrompt} />
+      <InsightAssistant prompts={prompts} onPrompt={onAssistantPrompt} />
     </aside>
   );
 }
@@ -473,6 +530,9 @@ export function KnowledgeHubLayout({
   onSettings,
   onRevealDir,
   onAssistantPrompt,
+  onToggleHidden,
+  showHidden,
+  onToggleShowHidden,
 }) {
   const [insightsOpen, setInsightsOpen] = useState(false);
   const [activities, setActivities] = useState([]);
@@ -496,6 +556,14 @@ export function KnowledgeHubLayout({
     <div className={`ko-hub${insightsOpen ? " is-insights-open" : ""}`}>
       <KnowledgeHero busy={busy} onCreate={onCreate} />
       <div className="ko-hub__toolbar">
+        <button
+          className="ko-btn ghost"
+          onClick={onToggleShowHidden}
+          title="显示已停用（隐藏）的知识库"
+          type="button"
+        >
+          {showHidden ? "隐藏已停用" : "显示已停用"}
+        </button>
         <button
           className="ko-btn ghost ko-hub__insights-toggle"
           onClick={() => setInsightsOpen((v) => !v)}
@@ -521,6 +589,7 @@ export function KnowledgeHubLayout({
                 onRename={onRename}
                 onSettings={onSettings}
                 onRevealDir={onRevealDir}
+                onToggleHidden={onToggleHidden}
               />
             </>
           ) : (
@@ -544,6 +613,7 @@ export function KnowledgeHubLayout({
             />
             <KnowledgeInsights
               activities={activities}
+              bases={bases}
               onAssistantPrompt={onAssistantPrompt}
               onOpen={onOpen}
             />
@@ -552,4 +622,73 @@ export function KnowledgeHubLayout({
       </div>
     </div>
   );
+}
+
+/**
+ * Aggregate real KB health from the list payload.
+ *
+ * Each base carries `documentHealth = {ready, pending, processing, failed}`
+ * (filled by `owned_service._document_health_by_kb`). Combined with the
+ * visible failed documents, this gives a defensible number to render in
+ * the hub side panel.
+ *
+ * Returns: { score (0-100 int), label (cn), tone: ok|warn|err, hints: [{kind,text}] }
+ */
+function aggregateBasesHealth(bases) {
+  let ready = 0;
+  let pending = 0;
+  let processing = 0;
+  let failed = 0;
+  let hidden = 0;
+  for (const b of bases || []) {
+    if (b && b.hidden) hidden += 1;
+    const h = b && b.documentHealth;
+    if (!h) continue;
+    ready += Number(h.ready || 0);
+    pending += Number(h.pending || 0);
+    processing += Number(h.processing || 0);
+    failed += Number(h.failed || 0);
+  }
+  const total = ready + pending + processing + failed;
+  if (total === 0) {
+    return {
+      score: 100,
+      label: "尚未上传",
+      tone: "ok",
+      hints: [{ kind: "ok", text: "还没有文档，上传后会显示真实健康度" }],
+    };
+  }
+  const readyRatio = ready / total;
+  let score = Math.round(readyRatio * 100);
+  let label = "健康";
+  if (failed > 0) {
+    score = Math.max(0, score - Math.min(40, failed * 4));
+    label = failed > total / 2 ? "大量失败" : "部分失败";
+  }
+  if (pending + processing > 0) {
+    score = Math.max(0, score - Math.min(20, (pending + processing) * 2));
+    if (label === "健康") label = "索引中";
+  }
+  const hints = [];
+  if (failed > 0) {
+    hints.push({
+      kind: "err",
+      text: `${failed} 篇文档解析失败，查看对应知识库的「索引状态」可重试`,
+    });
+  } else {
+    hints.push({ kind: "ok", text: `没有失败文档（${ready}/${total} 已就绪）` });
+  }
+  if (pending + processing > 0) {
+    hints.push({
+      kind: "warn",
+      text: `${pending + processing} 篇正在处理，等索引完成会回到 100`,
+    });
+  } else {
+    hints.push({ kind: "ok", text: "所有文档已完成解析" });
+  }
+  if (hidden > 0) {
+    hints.push({ kind: "warn", text: `另有 ${hidden} 个已停用知识库未计入` });
+  }
+  const tone = score >= 85 ? "ok" : score >= 60 ? "warn" : "err";
+  return { score, label, tone, hints: hints.slice(0, 3) };
 }

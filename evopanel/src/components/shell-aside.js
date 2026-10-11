@@ -479,10 +479,12 @@ export function initShellAside(el) {
         <span class="react-chat-aside-nav-label">员工</span>
       </button>
       <div class="shell-aside-nav-more" data-shell-nav-more>
-        <button type="button" class="react-chat-aside-nav-item shell-aside-nav-more-toggle" data-shell-nav-more-toggle title="更多" aria-expanded="false" aria-controls="shell-nav-more-body">
-          <span class="react-chat-aside-nav-ic" aria-hidden>${_lucide('moreHorizontal')}</span>
-          <span class="react-chat-aside-nav-label">更多</span>
-          <span class="shell-aside-nav-more-chevron" aria-hidden="true">${_lucide('chevronRight', 12, 1.5)}</span>
+        <button type="button" class="shell-aside-nav-more-toggle" data-shell-nav-more-toggle title="更多" aria-expanded="false" aria-controls="shell-nav-more-body">
+          <span class="shell-aside-nav-more-line" aria-hidden="true"></span>
+          <span class="shell-aside-nav-more-toggle-inner">
+            <span class="shell-aside-nav-more-chevron" aria-hidden="true">${_lucide('chevronRight', 10, 1.75)}</span>
+          </span>
+          <span class="shell-aside-nav-more-line" aria-hidden="true"></span>
         </button>
         <div class="shell-aside-nav-more-body" id="shell-nav-more-body" role="group" aria-label="更多导航">
           <button type="button" class="react-chat-aside-nav-item" data-shell-nav="/expert" title="智能体 · 能力模板">

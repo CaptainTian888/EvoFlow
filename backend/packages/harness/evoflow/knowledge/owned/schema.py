@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = "11"
+SCHEMA_VERSION = "12"
 
 DDL = """
 CREATE TABLE IF NOT EXISTS kb_schema_meta (
@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS kb_bases (
   graph_enabled           INTEGER NOT NULL DEFAULT 0,
   summary_enabled         INTEGER NOT NULL DEFAULT 1,
   image_caption_enabled   INTEGER NOT NULL DEFAULT 0,
+  hidden                  INTEGER NOT NULL DEFAULT 0,
   sync_source_type        TEXT NOT NULL DEFAULT '',
   sync_source_path        TEXT NOT NULL DEFAULT '',
   sync_vault_id           TEXT NOT NULL DEFAULT '',
@@ -645,6 +646,9 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         ("sync_vault_id", "TEXT NOT NULL DEFAULT ''"),
         ("last_synced_at", "TEXT"),
         ("embedding_model_ref", "TEXT NOT NULL DEFAULT ''"),
+        # User-level soft "停用/忽略": hidden bases keep syncing but stay out of
+        # the default list (used for builtin KBs that can't be deleted).
+        ("hidden", "INTEGER NOT NULL DEFAULT 0"),
         ("org_id", "TEXT"),
         ("owner_scope_id", "TEXT"),
         ("created_by", "TEXT"),

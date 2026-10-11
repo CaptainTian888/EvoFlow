@@ -7839,8 +7839,10 @@ export default function ChatApp() {
           try {
             const ev = JSON.parse(String(dataJson || '{}'))
             if (String(ev?.type || '').trim() !== 'panel:session_upserted') return
+            // 单源触发:一条 upserted 只 schedule 一次。listener 路径已统一走
+            // scheduleRefreshSessions(150) (useSessionList.ts onSessionsMutated),
+            // 这里不再 dispatch 自定义事件,避免双触发放大成两轮 refresh。
             scheduleRefreshSessionsRef.current?.(250)
-            window.dispatchEvent(new CustomEvent('evopanel:shell-sessions-mutated'))
           } catch {
             /* ignore */
           }

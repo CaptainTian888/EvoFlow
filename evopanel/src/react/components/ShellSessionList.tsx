@@ -290,6 +290,10 @@ export function ShellSessionList({
   /** 员工 Tab：下拉选中的员工 code；空 = 全部员工 */
   const [focusedEmployeeCode, setFocusedEmployeeCode] = useState<string | null>(null)
   const [empMenuOpen, setEmpMenuOpen] = useState(false)
+  /** 工作空间下拉内的模糊搜索词（仅过滤下拉面板，不影响会话列表搜索） */
+  const [wsMenuQuery, setWsMenuQuery] = useState('')
+  /** 员工下拉内的模糊搜索词 */
+  const [empMenuQuery, setEmpMenuQuery] = useState('')
   const [dutyFoldOpen, setDutyFoldOpen] = useState(false)
   const [pinnedWorkspaceKeys, setPinnedWorkspaceKeys] = useState<string[]>(() =>
     loadPinnedWorkspaceKeys(),
@@ -308,6 +312,8 @@ export function ShellSessionList({
   const filterInputRef = useRef<HTMLInputElement>(null)
   const wsMenuRef = useRef<HTMLDivElement>(null)
   const empMenuRef = useRef<HTMLDivElement>(null)
+  const wsMenuSearchRef = useRef<HTMLInputElement>(null)
+  const empMenuSearchRef = useRef<HTMLInputElement>(null)
   const loadMoreLockRef = useRef<Record<string, boolean>>({})
   const autoTabForSessionRef = useRef('')
   const onWorkspaceExpandRef = useRef(onWorkspaceExpand)
@@ -463,8 +469,27 @@ export function ShellSessionList({
     })
   }, [groups])
 
+  /** 下拉面板内的模糊匹配：忽略大小写，支持分隔符互通（与列表搜索口径一致） */
+  const menuQueryHit = useCallback((query: string, ...fields: Array<string | null | undefined>) => {
+    const q = String(query || '').trim().toLowerCase()
+    if (!q) return true
+    const norm = (v: unknown) => String(v ?? '').toLowerCase().replace(/[-_]/g, '')
+    const nq = norm(q)
+    return fields.some((f) => {
+      const s = norm(f)
+      return !!s && s.includes(nq)
+    })
+  }, [])
+
+  /** 工作空间下拉：按 label / path 过滤（「添加」「全部」固定项不受影响） */
+  const workspaceMenuOptions = useMemo(
+    () => workspaceFilterOptions.filter((g) => menuQueryHit(wsMenuQuery, g.label, g.path, g.workspaceKey)),
+    [workspaceFilterOptions, wsMenuQuery, menuQueryHit],
+  )
+
   const selectWorkspaceFilter = useCallback(
     (group: ShellWorkspaceGroup | null) => {
+      setWsMenuQuery('')
       if (!group) {
         setFocusedWorkspaceKey(null)
         onWorkspaceFocus?.(null)
@@ -504,6 +529,19 @@ export function ShellSessionList({
       document.removeEventListener('keydown', onKey)
     }
   }, [wsMenuOpen])
+
+  /** 下拉面板开合：打开时聚焦搜索框（关闭时由 select* / 添加 等出口就地清词） */
+  useEffect(() => {
+    if (!wsMenuOpen) return
+    const t = window.setTimeout(() => wsMenuSearchRef.current?.focus(), 0)
+    return () => window.clearTimeout(t)
+  }, [wsMenuOpen])
+
+  useEffect(() => {
+    if (!empMenuOpen) return
+    const t = window.setTimeout(() => empMenuSearchRef.current?.focus(), 0)
+    return () => window.clearTimeout(t)
+  }, [empMenuOpen])
 
   useEffect(() => {
     const onExpandWorkspace = (ev: Event) => {
@@ -771,6 +809,19 @@ export function ShellSessionList({
 
   const employeeFilterLabel = focusedEmployeeGroup?.label || '全部员工'
 
+  /** 员工下拉：按岗位名 / agent_code / 花名册姓名过滤（「全部员工」固定项不受影响） */
+  const employeeMenuOptions = useMemo(() => {
+    if (!String(empMenuQuery || '').trim()) return employeeGroups
+    return employeeGroups.filter((g) => {
+      const code = g.agentCode.toLowerCase()
+      const roles = (effectiveEmployeeRoles || []).filter(
+        (role) => String(role.agent_code || '').trim().toLowerCase() === code,
+      )
+      const roleFields = roles.flatMap((role) => [role.agent_name, role.role_name])
+      return menuQueryHit(empMenuQuery, g.label, g.agentCode, ...roleFields)
+    })
+  }, [employeeGroups, empMenuQuery, effectiveEmployeeRoles, menuQueryHit])
+
   const employeeSessionRows = useMemo(() => {
     if (!isEmployeesTab) return [] as ShellSidebarSyncRow[]
     if (focusedEmployeeCode) {
@@ -838,6 +889,7 @@ export function ShellSessionList({
 
   const selectEmployeeFilter = useCallback((code: string | null) => {
     setFocusedEmployeeCode(code ? String(code).trim() || null : null)
+    setEmpMenuQuery('')
     setEmpMenuOpen(false)
     setDutyFoldOpen(false)
   }, [])
@@ -1067,11 +1119,29 @@ export function ShellSessionList({
             </button>
             {wsMenuOpen ? (
               <div className="react-chat-aside-ws-menu" role="listbox" aria-label="选择工作空间">
+                <div className="react-chat-aside-ws-menu-search">
+                  <input
+                    ref={wsMenuSearchRef}
+                    type="search"
+                    className="react-chat-aside-ws-menu-search-input"
+                    placeholder="搜索工作空间…"
+                    aria-label="搜索工作空间"
+                    value={wsMenuQuery}
+                    onChange={(e) => setWsMenuQuery(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Escape') {
+                        e.stopPropagation()
+                        setWsMenuQuery('')
+                      }
+                    }}
+                  />
+                </div>
                 {onNewWorkspace ? (
                   <button
                     type="button"
                     className="react-chat-aside-ws-menu-item react-chat-aside-ws-menu-item--add"
                     onClick={() => {
+                      setWsMenuQuery('')
                       setWsMenuOpen(false)
                       onNewWorkspace()
                     }}
@@ -1089,7 +1159,7 @@ export function ShellSessionList({
                 >
                   <span className="react-chat-aside-ws-menu-item-label">全部工作空间</span>
                 </button>
-                {workspaceFilterOptions.map((g) => {
+                {workspaceMenuOptions.map((g) => {
                   const active =
                     !!focusedWorkspaceKey &&
                     normalizePinKey(focusedWorkspaceKey) === normalizePinKey(g.workspaceKey)
@@ -1108,6 +1178,7 @@ export function ShellSessionList({
                         e.stopPropagation()
                         setContextMenu(null)
                         onMoreMenuClose()
+                        setWsMenuQuery('')
                         setWsMenuOpen(false)
                         setWorkspaceContextMenu({
                           workspaceKey: g.workspaceKey,
@@ -1123,6 +1194,9 @@ export function ShellSessionList({
                     </button>
                   )
                 })}
+                {String(wsMenuQuery || '').trim() && workspaceMenuOptions.length === 0 ? (
+                  <div className="react-chat-aside-ws-menu-empty">无匹配工作空间</div>
+                ) : null}
               </div>
             ) : null}
           </div>
@@ -1154,6 +1228,23 @@ export function ShellSessionList({
             </button>
             {empMenuOpen ? (
               <div className="react-chat-aside-ws-menu" role="listbox" aria-label="选择员工">
+                <div className="react-chat-aside-ws-menu-search">
+                  <input
+                    ref={empMenuSearchRef}
+                    type="search"
+                    className="react-chat-aside-ws-menu-search-input"
+                    placeholder="搜索员工…"
+                    aria-label="搜索员工"
+                    value={empMenuQuery}
+                    onChange={(e) => setEmpMenuQuery(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Escape') {
+                        e.stopPropagation()
+                        setEmpMenuQuery('')
+                      }
+                    }}
+                  />
+                </div>
                 <button
                   type="button"
                   role="option"
@@ -1163,7 +1254,7 @@ export function ShellSessionList({
                 >
                   <span className="react-chat-aside-ws-menu-item-label">全部员工</span>
                 </button>
-                {employeeGroups.map((g) => {
+                {employeeMenuOptions.map((g) => {
                   const active =
                     !!focusedEmployeeCode &&
                     focusedEmployeeCode.toLowerCase() === g.agentCode.toLowerCase()
@@ -1190,6 +1281,9 @@ export function ShellSessionList({
                     </button>
                   )
                 })}
+                {String(empMenuQuery || '').trim() && employeeMenuOptions.length === 0 ? (
+                  <div className="react-chat-aside-ws-menu-empty">无匹配员工</div>
+                ) : null}
               </div>
             ) : null}
           </div>

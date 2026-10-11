@@ -89,6 +89,100 @@ export function estimateDocStats(markdown, doc) {
   return { chars, words, minutes, updated, source };
 }
 
+/**
+ * Compute a doc-level "knowledge health" score and a list of plain-language
+ * hints from the real document + job state.
+ *
+ * Replaces the old hard-coded `KB_UI_PLACEHOLDERS.detailHealthScore` (always 92)
+ * which was inconsistent with the live `jobStats` banner ("失败 432" etc.).
+ *
+ * The score is intentionally a per-doc snapshot, not a KB aggregate: this card
+ * is the right-side rail of one document. The hints surface concrete actions
+ * the user can take (reindex, refresh, view errors) when something is off.
+ */
+export function computeDocHealth(doc, jobStats) {
+  const hints = [];
+  const parseStatus = String(doc?.parseStatus || "").toLowerCase();
+  const indexStatus = String(doc?.indexStatus || "").toLowerCase();
+  const vectorStatus = String(doc?.vectorStatus || "").toLowerCase();
+  const keywordStatus = String(doc?.keywordStatus || "").toLowerCase();
+  const chunkCount = Number(doc?.chunkCount || 0);
+  const docError = String(doc?.errorMessage || doc?.indexError || "").trim();
+
+  const errorJobs = Number(jobStats?.error || 0);
+  const pendingJobs = Number(jobStats?.pendingDocs || 0);
+  const runningJobs = Number((jobStats?.running || 0) + (jobStats?.queued || 0));
+
+  let score = 100;
+  let label = "健康";
+
+  // Hard failure: the doc itself failed parse / index.
+  if (parseStatus === "failed" || indexStatus === "failed" || vectorStatus === "failed") {
+    score -= 55;
+    label = "需修复";
+    hints.push({
+      kind: "err",
+      text: docError
+        ? `文档解析失败：${docError.slice(0, 80)}`
+        : "文档解析失败，建议在文档列表里点「重新索引」",
+    });
+  } else if (parseStatus === "processing" || parseStatus === "pending") {
+    score -= 25;
+    label = "索引中";
+    hints.push({ kind: "warn", text: "文档正在解析，索引完成后问答可命中" });
+  } else if (parseStatus === "completed" && chunkCount === 0) {
+    score -= 30;
+    label = "需重新索引";
+    hints.push({ kind: "err", text: "解析完成但没有生成切片，建议重建索引" });
+  } else if (parseStatus === "completed" || parseStatus === "") {
+    // Per-channel checks only meaningful when the doc is otherwise ready.
+    if (vectorStatus === "degraded" || vectorStatus === "partial") {
+      score -= 15;
+      label = "部分索引";
+      hints.push({ kind: "warn", text: "向量索引覆盖不全，部分检索会降级" });
+    } else if (vectorStatus === "failed" && keywordStatus !== "ready") {
+      score -= 25;
+      label = "需修复";
+      hints.push({ kind: "err", text: "向量与关键词索引都失败，问答无法命中" });
+    }
+  }
+
+  // KB-level job queue: errors are real (no longer hard-coded to 0).
+  if (errorJobs > 0) {
+    score -= Math.min(30, Math.round(Math.log10(errorJobs + 1) * 12) + (errorJobs > 0 ? 8 : 0));
+    if (label === "健康") label = "部分失败";
+    hints.push({
+      kind: "err",
+      text: `知识库有 ${errorJobs} 个失败任务，可在「索引状态」弹窗看错误`,
+    });
+  }
+  if (runningJobs > 0 || pendingJobs > 0) {
+    score -= Math.min(10, runningJobs + pendingJobs);
+    if (label === "健康") label = "索引中";
+    hints.push({
+      kind: "warn",
+      text: `当前还有 ${runningJobs} 个任务在跑、${pendingJobs} 篇待解析`,
+    });
+  }
+
+  // Healthy branches.
+  if (hints.length === 0) {
+    hints.push({ kind: "ok", text: `文档已成功索引（${chunkCount} 个切片）` });
+    hints.push({ kind: "ok", text: "向量与关键词索引都在线" });
+  } else {
+    // Always append a forward-looking positive hint when state isn't fully broken.
+    if (score >= 70) {
+      hints.push({ kind: "ok", text: "可正常检索与问答" });
+    } else {
+      hints.push({ kind: "warn", text: "修复后建议再跑一次回归检索" });
+    }
+  }
+
+  score = Math.max(0, Math.min(100, Math.round(score)));
+  const tone = score >= 85 ? "ok" : score >= 60 ? "warn" : "err";
+  return { score, label, tone, hints: hints.slice(0, 3) };
+}
+
 export function DocumentHero({ title, content, summary }) {
   const meta = useMemo(() => parseHeroTitle(title), [title]);
   const desc = useMemo(
@@ -330,6 +424,7 @@ export function KnowledgeRailCards({
   onOpenRelated,
   docLinks,
   contentText,
+  jobStats,
   kbId,
 }) {
   const [activities, setActivities] = useState([]);
@@ -361,7 +456,7 @@ export function KnowledgeRailCards({
 
   if (!doc) return null;
   const stats = estimateDocStats(contentText || doc.content || "", doc);
-  const health = KB_UI_PLACEHOLDERS.detailHealthScore ?? 92;
+  const healthInfo = computeDocHealth(doc, jobStats);
   const text = String(doc.summaryText || "").trim();
   const status = String(doc.summaryStatus || "");
   const busy = summaryBusy || status === "pending" || status === "processing";
@@ -388,14 +483,19 @@ export function KnowledgeRailCards({
 
   return (
     <div className="ko-rail-stack" data-testid="ko-overview-rail-stack">
-      <section className="ko-rail-card">
+      <section className={`ko-rail-card ko-rail-card--health is-${healthInfo.tone || "ok"}`}>
         <header className="ko-rail-card__head">
           <h3>知识健康度</h3>
         </header>
-        <CircularGauge value={health} label="分" />
+        <CircularGauge value={healthInfo.score} label={healthInfo.label} />
         <ul className="ko-rail-hints">
-          {(KB_UI_PLACEHOLDERS.healthHints || []).slice(0, 3).map((h) => (
-            <li key={h}>{h}</li>
+          {healthInfo.hints.map((h, idx) => (
+            <li
+              key={`${h.kind}-${idx}`}
+              className={`ko-rail-hint is-${h.kind}`}
+            >
+              {h.text}
+            </li>
           ))}
         </ul>
       </section>
@@ -405,6 +505,12 @@ export function KnowledgeRailCards({
           <h3>文档信息</h3>
         </header>
         <dl className="ko-rail-meta">
+          <div>
+            <dt>文件</dt>
+            <dd className="ko-rail-meta__file" title={doc?.fileName || ""}>
+              {doc?.fileName || "—"}
+            </dd>
+          </div>
           <div>
             <dt>更新时间</dt>
             <dd>{stats.updated}</dd>
@@ -433,12 +539,12 @@ export function KnowledgeRailCards({
         ) : null}
         {text ? (
           <p className="ko-rail-summary">{text}</p>
-        ) : summaryEnabled ? (
+        ) : (
           <button className="ko-btn primary" disabled={busy} onClick={onGenerate} type="button">
             {busy ? "生成中…" : "生成概览"}
           </button>
-        ) : null}
-        {text && summaryEnabled ? (
+        )}
+        {text ? (
           <button className="ko-btn ghost" disabled={busy} onClick={onForce} type="button">
             重新生成摘要
           </button>

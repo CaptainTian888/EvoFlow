@@ -121,6 +121,18 @@ def job_stats(kb_id: str) -> dict[str, Any]:
             """,
             (kb_id,),
         ).fetchall()
+        error_rows = conn.execute(
+            """
+            SELECT id, doc_id, type, state, attempts, max_attempts,
+                   error_message, updated_at, finished_at
+            FROM kb_jobs
+            WHERE kb_id=? AND state='error' AND COALESCE(error_message, '') <> ''
+            ORDER BY COALESCE(finished_at, updated_at, created_at) DESC
+            LIMIT 20
+            """
+            ,
+            (kb_id,),
+        ).fetchall()
     # Document rows are KB-local; the job queue above is central.
     pending_docs = 0
     try:
@@ -144,6 +156,7 @@ def job_stats(kb_id: str) -> dict[str, Any]:
         "error": by_state.get("error", 0),
         "pendingDocs": int(pending_docs or 0),
         "active": by_state.get("queued", 0) + by_state.get("running", 0),
+        "errors": [_job_row(row) for row in error_rows],
     }
 
 

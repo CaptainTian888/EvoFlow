@@ -100,13 +100,13 @@
 }
 
 #content .ko-hero {
-  padding: 0 0 12px;
-  border-bottom: 1px solid var(--ko-line-soft, var(--border-primary));
+  padding: 0;
+  border-bottom: 0;
 }
 
 #content .ko-hero__copy h1,
 #content .ko-hub-head__copy h1 {
-  margin: 0 0 6px;
+  margin: 0;
   font-family: var(--ko-font-display, var(--font-sans));
   font-size: var(--ef-module-title-size);
   font-weight: var(--ef-module-title-weight);
@@ -115,12 +115,13 @@
   color: var(--text-primary, var(--ko-text));
 }
 
+/* 描述：单行不折行，宽度跟随容器（充分利用横向空间） */
 #content .ko-hero__sub,
 #content .ko-hub-head__copy .ko-topbar__sub {
-  margin: 0;
-  max-width: 40em;
+  margin: 3px 0 0;
+  max-width: 100%;
   font-size: var(--ef-module-desc-size);
-  line-height: 1.55;
+  line-height: 1.45;
   color: var(--ko-muted, var(--text-tertiary));
 }
 

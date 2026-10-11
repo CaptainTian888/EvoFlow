@@ -523,6 +523,13 @@ html[data-theme='dark'] .react-chat-aside-brand-logo {
   background: var(--shell-border, #e9ebf2);
 }
 
+/* 当「更多」组展开时，「扩展应用」会成为一级导航的最后一项，
+   它底下的 .shell-aside-nav-divider 看起来像「扩展应用」自己带了一条线。
+   这种情况下把分隔线藏掉，让扩展应用与「最近」直接相邻，视觉上更干净。 */
+.shell-aside-nav-more.is-expanded ~ .shell-aside-nav-divider {
+  display: none;
+}
+
 .react-chat-aside-nav-item {
   position: relative;
   display: flex;
@@ -610,42 +617,98 @@ html[data-theme='dark'] .react-chat-aside-brand-logo {
 }
 
 /* 「更多」折叠组：默认收起自动化 / 知识库 / 扩展应用 */
+/* 改造成一个紧凑的小箭头按钮（不要左右两条线），点击展开/收起。
+   整体高度小，让「员工」与第一个子项之间尽量紧凑。 */
 .shell-aside-nav-more {
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 2px;
   min-width: 0;
 }
 
 .shell-aside-nav-more-toggle {
   position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  height: 16px;          /* 紧凑高度，仅容纳小箭头 */
+  padding: 0;
+  margin: 0 0 2px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: var(--shell-text-weak, #9ca2b3);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  user-select: none;
+  transition: color 140ms ease, background-color 140ms ease;
+}
+
+.shell-aside-nav-more-toggle:hover {
+  color: var(--text-secondary, #4a4f5a);
+  background: color-mix(in srgb, var(--shell-text, #202124) 5%, transparent);
+}
+
+/* 左右两条极淡的折叠分隔线：默认 25% 不透明度，比之前 65% 更弱 */
+.shell-aside-nav-more-line {
+  flex: 1 1 auto;
+  height: 1px;
+  background: color-mix(in srgb, var(--shell-text-weak, #9ca2b3) 25%, transparent);
+  border-radius: 1px;
+  transition: background-color 160ms ease;
+}
+
+.shell-aside-nav-more-toggle:hover .shell-aside-nav-more-line {
+  background: color-mix(in srgb, var(--shell-text-weak, #9ca2b3) 55%, transparent);
+}
+
+/* 折叠按钮的命中区很窄——让可点击区域可视化时小一点（hover 高亮只在图标周围） */
+.shell-aside-nav-more-toggle:hover .shell-aside-nav-more-chevron {
+  background: transparent;
+  border-radius: 3px;
+}
+
+.shell-aside-nav-more-toggle-inner {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  flex: 0 0 auto;
+  padding: 0;
+  white-space: nowrap;
 }
 
 .shell-aside-nav-more-chevron {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  margin-left: auto;
-  color: var(--shell-text-weak, #9ca2b3);
-  opacity: 0.8;
-  transition: transform 140ms ease, opacity 120ms ease;
+  color: inherit;
+  opacity: 0.6;          /* 比之前 0.85 更淡 */
+  transition: transform 160ms cubic-bezier(0.2, 0.8, 0.2, 1), opacity 140ms ease;
   transform: rotate(0deg);
 }
 
-.shell-aside-nav-more-toggle:hover .shell-aside-nav-more-chevron {
-  opacity: 1;
-}
-
+/* 展开态：chevron 旋转 90° 朝下（子项展开，可点击收起） */
 .shell-aside-nav-more.is-expanded .shell-aside-nav-more-chevron,
 .shell-aside-nav-more-toggle.is-expanded .shell-aside-nav-more-chevron {
   transform: rotate(90deg);
+  opacity: 0.6;
+}
+
+.shell-aside-nav-more-toggle:hover .shell-aside-nav-more-chevron {
+  opacity: 0.95;
 }
 
 .shell-aside-nav-more-body {
   display: none;
   flex-direction: column;
   gap: 1px;
-  padding: 0 0 0 10px;
+  /* 与上方一级导航保持同一缩进，不再向右缩进 */
+  padding: 0;
+  margin: 0;
   min-width: 0;
 }
 
@@ -663,8 +726,29 @@ html[data-theme='dark'] .react-chat-aside-brand-logo {
   width: 100%;
 }
 
-.react-chat-session-aside.collapsed .shell-aside-nav-more-chevron {
+/* 折叠态（窄 icon rail）下：
+   「更多」只保留小箭头（不要左右两条线，宽度太窄装不下） */
+.react-chat-session-aside.collapsed .shell-aside-nav-more-toggle {
+  width: 20px;
+  height: 16px;
+  margin: 0 auto 2px;
+  padding: 0;
+  gap: 0;
+  justify-content: center;
+}
+
+.react-chat-session-aside.collapsed .shell-aside-nav-more-toggle-inner {
+  padding: 0;
+}
+
+/* 窄态下隐藏左右折叠线（空间不够） */
+.react-chat-session-aside.collapsed .shell-aside-nav-more-line {
   display: none;
+}
+
+/* 折叠态下让箭头常驻可见，方便用户知道这里还能展开 */
+.react-chat-session-aside.collapsed .shell-aside-nav-more-chevron {
+  opacity: 0.7;
 }
 
 .react-chat-session-aside.collapsed .shell-aside-nav-more-body {
@@ -983,6 +1067,50 @@ html.dark .react-chat-aside-segment-btn.is-active {
   background: var(--shell-bg-elevated, #fff);
   box-shadow: 0 8px 24px rgba(23, 26, 43, 0.1);
   z-index: 20;
+}
+
+/* 下拉面板内搜索：吸顶，滚动列表时保持可见 */
+.react-chat-aside-ws-menu-search {
+  position: sticky;
+  top: -4px;
+  z-index: 1;
+  margin: -4px -4px 4px;
+  padding: 4px;
+  background: var(--shell-bg-elevated, #fff);
+  border-bottom: 1px solid var(--shell-border, #e8eaf1);
+}
+
+html[data-theme='dark'] .react-chat-aside-ws-menu-search,
+html.dark .react-chat-aside-ws-menu-search {
+  background: color-mix(in srgb, #fff 6%, var(--shell-bg, #252526));
+}
+
+.react-chat-aside-ws-menu-search-input {
+  width: 100%;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--shell-border, #e8eaf1);
+  border-radius: 7px;
+  background: var(--shell-bg, #fff);
+  color: var(--shell-text-body, #42475a);
+  font-size: var(--font-size-xs, 11px);
+  line-height: 1.25;
+  outline: none;
+}
+
+.react-chat-aside-ws-menu-search-input:focus {
+  border-color: color-mix(in srgb, var(--shell-brand) 45%, var(--shell-border, #e8eaf1));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--shell-brand) 18%, transparent);
+}
+
+.react-chat-aside-ws-menu-search-input::placeholder {
+  color: var(--shell-text-weak, #9ca2b3);
+}
+
+.react-chat-aside-ws-menu-empty {
+  padding: 8px 10px;
+  color: var(--shell-text-weak, #9ca2b3);
+  font-size: var(--font-size-xs, 11px);
 }
 
 html[data-theme='dark'] .react-chat-aside-ws-menu,

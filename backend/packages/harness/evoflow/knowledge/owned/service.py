@@ -270,6 +270,7 @@ def _row_base(row: Any) -> dict[str, Any]:
         "orgId": d.get("org_id") or "",
         "ownerScopeId": d.get("owner_scope_id") or "",
         "createdBy": d.get("created_by") or "",
+        "hidden": bool(d.get("hidden")),
         "builtin": str(d.get("id") or "") == "kb_builtin_user_guide" or str(d.get("sync_vault_id") or "") == "evoflow-user-guide",
     }
 
@@ -360,6 +361,34 @@ def _document_counts_by_kb(rows: list[Any]) -> dict[str, int]:
     return counts
 
 
+def _document_health_by_kb(rows: list[Any]) -> dict[str, dict[str, int]]:
+    """Return parse/index health counts for the list view without loading documents."""
+    health: dict[str, dict[str, int]] = {}
+    for r in rows:
+        kid = str(r["id"] if isinstance(r, sqlite3.Row) else r[0])
+        try:
+            with db_for_kb(kid) as conn:
+                grouped = conn.execute(
+                    """
+                    SELECT parse_status, COUNT(*) AS c
+                    FROM kb_documents
+                    WHERE kb_id=? AND deleted_at IS NULL
+                    GROUP BY parse_status
+                    """,
+                    (kid,),
+                ).fetchall()
+            values = {str(item["parse_status"] or "unknown"): int(item["c"] or 0) for item in grouped}
+            health[kid] = {
+                "ready": values.get("completed", 0),
+                "pending": values.get("pending", 0),
+                "processing": values.get("processing", 0),
+                "failed": values.get("failed", 0),
+            }
+        except Exception:
+            logger.debug("document health skipped for kb=%s", kid, exc_info=True)
+    return health
+
+
 def list_bases(
     *,
     is_admin: bool = False,
@@ -367,15 +396,22 @@ def list_bases(
     org_scope: str | None = None,
     principal: Any = None,
     filter_visibility: bool = False,
+    include_hidden: bool = True,
 ) -> list[dict[str, Any]]:
     ensure_owned_kb_worker_started()
     with db() as conn:
         rows = conn.execute("SELECT * FROM kb_bases WHERE deleted_at IS NULL ORDER BY updated_at DESC").fetchall()
     # Documents live in each KB's own index DB, so counts are gathered per KB.
     counts = _document_counts_by_kb(rows)
+    health = _document_health_by_kb(rows)
     out: list[dict[str, Any]] = []
     for r in rows:
         item = _row_base(r)
+        # ``include_hidden=False`` is the UI default: hidden (停用/忽略) bases
+        # stay out of the list but are still returned to internal callers so
+        # seeding / dedupe logic keeps seeing them.
+        if not include_hidden and bool(item.get("hidden")):
+            continue
         if filter_visibility and not kb_visible_to_principal(
             str(item["id"]),
             is_admin=is_admin,
@@ -386,6 +422,9 @@ def list_bases(
         ):
             continue
         item["documentCount"] = counts.get(str(item["id"]), 0)
+        item["documentHealth"] = health.get(
+            str(item["id"]), {"ready": 0, "pending": 0, "processing": 0, "failed": 0}
+        )
         out.append(item)
     return out
 
@@ -546,6 +585,7 @@ def update_base(kb_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     chunk_strategy = payload.get("chunkStrategy", payload.get("chunk_strategy"))
     summary_enabled = payload.get("summaryEnabled", payload.get("summary_enabled"))
     image_caption = payload.get("imageCaptionEnabled", payload.get("image_caption_enabled"))
+    hidden = payload.get("hidden")
 
     embedding_touch = any(
         k in payload
@@ -594,6 +634,9 @@ def update_base(kb_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         if image_caption is not None:
             sets.append("image_caption_enabled=?")
             vals.append(1 if image_caption else 0)
+        if hidden is not None:
+            sets.append("hidden=?")
+            vals.append(1 if hidden else 0)
 
         embedding_changed = False
         if embedding_touch:
@@ -1565,6 +1608,7 @@ async def ask(
     *,
     doc_id: str | None = None,
     top_k: int = 6,
+    model_name: str | None = None,
 ) -> dict[str, Any]:
     """One-shot RAG Q&A over an owned base; returns answer + citations (non-streaming)."""
     ensure_owned_kb_worker_started()
@@ -1651,7 +1695,11 @@ async def ask(
         from evoflow.context.internal_model_invoke import ainvoke_internal_chat_model
         from evoflow.models import create_chat_model
 
-        model = create_chat_model(thinking_enabled=False, invocation_kind="kb_ask")
+        model = create_chat_model(
+            name=model_name if model_name else None,
+            thinking_enabled=False,
+            invocation_kind="kb_ask",
+        )
         resp = await ainvoke_internal_chat_model(model, [{"role": "user", "content": prompt}])
         answer = str(getattr(resp, "content", "") or resp).strip()
     except Exception as exc:

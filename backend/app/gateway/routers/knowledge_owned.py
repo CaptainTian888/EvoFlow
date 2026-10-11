@@ -56,6 +56,8 @@ class UpdateBaseBody(BaseModel):
     embeddingApiKey: str | None = None
     summaryEnabled: bool | None = None
     imageCaptionEnabled: bool | None = None
+    # 停用/忽略（内置库等不可删除时使用）：隐藏后不在默认列表展示，仍随版本同步。
+    hidden: bool | None = None
 
 
 class ManualDocBody(BaseModel):
@@ -82,6 +84,7 @@ class AskBody(BaseModel):
     query: str = Field(..., min_length=1)
     docId: str | None = None
     topK: int = Field(6, ge=1, le=20)
+    model_name: str | None = Field(default=None, description="Optional model name to use for answering; omit to use the KB default.")
 
 
 class SummaryBody(BaseModel):
@@ -120,7 +123,7 @@ class MoveDocumentBody(BaseModel):
 
 
 @router.get("/bases")
-async def list_bases(request: Request) -> dict[str, Any]:
+async def list_bases(request: Request, includeHidden: bool = False) -> dict[str, Any]:
     ensure_owned_kb_worker_started()
     authz = resolve_authz_from_request(request)
     items = owned_service.list_bases(
@@ -129,6 +132,7 @@ async def list_bases(request: Request) -> dict[str, Any]:
         org_scope=authz.get("org_scope"),
         principal=authz.get("principal"),
         filter_visibility=True,
+        include_hidden=bool(includeHidden),
     )
     return {"items": items}
 
@@ -530,6 +534,7 @@ async def ask(request: Request, kb_id: str, body: AskBody) -> dict[str, Any]:
             body.query,
             doc_id=body.docId,
             top_k=body.topK,
+            model_name=body.model_name,
         )
     except ValueError as exc:
         msg = str(exc)

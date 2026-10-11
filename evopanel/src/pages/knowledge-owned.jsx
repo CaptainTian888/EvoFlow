@@ -419,6 +419,10 @@ function AskAiPanel({
   onAsk,
   askBusy,
   askListRef,
+  askModel,
+  chatModels,
+  onAskModelChange,
+  onClear,
   onHint,
   onCitation,
   selectedTitle,
@@ -427,10 +431,45 @@ function AskAiPanel({
   const canSend = !askBusy && Boolean(String(askInput || "").trim());
   return (
     <div className="ko-ask" data-testid="ko-ask-panel">
-      <div className="ko-ask__context">
-        <span className="ko-ask__context-label">
-          {selectedTitle ? `基于「${selectedTitle}」` : emptyHint || "基于整个知识库"}
-        </span>
+      <header className="ko-ask__header">
+        <div className="ko-ask__heading">
+          <span className="ko-ask__eyebrow">KNOWLEDGE Q&A</span>
+          <h2>问知识库</h2>
+          <p>{selectedTitle ? `当前聚焦：${selectedTitle}` : emptyHint || "基于整个知识库检索、归纳并回答"}</p>
+        </div>
+        <button
+          aria-label="新建问答会话"
+          className="ko-ask__new"
+          disabled={!messages.length || askBusy}
+          onClick={onClear}
+          title="新建会话"
+          type="button"
+        >
+          <span aria-hidden="true">＋</span>
+          新会话
+        </button>
+      </header>
+
+      <div className="ko-ask__toolbar">
+        <div className="ko-ask__scope">
+          <span className="ko-ask__scope-dot" aria-hidden="true" />
+          <span>{selectedTitle ? "当前文档" : "整个知识库"}</span>
+        </div>
+        {chatModels.length > 0 ? (
+          <select
+            className="ko-ask__model-select"
+            disabled={askBusy}
+            onChange={(e) => onAskModelChange(e.target.value)}
+            value={askModel || ""}
+          >
+            <option value="">默认模型</option>
+            {chatModels.map((m) => (
+              <option key={m.name} value={m.name}>
+                {m.name}
+              </option>
+            ))}
+          </select>
+        ) : null}
       </div>
 
       <div className="ko-ask__thread" ref={askListRef}>
@@ -508,6 +547,92 @@ function AskAiPanel({
         >
           发送
         </button>
+      </div>
+    </div>
+  );
+}
+
+function ManualNoteModal({ title, onTitleChange, body, onBodyChange, onSubmit, onClose, busy }) {
+  // ESC closes; backdrop click closes. Body scroll is locked while open.
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        onClose();
+      }
+    };
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.body.style.overflow = prevOverflow;
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [onClose]);
+  return (
+    <div
+      aria-modal="true"
+      className="ko-manual-modal"
+      data-testid="ko-manual-modal"
+      onMouseDown={(e) => {
+        // Click on the backdrop (not the panel) closes.
+        if (e.target === e.currentTarget) onClose();
+      }}
+      role="dialog"
+    >
+      <div className="ko-manual-modal__panel">
+        <header className="ko-manual-modal__head">
+          <h2>手写 Markdown</h2>
+          <button
+            aria-label="关闭"
+            className="ko-manual-modal__close"
+            onClick={onClose}
+            type="button"
+          >
+            ×
+          </button>
+        </header>
+        <div className="ko-manual-modal__body">
+          <input
+            autoFocus
+            className="ko-manual-modal__title"
+            onChange={(e) => onTitleChange(e.target.value)}
+            placeholder="标题"
+            type="text"
+            value={title}
+          />
+          <textarea
+            className="ko-manual-modal__textarea"
+            onChange={(e) => onBodyChange(e.target.value)}
+            placeholder="正文 Markdown…（⌘/Ctrl+Enter 保存，Esc 取消）"
+            onKeyDown={(e) => {
+              if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                e.preventDefault();
+                if (!busy && String(title || "").trim() && String(body || "").trim()) {
+                  onSubmit();
+                }
+              }
+            }}
+            rows={18}
+            value={body}
+          />
+        </div>
+        <footer className="ko-manual-modal__foot">
+          <span className="ko-manual-modal__hint">保存后会自动进入索引</span>
+          <div className="ko-manual-modal__actions">
+            <button className="ko-btn" onClick={onClose} type="button">
+              取消
+            </button>
+            <button
+              className="ko-btn primary"
+              disabled={busy || !String(title || "").trim() || !String(body || "").trim()}
+              onClick={onSubmit}
+              type="button"
+            >
+              保存并索引
+            </button>
+          </div>
+        </footer>
       </div>
     </div>
   );
@@ -620,6 +745,52 @@ function SearchPanel({
   );
 }
 
+function KnowledgeHome({ base, docs, recentDocs, onAsk, onOpenDoc, onSearch, onUpload, onWrite }) {
+  const baseName = String(base?.name || "知识库");
+  const description = String(base?.description || "集中阅读、检索和维护团队知识");
+  return (
+    <div className="ko-reader-home" data-testid="ko-reader-home">
+      <div className="ko-reader-home__intro">
+        <span className="ko-reader-home__eyebrow">KNOWLEDGE BASE</span>
+        <h1>{baseName}</h1>
+        <p>{description}</p>
+        <div className="ko-reader-home__search" role="button" tabIndex={0} onClick={onSearch} onKeyDown={(e) => e.key === "Enter" && onSearch()}>
+          <span aria-hidden="true">⌕</span>
+          <span>搜索文档、主题和关键词</span>
+          <kbd>⌘ K</kbd>
+        </div>
+      </div>
+      <div className="ko-reader-home__stats" aria-label="知识库统计">
+        <div><strong>{docs.length}</strong><span>篇文档</span></div>
+        <div><strong>{base?.vectorized ? "已就绪" : "待索引"}</strong><span>检索状态</span></div>
+        <div><strong>{recentDocs.length}</strong><span>近期更新</span></div>
+      </div>
+      <section className="ko-reader-home__section">
+        <div className="ko-reader-home__section-head"><h2>开始使用</h2><span>选择一个入口</span></div>
+        <div className="ko-reader-home__actions">
+          <button type="button" onClick={onAsk}><span>✦</span><strong>问 AI</strong><small>从知识库获得答案</small></button>
+          <button type="button" onClick={onUpload}><span>↑</span><strong>上传文档</strong><small>导入 PDF、Office 或 Markdown</small></button>
+          <button type="button" onClick={onWrite}><span>＋</span><strong>写一篇笔记</strong><small>记录可复用的知识</small></button>
+        </div>
+      </section>
+      {recentDocs.length ? (
+        <section className="ko-reader-home__section">
+          <div className="ko-reader-home__section-head"><h2>最近更新</h2><button type="button" onClick={onSearch}>查看全部</button></div>
+          <div className="ko-reader-home__recent">
+            {recentDocs.map((doc) => (
+              <button key={doc.id} type="button" onClick={() => onOpenDoc(doc.id)}>
+                <span className="ko-reader-home__file">{String(doc.fileName || doc.title || "文档").split(".").pop().toUpperCase()}</span>
+                <span><strong>{doc.title || doc.fileName || "未命名文档"}</strong><small>{doc.folderPath || "根目录"}</small></span>
+                <span aria-hidden="true">›</span>
+              </button>
+            ))}
+          </div>
+        </section>
+      ) : null}
+    </div>
+  );
+}
+
 export default function KnowledgeOwnedPage() {
   const [route, setRoute] = useState(() => parseOwnedRoute());
   const [bases, setBases] = useState([]);
@@ -632,6 +803,7 @@ export default function KnowledgeOwnedPage() {
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState("");
   const [listFilter, setListFilter] = useState("");
+  const [docFilter, setDocFilter] = useState("");
   const [manualOpen, setManualOpen] = useState(false);
   const [manualTitle, setManualTitle] = useState("");
   const [manualBody, setManualBody] = useState("");
@@ -648,6 +820,7 @@ export default function KnowledgeOwnedPage() {
   const [kbTags, setKbTags] = useState([]);
   const [jobStats, setJobStats] = useState(null);
   const [syncPopupDismissed, setSyncPopupDismissed] = useState(false);
+  const [indexErrorsOpen, setIndexErrorsOpen] = useState(false);
   const [docCounts, setDocCounts] = useState({});
   const [selectedDocId, setSelectedDocId] = useState("");
   const [expandedFolders, setExpandedFolders] = useState(() => new Set());
@@ -662,6 +835,7 @@ export default function KnowledgeOwnedPage() {
   const [askInput, setAskInput] = useState("");
   const [askMessages, setAskMessages] = useState([]);
   const [askBusy, setAskBusy] = useState(false);
+  const [askModel, setAskModel] = useState("");
   const [editDraft, setEditDraft] = useState("");
   const [editDirty, setEditDirty] = useState(false);
   const [bodyEditing, setBodyEditing] = useState(false);
@@ -673,6 +847,7 @@ export default function KnowledgeOwnedPage() {
   const [catalogSideTab, setCatalogSideTab] = useState("files"); // files | toc
   const [activeHeading, setActiveHeading] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
+  const [showHidden, setShowHidden] = useState(false);
   const [createName, setCreateName] = useState("我的知识库");
   const [createEmbRef, setCreateEmbRef] = useState("");
   const [embOptions, setEmbOptions] = useState([]);
@@ -682,6 +857,7 @@ export default function KnowledgeOwnedPage() {
   const [settingsName, setSettingsName] = useState("");
   const [settingsDesc, setSettingsDesc] = useState("");
   const [settingsEmbRef, setSettingsEmbRef] = useState("");
+  const [settingsRebind, setSettingsRebind] = useState(false);
   const fileRef = useRef(null);
   const folderRef = useRef(null);
   const askListRef = useRef(null);
@@ -708,13 +884,33 @@ export default function KnowledgeOwnedPage() {
     return () => setKnowledgeDetailShellMode(false);
   }, [route.view]);
 
-  const loadBases = useCallback(async () => {
+  // Load available chat models for the Ask AI model selector
+  const [chatModels, setChatModels] = useState([]);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { models = [] } = await api.listModels();
+        if (!cancelled) setChatModels(models.filter((m) => m.supportsChat !== false));
+      } catch {
+        if (!cancelled) setChatModels([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const loadBases = useCallback(async (opts = {}) => {
     setLoading(true);
     try {
+      const includeHidden = !!opts?.includeHidden;
       const { takeNavWarm } = await import("../lib/nav-panel-prefetch.js");
-      let res = takeNavWarm("knowledge:bases");
+      // Hover-warm cache holds the default (non-hidden) list, so only use it for
+      // the default view; the "显示已停用" view always refetches.
+      let res = includeHidden ? null : takeNavWarm("knowledge:bases");
       if (!res) {
-        res = await api.listOwnedKnowledgeBases();
+        res = await api.listOwnedKnowledgeBases({ includeHidden });
       }
       const items = res.items || [];
       setBases(items);
@@ -773,8 +969,32 @@ export default function KnowledgeOwnedPage() {
   }, [notify]);
 
   useEffect(() => {
-    loadBases();
-  }, [loadBases]);
+    loadBases({ includeHidden: showHidden });
+  }, [loadBases, showHidden]);
+
+  /** 停用/忽略内置库：隐藏后不在默认列表展示（仍随版本同步，可随时恢复）。 */
+  async function setBaseHidden(base, nextHidden) {
+    const kbId = typeof base === "string" ? base : base?.id;
+    if (!kbId) return;
+    const name = typeof base === "string" ? "" : base?.name || "";
+    if (
+      nextHidden &&
+      !window.confirm(`停用「${name || kbId}」？停用后不在列表中显示，可随时在「显示已停用」中恢复。`)
+    ) {
+      return;
+    }
+    setBusy(true);
+    try {
+      await api.updateOwnedKnowledgeBase(kbId, { hidden: !!nextHidden });
+      await loadBases({ includeHidden: showHidden });
+      if (nextHidden && selectedId === kbId) goOwnedList();
+      notify(nextHidden ? "已停用，可在「显示已停用」中恢复" : "已恢复显示");
+    } catch (e) {
+      notify(e?.message || (nextHidden ? "停用失败" : "恢复失败"));
+    } finally {
+      setBusy(false);
+    }
+  }
 
   useEffect(() => {
     loadDocs(selectedId);
@@ -910,7 +1130,7 @@ export default function KnowledgeOwnedPage() {
   async function resyncRemembered() {
     if (!selectedId) return;
     if (!selected?.syncSourceType) {
-      notify("还没有记住的同步源，请先「导入路径」或「上传文件」");
+      notify("还没有记住的同步源，请先「上传文件夹」或「上传文件」");
       return;
     }
     const prune = window.confirm("再同步时是否清理源中已删除的文档？");
@@ -937,6 +1157,39 @@ export default function KnowledgeOwnedPage() {
     () => bases.find((b) => b.id === settingsKbId) || selected,
     [bases, settingsKbId, selected]
   );
+
+  // Current embedding binding of the base being edited (ref prefers model name).
+  const settingsCurrentRef = String(
+    settingsBase?.embeddingModelRef || settingsBase?.embeddingModel || ""
+  ).trim();
+
+  // Dropdown options; always surface the current binding so the select never
+  // falls back to an unrelated first option when it is not in the model catalog.
+  const settingsEmbOptions = useMemo(() => {
+    const opts = Array.isArray(embOptions) ? embOptions : [];
+    if (!settingsCurrentRef) return opts;
+    if (opts.some((o) => String(o.value) === settingsCurrentRef)) return opts;
+    return [
+      { value: settingsCurrentRef, label: `${settingsCurrentRef}（当前 · 不在模型列表中）` },
+      ...opts,
+    ];
+  }, [embOptions, settingsCurrentRef]);
+
+  const settingsEmbChanged = useMemo(() => {
+    const next = String(settingsEmbRef || "").trim();
+    return !!(next && next !== settingsCurrentRef);
+  }, [settingsEmbRef, settingsCurrentRef]);
+
+  const settingsDirty = useMemo(() => {
+    if (!settingsBase) return false;
+    const name = String(settingsName || "").trim();
+    const desc = String(settingsDesc || "").trim();
+    return (
+      name !== String(settingsBase.name || "").trim() ||
+      desc !== String(settingsBase.description || "").trim() ||
+      settingsEmbChanged
+    );
+  }, [settingsBase, settingsName, settingsDesc, settingsEmbChanged]);
 
   // Hub Insight → open first base in Ask mode (optional pending prompt)
   useEffect(() => {
@@ -971,7 +1224,22 @@ export default function KnowledgeOwnedPage() {
     );
   }, [bases, listFilter]);
 
-  const docTree = useMemo(() => buildDocTree(docs, folders), [docs, folders]);
+  const filteredDocs = useMemo(() => {
+    const q = docFilter.trim().toLowerCase();
+    if (!q) return docs;
+    return docs.filter((doc) =>
+      [doc.title, doc.fileName, doc.folderPath, doc.summaryText]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(q)),
+    );
+  }, [docs, docFilter]);
+
+  const docTree = useMemo(() => buildDocTree(filteredDocs, folders), [filteredDocs, folders]);
+
+  const recentDocs = useMemo(
+    () => [...docs].sort((a, b) => String(b.updatedAt || b.createdAt || '').localeCompare(String(a.updatedAt || a.createdAt || ''))).slice(0, 4),
+    [docs],
+  );
 
   const selectedDoc = useMemo(
     () => docs.find((d) => d.id === selectedDocId) || null,
@@ -1254,7 +1522,9 @@ export default function KnowledgeOwnedPage() {
   }
 
   async function openBaseSettings(baseOrNull) {
-    const base = baseOrNull || selected;
+    // Guard: callers may pass a click event (onClick={openBaseSettings}); only
+    // accept a real base object, otherwise fall back to the selected base.
+    const base = baseOrNull && baseOrNull.id ? baseOrNull : selected;
     if (!base) return;
     const { opts } = await loadEmbeddingOptions();
     const current =
@@ -1267,6 +1537,7 @@ export default function KnowledgeOwnedPage() {
     setSettingsName(base.name || "");
     setSettingsDesc(base.description || "");
     setSettingsEmbRef(current);
+    setSettingsRebind(false);
     setSettingsOpen(true);
   }
 
@@ -1302,21 +1573,15 @@ export default function KnowledgeOwnedPage() {
       return;
     }
     const description = String(settingsDesc || "").trim();
-    const prev = base?.embeddingModelRef || base?.embeddingModel || "";
+    const prev = String(base?.embeddingModelRef || base?.embeddingModel || "").trim();
     const next = String(settingsEmbRef || "").trim();
-    const dimReady = !!base?.embeddingDim;
     const nameChanged = name !== String(base?.name || "").trim();
     const descChanged = description !== String(base?.description || "").trim();
     const embChanged = !!(next && next !== prev);
 
     if (embChanged) {
       const ok = window.confirm(
-        "更换向量模型将清空现有向量并整库重建索引，是否继续？",
-      );
-      if (!ok) return;
-    } else if (!dimReady && next) {
-      const ok = window.confirm(
-        "当前知识库尚未完成向量化。保存后将按所选向量模型整库建立索引，是否继续？",
+        `更换向量模型将清空现有向量并按「${next}」整库重建索引，是否继续？`,
       );
       if (!ok) return;
     }
@@ -1328,25 +1593,12 @@ export default function KnowledgeOwnedPage() {
       if (nameChanged) metaPatch.name = name;
       if (descChanged) metaPatch.description = description;
 
-      if (embChanged) {
-        res = await api.updateOwnedKnowledgeBase(kbId, {
-          ...metaPatch,
-          embeddingModelRef: next,
-        });
-      } else if (!dimReady && next) {
-        if (Object.keys(metaPatch).length) {
-          await api.updateOwnedKnowledgeBase(kbId, metaPatch);
-        }
-        res = await api.reindexOwnedKnowledgeBase(kbId, {
-          embeddingModelRef: next || undefined,
-          force: true,
-        });
-      } else {
-        res = await api.updateOwnedKnowledgeBase(kbId, {
-          ...metaPatch,
-          ...(next ? { embeddingModelRef: next } : {}),
-        });
-      }
+      // Only touch embedding binding when it actually changed; a metadata-only
+      // save must never trigger a reindex. In-place rebuild is a separate action.
+      res = await api.updateOwnedKnowledgeBase(kbId, {
+        ...metaPatch,
+        ...(embChanged ? { embeddingModelRef: next } : {}),
+      });
       setSettingsOpen(false);
       setSettingsKbId("");
       await loadBases();
@@ -1366,27 +1618,21 @@ export default function KnowledgeOwnedPage() {
     const kbId = settingsKbId || selectedId;
     const base = bases.find((b) => b.id === kbId) || settingsBase;
     if (!kbId) return;
-    const next = String(settingsEmbRef || base?.embeddingModelRef || "").trim();
-    if (!embOptions.length) {
-      notify("请先在 设置 → 模型 → 向量模型 中添加或绑定套餐向量模型");
-      return;
-    }
-    if (!next) {
-      notify("请先选择向量模型");
+    // In-place rebuild: keep the current binding, do NOT pass embeddingModelRef.
+    const current = String(base?.embeddingModelRef || base?.embeddingModel || "").trim();
+    if (!current) {
+      notify("当前知识库尚未绑定向量模型，请先在下方选择模型并保存。");
       return;
     }
     const ok = window.confirm(
       base?.embeddingDim
-        ? "将清空现有向量并按所选模型整库重建，是否继续？"
-        : "将按所选向量模型为该库建立索引，是否继续？",
+        ? `将按当前模型「${current}」清空并整库重建索引（不更换模型），是否继续？`
+        : `将按当前模型「${current}」为该库建立索引，是否继续？`,
     );
     if (!ok) return;
     setBusy(true);
     try {
-      const res = await api.reindexOwnedKnowledgeBase(kbId, {
-        embeddingModelRef: next,
-        force: true,
-      });
+      const res = await api.reindexOwnedKnowledgeBase(kbId, { force: true });
       setSettingsOpen(false);
       setSettingsKbId("");
       await loadBases();
@@ -1495,6 +1741,7 @@ export default function KnowledgeOwnedPage() {
         query: q,
         docId: selectedDocId || undefined,
         topK: 6,
+        modelName: askModel || undefined,
       });
       setAskMessages((prev) => [
         ...prev,
@@ -1583,36 +1830,6 @@ export default function KnowledgeOwnedPage() {
     } finally {
       setSavingDoc(false);
     }
-  }
-
-  async function importFolderPath() {
-    if (!selectedId) return;
-    const path = window.prompt("导入本机文件夹路径（增量同步：同路径更新，未改跳过）", "");
-    if (!path?.trim()) return;
-    const prune = window.confirm(
-      "是否删除知识库中已不在该文件夹的导入文档？\n\n确定=清理缺失文件\n取消=只增改、不删"
-    );
-    setBusy(true);
-    try {
-      const res = await api.importOwnedKnowledgeFolder(selectedId, path.trim(), {
-        upsert: true,
-        pruneMissing: prune,
-      });
-      await loadDocs(selectedId);
-      await loadBases();
-      notify(
-        `同步完成：新增 ${res.created || 0} · 更新 ${res.updated || 0} · 未变 ${res.unchanged || 0}` +
-          `${res.skipped ? ` · 跳过 ${res.skipped}` : ""}${res.pruned ? ` · 清理 ${res.pruned}` : ""}`
-      );
-    } catch (e) {
-      notify(e?.message || "导入文件夹失败");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function importFromVault() {
-    notify("Obsidian Vault 导入功能已移除。请使用「导入路径」或「上传文件」。");
   }
 
   async function createFolderAt(parentPath = "") {
@@ -1759,6 +1976,9 @@ export default function KnowledgeOwnedPage() {
           onOpen={goOwnedDetail}
           onRename={renameBase}
           onSettings={(base) => openBaseSettings(base)}
+          onToggleHidden={setBaseHidden}
+          showHidden={showHidden}
+          onToggleShowHidden={() => setShowHidden((v) => !v)}
           onRevealDir={(base) => {
             const dir = base.resolvedStorageDir || base.storageDir;
             if (!dir) return;
@@ -1857,7 +2077,7 @@ export default function KnowledgeOwnedPage() {
               </button>
             </div>
             <div className="ko-actions" data-tauri-no-drag="">
-              <button className="ko-btn" disabled={busy} onClick={openBaseSettings} type="button">
+              <button className="ko-btn" disabled={busy} onClick={() => openBaseSettings()} type="button">
                 库设置
               </button>
               <button className="ko-btn" disabled={busy} onClick={() => fileRef.current?.click()} type="button">
@@ -1865,9 +2085,6 @@ export default function KnowledgeOwnedPage() {
               </button>
               <button className="ko-btn" disabled={busy} onClick={() => folderRef.current?.click()} type="button">
                 上传文件夹
-              </button>
-              <button className="ko-btn" disabled={busy} onClick={importFolderPath} type="button">
-                导入路径
               </button>
               <button
                 className="ko-btn"
@@ -1882,9 +2099,6 @@ export default function KnowledgeOwnedPage() {
               >
                 打开位置
               </button>
-              <button className="ko-btn" disabled type="button" title="Obsidian Vault 导入已移除">
-                从 Obsidian 导入（已移除）
-              </button>
               <button
                 className="ko-btn primary"
                 disabled={busy || !selected?.syncSourceType}
@@ -1892,7 +2106,7 @@ export default function KnowledgeOwnedPage() {
                 title={
                   selected?.syncSourcePath
                     ? `再同步：${selected.syncSourcePath}`
-                    : "先导入路径后即可一键再同步"
+                    : "先上传文件夹后即可一键再同步"
                 }
                 type="button"
               >
@@ -1937,10 +2151,10 @@ export default function KnowledgeOwnedPage() {
                 <span>
                   {selected.embeddedChunks > 0
                     ? `已完成 ${selected.embeddedChunks}/${selected.totalChunks || 0} 个分块，仍缺 ${selected.missingEmbeddingChunks || 0} 个。`
-                    : "库内文档还未按向量模型建索引。可在「库设置」选择 Agent Plan / 向量模型页中的模型，再点「立即向量化」。"}
+                    : "库内文档还未按向量模型建索引。可在「库设置」选择 Agent Plan / 向量模型页中的模型，再点「按当前模型建立索引」。"}
                 </span>
               </div>
-              <button className="ko-btn primary" disabled={busy} onClick={openBaseSettings} type="button">
+              <button className="ko-btn primary" disabled={busy} onClick={() => openBaseSettings()} type="button">
                 打开库设置
               </button>
             </div>
@@ -1966,6 +2180,15 @@ export default function KnowledgeOwnedPage() {
                     : null}
                 </span>
               </div>
+              {jobStats.error ? (
+                <button
+                  className="ko-sync-popup__details"
+                  onClick={() => setIndexErrorsOpen((value) => !value)}
+                  type="button"
+                >
+                  {indexErrorsOpen ? "收起原因" : "查看原因"}
+                </button>
+              ) : null}
               <button
                 aria-label="关闭"
                 className="ko-sync-popup__close"
@@ -1974,6 +2197,20 @@ export default function KnowledgeOwnedPage() {
               >
                 ×
               </button>
+              {indexErrorsOpen && jobStats.errors?.length ? (
+                <div className="ko-sync-popup__errors">
+                  {jobStats.errors.map((item) => (
+                    <div className="ko-sync-error" key={item.id}>
+                      <div className="ko-sync-error__head">
+                        <strong>{item.type || "索引任务"}</strong>
+                        <span>{item.docId || "未关联文档"}</span>
+                      </div>
+                      <p>{item.error_message || "任务失败，但服务端没有返回详细原因。"}</p>
+                      <small>重试 {item.attempts || 0}/{item.max_attempts || 0} · {item.finished_at || item.updated_at || ""}</small>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
             </div>
           ) : null}
 
@@ -2071,6 +2308,22 @@ export default function KnowledgeOwnedPage() {
                     />
                   </div>
                 ) : (
+                <>
+                <div className="ko-catalog-search">
+                  <span aria-hidden="true">⌕</span>
+                  <input
+                    aria-label="搜索当前知识库文档"
+                    onChange={(e) => setDocFilter(e.target.value)}
+                    placeholder="搜索文档"
+                    type="search"
+                    value={docFilter}
+                  />
+                  {docFilter ? (
+                    <button aria-label="清除搜索" className="ko-catalog-search__clear" onClick={() => setDocFilter("")} type="button">
+                      ×
+                    </button>
+                  ) : null}
+                </div>
                 <div
                   className="ko-catalog-tree"
                   data-testid="ko-doc-list"
@@ -2145,6 +2398,7 @@ export default function KnowledgeOwnedPage() {
                     拖到此处移到根目录
                   </div>
                 </div>
+                </>
                 )}
               </aside>
 
@@ -2160,7 +2414,9 @@ export default function KnowledgeOwnedPage() {
                               (docContent || selectedDoc)?.fileName ||
                               "文档"}
                           </h2>
-                          <div className="ko-meta">
+                        </div>
+                        <div className="ko-page-view__meta-actions">
+                          <span className="ko-meta">
                             {[
                               (docContent || selectedDoc)?.folderPath,
                               (docContent || selectedDoc)?.fileName,
@@ -2175,59 +2431,59 @@ export default function KnowledgeOwnedPage() {
                                   ? " · 摘要"
                                   : ""}
                             {docContent?.truncated ? " · 已截断" : ""}
-                          </div>
-                        </div>
-                        <div className="ko-page-view__actions">
-                          {selectedDoc ? (
-                            <span className={`ko-badge ${statusBadge(selectedDoc.parseStatus).cls}`}>
-                              {statusBadge(selectedDoc.parseStatus).label}
-                            </span>
-                          ) : null}
-                          {canEditBody && rightMode === "reader" ? (
-                            bodyEditing ? (
-                              <>
+                          </span>
+                          <div className="ko-page-view__actions">
+                            {selectedDoc ? (
+                              <span className={`ko-badge ${statusBadge(selectedDoc.parseStatus).cls}`}>
+                                {statusBadge(selectedDoc.parseStatus).label}
+                              </span>
+                            ) : null}
+                            {canEditBody && rightMode === "reader" ? (
+                              bodyEditing ? (
+                                <>
+                                  <button
+                                    className="ko-btn ghost"
+                                    disabled={savingDoc}
+                                    onClick={() => {
+                                      setBodyEditing(false);
+                                      setEditDirty(false);
+                                      setEditDraft(docContent?.content || "");
+                                    }}
+                                    type="button"
+                                  >
+                                    取消
+                                  </button>
+                                  <button
+                                    className="ko-btn primary"
+                                    disabled={savingDoc || !editDirty}
+                                    onClick={saveDocContent}
+                                    type="button"
+                                  >
+                                    {savingDoc ? "保存中…" : "保存"}
+                                  </button>
+                                </>
+                              ) : (
                                 <button
                                   className="ko-btn ghost"
-                                  disabled={savingDoc}
                                   onClick={() => {
-                                    setBodyEditing(false);
-                                    setEditDirty(false);
                                     setEditDraft(docContent?.content || "");
+                                    setEditDirty(false);
+                                    setBodyEditing(true);
                                   }}
                                   type="button"
                                 >
-                                  取消
+                                  编辑
                                 </button>
-                                <button
-                                  className="ko-btn primary"
-                                  disabled={savingDoc || !editDirty}
-                                  onClick={saveDocContent}
-                                  type="button"
-                                >
-                                  {savingDoc ? "保存中…" : "保存"}
-                                </button>
-                              </>
-                            ) : (
-                              <button
-                                className="ko-btn ghost"
-                                onClick={() => {
-                                  setEditDraft(docContent?.content || "");
-                                  setEditDirty(false);
-                                  setBodyEditing(true);
-                                }}
-                                type="button"
-                              >
-                                编辑
-                              </button>
-                            )
-                          ) : null}
-                          <button
-                            className="ko-btn ghost"
-                            onClick={() => removeDoc(selectedDocId)}
-                            type="button"
-                          >
-                            删除
-                          </button>
+                              )
+                            ) : null}
+                            <button
+                              className="ko-btn ghost"
+                              onClick={() => removeDoc(selectedDocId)}
+                              type="button"
+                            >
+                              删除
+                            </button>
+                          </div>
                         </div>
                       </div>
 
@@ -2295,8 +2551,12 @@ export default function KnowledgeOwnedPage() {
                           askBusy={askBusy}
                           askInput={askInput}
                           askListRef={askListRef}
+                          askModel={askModel}
+                          chatModels={chatModels}
                           messages={askMessages}
                           onAsk={runAsk}
+                          onAskModelChange={setAskModel}
+                          onClear={() => setAskMessages([])}
                           onCitation={openDocFromCitation}
                           onHint={(h) => {
                             setAskInput(h);
@@ -2323,68 +2583,44 @@ export default function KnowledgeOwnedPage() {
                       }
                       messages={askMessages}
                       onAsk={runAsk}
+                      onAskModelChange={setAskModel}
+                      onClear={() => setAskMessages([])}
                       onCitation={openDocFromCitation}
                       onHint={(h) => {
                         setAskInput(h);
                         runAsk(h);
                       }}
                       onInput={setAskInput}
+                      askModel={askModel}
+                      chatModels={chatModels}
                       selectedTitle=""
                     />
                   ) : (
-                    <div className="ko-reader-empty" data-testid="ko-reader-empty">
-                      <p className="ko-reader-empty__title">选择一篇文档</p>
-                      <p className="ko-reader-empty__desc">
-                        {docs.length
-                          ? "从左侧目录打开正文或 PDF；也可切到「问 AI」直接提问。"
-                          : "上传文档后即可在此阅读。"}
-                      </p>
-                      {docs.length ? (
-                        <button
-                          className="ko-btn"
-                          onClick={() => setRightMode("ask")}
-                          type="button"
-                        >
-                          去问 AI
-                        </button>
-                      ) : null}
-                    </div>
+                    <KnowledgeHome
+                      base={selected}
+                      docs={docs}
+                      recentDocs={recentDocs}
+                      onAsk={() => setRightMode("ask")}
+                      onOpenDoc={(id) => {
+                        setSelectedDocId(id);
+                        setRightMode("reader");
+                      }}
+                      onSearch={() => setTab("search")}
+                      onUpload={() => fileRef.current?.click()}
+                      onWrite={() => setManualOpen(true)}
+                    />
                   )}
 
                   {manualOpen ? (
-                    <div style={{ marginTop: 16, borderTop: "1px solid var(--ko-line)", paddingTop: 14 }}>
-                      <h2>手写 Markdown</h2>
-                      <div className="ko-toolbar">
-                        <input
-                          onChange={(e) => setManualTitle(e.target.value)}
-                          placeholder="标题"
-                          type="text"
-                          value={manualTitle}
-                        />
-                      </div>
-                      <textarea
-                        onChange={(e) => setManualBody(e.target.value)}
-                        placeholder="正文 Markdown…"
-                        rows={10}
-                        style={{
-                          width: "100%",
-                          border: "1px solid var(--ko-line)",
-                          borderRadius: 12,
-                          padding: 12,
-                          fontFamily: "ui-monospace, Consolas, monospace",
-                          fontSize: 13,
-                        }}
-                        value={manualBody}
-                      />
-                      <div className="ko-actions" style={{ marginTop: 8 }}>
-                        <button className="ko-btn primary" disabled={busy} onClick={submitManual} type="button">
-                          保存并索引
-                        </button>
-                        <button className="ko-btn" onClick={() => setManualOpen(false)} type="button">
-                          取消
-                        </button>
-                      </div>
-                    </div>
+                    <ManualNoteModal
+                      busy={busy}
+                      body={manualBody}
+                      onBodyChange={setManualBody}
+                      onClose={() => setManualOpen(false)}
+                      onSubmit={submitManual}
+                      title={manualTitle}
+                      onTitleChange={setManualTitle}
+                    />
                   ) : null}
                 </>
               ) : tab === "search" ? (
@@ -2627,6 +2863,7 @@ export default function KnowledgeOwnedPage() {
                     contentText={readerMarkdown}
                     doc={docContent || selectedDoc}
                     docLinks={docLinks}
+                    jobStats={jobStats}
                     kbId={selectedId}
                     related={relatedDocs}
                     summaryBusy={summaryBusy}
@@ -2733,6 +2970,7 @@ export default function KnowledgeOwnedPage() {
                 disabled={!!settingsBase.builtin}
                 onChange={(e) => setSettingsName(e.target.value)}
                 placeholder="知识库名称"
+                title={settingsBase.builtin ? "系统内置知识库不可重命名" : undefined}
                 type="text"
                 value={settingsName}
               />
@@ -2746,43 +2984,90 @@ export default function KnowledgeOwnedPage() {
                 value={settingsDesc}
               />
             </label>
-            <p className="ko-modal__hint">
-              当前：{settingsBase.embeddingMode === "local" ? "本地" : "云端"} ·{" "}
-              {settingsBase.embeddingModel || "—"}
-              {settingsBase.embeddingDim
-                ? ` · ${settingsBase.embeddingDim} 维`
-                : " · 维度未就绪（尚未向量化；模型未就绪时仍可关键词检索）"}
-            </p>
-            <label className="ko-modal__field">
-              <span>向量模型</span>
-              {embOptions.length ? (
-                <select
-                  onChange={(e) => setSettingsEmbRef(e.target.value)}
-                  value={settingsEmbRef}
+            <div className="ko-modal__section">
+              <p className="ko-modal__hint">
+                当前向量：{settingsBase.embeddingMode === "local" ? "本地" : "云端"} ·{" "}
+                {settingsBase.embeddingModel || "—"}
+                {settingsBase.embeddingDim
+                  ? ` · ${settingsBase.embeddingDim} 维`
+                  : " · 维度未就绪（尚未向量化；模型未就绪时仍可关键词检索）"}
+              </p>
+              {settingsBase.builtin ? (
+                <label className="ko-modal__toggle">
+                  <input
+                    checked={settingsRebind}
+                    onChange={(e) => {
+                      const on = e.target.checked;
+                      setSettingsRebind(on);
+                      // Un-checking means "keep current binding": drop any
+                      // pending selection so it no longer counts as a change.
+                      if (!on) setSettingsEmbRef(settingsCurrentRef);
+                    }}
+                    type="checkbox"
+                  />
+                  <span>切换为自定义向量模型（将清空现有向量并整库重建）</span>
+                </label>
+              ) : null}
+              {!settingsBase.builtin || settingsRebind ? (
+                <>
+                  {settingsEmbOptions.length ? (
+                    <label className="ko-modal__field">
+                      <span>向量模型</span>
+                      <select
+                        onChange={(e) => setSettingsEmbRef(e.target.value)}
+                        value={settingsEmbRef}
+                      >
+                        {settingsEmbOptions.map((o) => (
+                          <option key={o.value} value={o.value}>
+                            {o.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  ) : (
+                    <p className="ko-modal__hint">
+                      暂无可用向量模型。若已绑定 Agent Plan，请到「设置 → 模型 → 向量模型」确认套餐向量已出现；或点下方去管理。
+                      未就绪时不会强制向量化，文档仍可分块与关键词检索。
+                    </p>
+                  )}
+                  {settingsEmbChanged ? (
+                    <p className="ko-modal__hint is-warn">
+                      ⚠ 已切换向量模型：保存将清空现有向量并按新模型整库重建。
+                    </p>
+                  ) : null}
+                  <p className="ko-modal__hint">
+                    列表来自「设置 → 模型 → 向量模型」（含 Agent Plan 绑定的套餐向量）。
+                    <button
+                      className="ko-link-btn"
+                      onClick={openModelsEmbeddingSettings}
+                      type="button"
+                    >
+                      管理向量模型
+                    </button>
+                  </p>
+                </>
+              ) : null}
+            </div>
+            {settingsBase.builtin ? (
+              <div className="ko-modal__vault-actions">
+                <button
+                  className="ko-btn ghost"
+                  disabled={busy}
+                  onClick={() => {
+                    const nextHidden = !settingsBase.hidden;
+                    setSettingsOpen(false);
+                    setSettingsKbId("");
+                    setBaseHidden(settingsBase, nextHidden);
+                  }}
+                  type="button"
                 >
-                  {embOptions.map((o) => (
-                    <option key={o.value} value={o.value}>
-                      {o.label}
-                    </option>
-                  ))}
-                </select>
-              ) : (
-                <p className="ko-modal__hint">
-                  暂无可用向量模型。若已绑定 Agent Plan，请到「设置 → 模型 → 向量模型」确认套餐向量已出现；或点下方去管理。
-                  未就绪时不会强制向量化，文档仍可分块与关键词检索。
-                </p>
-              )}
-            </label>
-            <p className="ko-modal__hint">
-              列表来自「设置 → 模型 → 向量模型」（含 Agent Plan 绑定的套餐向量）。更换模型或维度未就绪时会整库重建索引。
-              <button
-                className="ko-link-btn"
-                onClick={openModelsEmbeddingSettings}
-                type="button"
-              >
-                管理向量模型
-              </button>
-            </p>
+                  {settingsBase.hidden ? "恢复显示此内置库" : "停用（从列表中隐藏）"}
+                </button>
+                <span className="ko-modal__hint">
+                  内置库不可删除；停用后不在默认列表展示，内容仍随版本自动同步。
+                </span>
+              </div>
+            ) : null}
             <div className="ko-modal__actions">
               <button
                 className="ko-btn"
@@ -2797,24 +3082,22 @@ export default function KnowledgeOwnedPage() {
               </button>
               <button
                 className="ko-btn"
-                disabled={busy || !embOptions.length}
+                disabled={busy || !settingsCurrentRef}
                 onClick={rebuildVectors}
+                title="按当前绑定的向量模型整库重建索引（不更换模型）"
                 type="button"
-                title="按当前所选模型整库建立 / 重建向量"
               >
-                {busy ? "处理中…" : settingsBase.embeddingDim ? "重建向量索引" : "立即向量化"}
+                {settingsBase.embeddingDim
+                  ? "按当前模型重建（不换模型）"
+                  : "按当前模型建立索引"}
               </button>
               <button
                 className="ko-btn primary"
-                disabled={busy || !String(settingsName || "").trim()}
+                disabled={busy || !settingsDirty || !String(settingsName || "").trim()}
                 onClick={submitBaseSettings}
                 type="button"
               >
-                {busy
-                  ? "保存中…"
-                  : embOptions.length && !settingsBase.embeddingDim && settingsEmbRef
-                    ? "保存并向量化"
-                    : "保存"}
+                {busy ? "保存中…" : settingsEmbChanged ? "保存并重建索引" : "保存"}
               </button>
             </div>
           </div>

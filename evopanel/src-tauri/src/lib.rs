@@ -137,6 +137,37 @@ pub fn run() {
                     commands::boot_cycle::mark("desktop", "sidecar.ensure.returned", None);
                 })
                 .map_err(|e| format!("启动内置后端线程失败: {e}"))?;
+
+            // 流式对比日志（stream-compare）保留策略：
+            // 默认 2 天前的 run 目录会被整目录清掉，避免前端默认开启 stream-compare
+            // 时 ~/.evoflow/logs/stream-compare 一直涨。
+            // 启动时先跑一次，之后每 6 小时跑一次。失败仅日志，不影响启动。
+            std::thread::Builder::new()
+                .name("stream-compare-pruner".into())
+                .spawn(|| {
+                    use commands::log_files::prune_stream_compare_logs;
+                    use std::time::Duration;
+                    let root = commands::evoflow_dir()
+                        .join("logs")
+                        .join("stream-compare");
+                    let tick = || {
+                        match prune_stream_compare_logs(&root) {
+                            Ok(removed) if removed > 0 => eprintln!(
+                                "[stream-compare-pruner] 清理 {removed} 个过期 run 目录"
+                            ),
+                            Ok(_) => {}
+                            Err(e) => eprintln!(
+                                "[stream-compare-pruner] 清理失败: {e}"
+                            ),
+                        }
+                    };
+                    tick();
+                    loop {
+                        std::thread::sleep(Duration::from_secs(6 * 60 * 60));
+                        tick();
+                    }
+                })
+                .map_err(|e| format!("启动 stream-compare 清理线程失败: {e}"))?;
             voice_hotkey::init_global_shortcut_plugin(app.handle())?;
             tray::setup_tray(app.handle())?;
             commands::boot_cycle::mark("desktop", "app.setup.done", None);

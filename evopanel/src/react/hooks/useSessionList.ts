@@ -268,6 +268,9 @@ export function useSessionList(opts: UseSessionListOptions) {
   const refreshInflightRef = useRef<Promise<void> | null>(null)
   const refreshDirtyRef = useRef(false)
   const refreshPendingOptRef = useRef<RefreshSessionsOptions | undefined>(undefined)
+  /** 任意来源的 refreshSessions 最短间隔(毫秒) — 抑制 1~2s 一次刷屏风暴。 */
+  const MIN_REFRESH_INTERVAL_MS = 1500
+  const lastRefreshRunAtRef = useRef(0)
   const refreshSessionsRef = useRef<
     ((opt?: RefreshSessionsOptions) => Promise<void>) | null
   >(null)
@@ -664,6 +667,26 @@ export function useSessionList(opts: UseSessionListOptions) {
 
   const refreshSessions = useCallback(
     async (opt?: RefreshSessionsOptions) => {
+      // 全局最小间隔 — 抑制 shell-sessions-mutated / scheduleRefreshSessions /
+      // onBackendReadyChange 等多源并发触发的 1~2s 一次刷屏风暴。低于间隔
+      // 直接合并到 dirty,等当前 inflight 完成后用 do-while 自然收敛一次。
+      const now = Date.now()
+      if (now - lastRefreshRunAtRef.current < MIN_REFRESH_INTERVAL_MS) {
+        refreshDirtyRef.current = true
+        const prev = refreshPendingOptRef.current
+        refreshPendingOptRef.current = {
+          skipAutoReselect: !!(prev?.skipAutoReselect || opt?.skipAutoReselect),
+          summariesOnly: !!(prev?.summariesOnly && opt?.summariesOnly),
+          silentReload:
+            prev?.silentReload === false || opt?.silentReload === false
+              ? false
+              : (opt?.silentReload ?? prev?.silentReload),
+        }
+        ssLog('refresh.throttled', {
+          sinceLastMs: now - lastRefreshRunAtRef.current,
+        })
+        return
+      }
       if (refreshInflightRef.current) {
         refreshDirtyRef.current = true
         const prev = refreshPendingOptRef.current
@@ -837,6 +860,7 @@ export function useSessionList(opts: UseSessionListOptions) {
             }
           } finally {
             setListLoading(false)
+            lastRefreshRunAtRef.current = Date.now()
           }
 
           currentOpt = refreshPendingOptRef.current
@@ -927,7 +951,9 @@ export function useSessionList(opts: UseSessionListOptions) {
 
   useEffect(() => {
     const onSessionsMutated = () => {
-      void refreshSessionsRef.current?.()
+      // 走统一 debounce(150ms) — 避免与 ChatApp 里的 scheduleRefreshSessions(250) 双触发
+      // 一条 panel:session_upserted 实际只刷一次,且合并任何后续突变。
+      scheduleRefreshSessionsRef.current?.(150)
     }
     window.addEventListener('evopanel:shell-sessions-mutated', onSessionsMutated)
     return () => window.removeEventListener('evopanel:shell-sessions-mutated', onSessionsMutated)

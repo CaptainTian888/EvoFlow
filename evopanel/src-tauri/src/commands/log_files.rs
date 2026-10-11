@@ -110,3 +110,116 @@ pub fn append_log_file_line(path: &Path, line: &str) -> Result<(), String> {
     f.write_all(line.as_bytes())
         .map_err(|e| format!("写入日志失败: {e}"))
 }
+
+// ---------------------------------------------------------------------------
+// 流式对比日志（stream-compare）的保留策略
+// ---------------------------------------------------------------------------
+//
+// 日志布局：``{evoflow_home}/logs/stream-compare/{sessionKey?}/{runId}/{*.log}``。
+// 每个 run 目录里放 sse-recv.log / ui-display.log / ui-display-visual.log，
+// 默认 2 天前的 run 目录会被清掉（由 ``prune_stream_compare_logs`` 实现）。
+//
+// 之所以按 run 目录整体删而不是按单个 .log 文件删：
+//   1) 一次会话的 3 个文件强相关、生命周期一致；
+//   2) 防止只删一两个导致残留空目录越积越多。
+//
+// 保留天数可通过环境变量 ``EVOFLOW_STREAM_COMPARE_RETENTION_DAYS`` 覆盖，
+// 取值 ≥ 1；缺省 2。
+
+pub const DEFAULT_STREAM_COMPARE_RETENTION_DAYS: i64 = 2;
+
+pub fn stream_compare_retention_days() -> i64 {
+    std::env::var("EVOFLOW_STREAM_COMPARE_RETENTION_DAYS")
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .filter(|&n| n >= 1)
+        .unwrap_or(DEFAULT_STREAM_COMPARE_RETENTION_DAYS)
+}
+
+fn newest_mtime_secs_in_dir(dir: &Path) -> Option<i64> {
+    let mut newest: Option<i64> = None;
+    let entries = fs::read_dir(dir).ok()?;
+    for entry in entries.flatten() {
+        let p = entry.path();
+        let modified = if p.is_dir() {
+            newest_mtime_secs_in_dir(&p)
+        } else {
+            entry
+                .metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs() as i64)
+        };
+        if let Some(secs) = modified {
+            newest = Some(newest.map_or(secs, |cur| cur.max(secs)));
+        }
+    }
+    newest
+}
+
+/// 删除超过保留窗口的 ``stream-compare/{runId}`` 目录，返回被删的 run 目录数。
+/// 不存在的根目录视作 0 删，安全可重复调用。
+pub fn prune_stream_compare_logs(root: &Path) -> Result<usize, String> {
+    if !root.is_dir() {
+        return Ok(0);
+    }
+    let keep_days = stream_compare_retention_days();
+    // cutoff = (现在 - keep_days) 对应的 epoch 秒。文件 mtime < cutoff 就说明
+    // 该 run 目录里最年轻的日志也已经超过保留窗口了，可以整目录清掉。
+    let now_secs = chrono::Local::now()
+        .timestamp()
+        .max(0);
+    let cutoff_secs = now_secs - keep_days * 86_400;
+    let mut removed = 0usize;
+
+    let top = match fs::read_dir(root) {
+        Ok(t) => t,
+        Err(e) => return Err(format!("读取 stream-compare 根失败: {e}")),
+    };
+
+    // 支持两种布局：
+    //   stream-compare/{runId}/*.log                       （无 sessionKey 的兜底）
+    //   stream-compare/{sessionKey}/{runId}/*.log          （正常情况）
+    // 判定方式：如果某个子目录里直接有 .log 文件，就当作 run 目录；
+    // 否则把它当作 session 目录再下钻一层。
+    for entry in top.flatten() {
+        let p = entry.path();
+        if !p.is_dir() {
+            continue;
+        }
+        let mut run_dirs: Vec<PathBuf> = Vec::new();
+        let has_log = fs::read_dir(&p)
+            .map(|d| {
+                d.flatten().any(|e| {
+                    e.path()
+                        .extension()
+                        .map(|x| x == "log")
+                        .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false);
+        if has_log {
+            run_dirs.push(p.clone());
+        } else if let Ok(sub) = fs::read_dir(&p) {
+            for s in sub.flatten() {
+                let sp = s.path();
+                if sp.is_dir() {
+                    run_dirs.push(sp);
+                }
+            }
+        }
+
+        for run_dir in run_dirs {
+            let Some(mtime) = newest_mtime_secs_in_dir(&run_dir) else {
+                continue;
+            };
+            if mtime < cutoff_secs {
+                if fs::remove_dir_all(&run_dir).is_ok() {
+                    removed += 1;
+                }
+            }
+        }
+    }
+    Ok(removed)
+}

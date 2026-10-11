@@ -24,6 +24,13 @@ const PROBE_INTERVAL_MS = 20_000
 const FOREGROUND_GUARD_INTERVAL_MS = 20_000
 /** 首次守卫延迟（ms）--避免与刚发出的请求竞争 */
 const FOREGROUND_GUARD_FIRST_DELAY_MS = 8_000
+/**
+ * 背景会话执行状态探测的最小间隔（ms）。``sessions`` 引用变化会重建 effect
+ * （外层 useMemo sessionsProbeKey 已经覆盖 runStatus/currentRunId），但即使去掉
+ * ``sessions`` 依赖,sessionsProbeKey 字符串变化（runStatus 翻转）也可能让 effect
+ * 重建并立刻 run() 一次 — 加 gate 防止 1~2s 一次刷屏。
+ */
+const PROBE_MIN_INTERVAL_MS = 25_000
 
 function pageIsHidden(): boolean {
   return typeof document !== 'undefined' && document.visibilityState === 'hidden'
@@ -56,8 +63,12 @@ export function useSessionExecutionProbes(
   useEffect(() => {
     let cancelled = false
     let id = 0
+    let lastRunAt = 0
     const run = () => {
       if (cancelled || pageIsHidden()) return
+      const now = Date.now()
+      if (now - lastRunAt < PROBE_MIN_INTERVAL_MS) return
+      lastRunAt = now
       void refreshBackgroundExecutionProbes(sessions, {
         foregroundKey: String(selectedSessionKey || '').trim() || null,
       })
@@ -84,7 +95,7 @@ export function useSessionExecutionProbes(
       if (id) window.clearInterval(id)
       document.removeEventListener('visibilitychange', onVisibility)
     }
-  }, [sessionsProbeKey, selectedSessionKey, sessions])
+  }, [sessionsProbeKey, selectedSessionKey])  // 去掉 sessions 依赖(它每次都新引用,会导致 effect 反复重建 → 立即 run)
 
   /**
    * 前台会话状态守卫：停留的会话如果本地显示运行中(isTurnBusy)，

@@ -12,9 +12,19 @@ from evoflow.knowledge.owned.ids import new_id, utc_now
 
 logger = logging.getLogger(__name__)
 
-RETENTION_DAYS = 90
+# 用户面「活动日志」保留窗口（天数）。
+# 这个值既控制了 `record()` 触发 prune 的老数据，也决定了无 kb_id 的全局 prune 阈值。
+# 调小 → 频繁写 KB 时 prune 调用会增加；调大 → 数据库会保留更多旧活动。
+RETENTION_DAYS = 2
+# 全局 prune 触发频率：每写入 N 条带 kb_id 的活动记录，额外跑一次全局 prune，
+# 以免孤立 kb_id 下的旧日志永远不被清理。
+GLOBAL_PRUNE_EVERY_N_RECORDS = 50
+
 MAX_PER_KB = 5000
 QUERY_PREVIEW_LEN = 80
+
+# 模块级计数器，用来节流上面的 global prune 调用。
+_global_prune_tick = 0
 
 # Stable action ids (panel maps to Chinese labels).
 ACTIONS = frozenset(
@@ -114,6 +124,17 @@ def record(
                 prune(kb_id)
             except Exception:
                 logger.debug("owned activity prune failed", exc_info=True)
+        # Each successful write nudges a global sweep so orphan kb_id rows
+        # (e.g. from delete_searches with kb_id="") eventually get cleaned out
+        # even though they never trigger the per-kb prune.
+        global _global_prune_tick
+        _global_prune_tick += 1
+        if _global_prune_tick >= GLOBAL_PRUNE_EVERY_N_RECORDS:
+            _global_prune_tick = 0
+            try:
+                prune(None)
+            except Exception:
+                logger.debug("owned activity global prune failed", exc_info=True)
         return {
             "id": aid,
             "kbId": kb_id or "",
