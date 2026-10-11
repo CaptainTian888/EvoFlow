@@ -5217,11 +5217,12 @@ html.dark .react-chat-context-ring-track {
 @keyframes react-chat-ctx-zcode-enter {
   from {
     opacity: 0;
-    transform: translateY(-4px);
+    /* 保留 panel 自身的 -100% 上移，只额外叠加 4px 的入场位移，永远只向上展示。 */
+    transform: translateY(calc(-100% - 4px));
   }
   to {
     opacity: 1;
-    transform: translateY(0);
+    transform: translateY(-100%);
   }
 }
 

@@ -34,6 +34,12 @@ import {
   resolveShellGroupWorkspacePath,
   splitVisibleAndFoldedDutySessions,
 } from '../lib/session-list/workspace-groups.js'
+import {
+  isGenericEmployeeLabel,
+  isCollapsedJobTitle,
+  normalizeEmployeeCodeKey,
+  resolveEmployeeDisplayName,
+} from '../lib/employee-display.js'
 import { AssignedAgentAvatar } from './AssignedAgentAvatar.js'
 import {
   ShellChevronIcon,
@@ -58,7 +64,8 @@ export type ShellSessionListProps = {
   newTaskActive: boolean
   rows: ShellSidebarSyncRow[]
   groups: ShellWorkspaceGroup[]
-  /** ``/api/agents``：员工会话行展示岗位头像 */
+  /** ``/api/agents``：员工会话行展示岗位头像 + 员工下拉做 agent_name 兜底。
+   *  保持与子组件 (AssignedAgentAvatar / ShellSessionListRow) 一致的 unknown[] 类型。 */
   agents?: unknown[] | null
   runningSessionMap?: Record<string, RunningSessionSummary>
   resolveLiveStreamActivityForSession?: (
@@ -123,54 +130,44 @@ function normalizePinKey(key: string): string {
   return normalizeWorkspacePathKey(raw) || raw
 }
 
-const EMPLOYEE_JOB_TITLE_FALLBACK = '未命名岗位'
-
-/** 整组常量「智能体员工」不是具体岗位名，不能当员工下拉项文案 */
-function isGenericEmployeeSidebarLabel(value: string): boolean {
-  const t = String(value || '').trim()
-  return !t || t === WORKSPACE_GROUP_PROACTIVE_LABEL || t === EMPLOYEE_JOB_TITLE_FALLBACK
-}
-
-/** 与 ShellSessionListRow 一致：忽略大小写，_/- 互通，避免匹配失败后露出英文 code */
-function normalizeEmployeeCodeKey(code: string): string {
-  return String(code || '')
-    .trim()
-    .toLowerCase()
-    .replace(/_/g, '-')
-}
-
-/** 岗位名是否已塌成英文 agent_code（不能当标题） */
-function isCollapsedJobTitle(title: string, agentCode: string): boolean {
-  const name = String(title || '').trim()
-  const code = String(agentCode || '').trim()
-  if (!name) return true
-  if (!code) return false
-  return normalizeEmployeeCodeKey(name) === normalizeEmployeeCodeKey(code)
+/** 「智能体员工」整组常量在 proactive 会话上恒作为 workspaceLabel,不能当岗位名 hint。 */
+function isGenericEmployeeWorkspaceLabel(value: string): boolean {
+  return isGenericEmployeeLabel(value) || value === WORKSPACE_GROUP_PROACTIVE_LABEL
 }
 
 /**
- * 员工下拉 / 分组标题：永远只显示岗位名（role_name）。
- * 禁止 agent_name、禁止英文 agent_code、禁止整组常量「智能体员工」。
+ * 员工下拉 / 分组标题:优先岗位名(role_name);空时降级到 agent_name;
+ * 都没有时显示英文 agent_code。绝不显示「未命名岗位」字面量。
+ *
+ * 详见 `../lib/employee-display.ts`。
  */
+type EmployeeGroupRole = {
+  agent_code: string
+  role_name?: string | null
+  agent_name?: string | null
+}
+
+/** ShellSessionList props 用的弱类型,兼容多种上游 sources(/api/agents 列表、proactive 列表 等)。 */
+type EmployeeGroupSource = {
+  agent_code?: string | null
+  agent_name?: string | null
+  role_name?: string | null
+}
+
 function resolveEmployeeGroupLabel(
   agentCode: string,
-  roles: Array<{ agent_code: string; role_name: string; agent_name?: string }> | null | undefined,
+  roles: ReadonlyArray<EmployeeGroupSource> | null | undefined,
+  agents: ReadonlyArray<unknown> | null | undefined,
   fallback = '',
 ): string {
+  const resolved = resolveEmployeeDisplayName(agentCode, {
+    roles,
+    agents,
+    agentNameHint: fallback,
+  })
+  if (resolved) return resolved
   const code = String(agentCode || '').trim()
-  const codeKey = normalizeEmployeeCodeKey(code)
-  const role = (roles || []).find(
-    (r) => normalizeEmployeeCodeKey(r.agent_code) === codeKey,
-  )
-  const candidates = [role?.role_name, fallback]
-  for (const raw of candidates) {
-    const title = String(raw || '').trim()
-    if (!title || isGenericEmployeeSidebarLabel(title)) continue
-    if (isCollapsedJobTitle(title, code)) continue
-    // 显式不用 agent_name：即使与岗位名相同，也只接受 role_name / 岗位 hint
-    return title
-  }
-  return EMPLOYEE_JOB_TITLE_FALLBACK
+  return code || ''
 }
 
 type EmployeeSidebarGroup = {
@@ -183,7 +180,8 @@ type EmployeeSidebarGroup = {
 /** 员工 Tab：按 agent_code 折叠；花名册无会话也占一组 */
 function buildEmployeeSidebarGroups(
   sessionRows: ShellSidebarSyncRow[],
-  roles: Array<{ agent_code: string; role_name: string; agent_name?: string }> | null | undefined,
+  roles: ReadonlyArray<EmployeeGroupSource> | null | undefined,
+  agents: ReadonlyArray<unknown> | null | undefined,
 ): EmployeeSidebarGroup[] {
   const sessionsByCode = new Map<string, ShellSidebarSyncRow[]>()
   for (const row of sessionRows) {
@@ -211,7 +209,7 @@ function buildEmployeeSidebarGroups(
     const maxUpdatedAt = sessions.reduce((m, r) => Math.max(m, Number(r.updatedAt || 0)), 0)
     out.push({
       agentCode: code,
-      label: resolveEmployeeGroupLabel(code, roles, labelHint),
+      label: resolveEmployeeGroupLabel(code, roles, agents, labelHint),
       sessions,
       maxUpdatedAt,
     })
@@ -227,7 +225,7 @@ function buildEmployeeSidebarGroups(
     const code = proactiveAgentCodeFromSessionKey(rowsForCode[0]?.sessionKey) || lc
     // workspaceLabel 对 proactive 会话恒为「智能体员工」，不能当岗位名传入
     const wsLabel = String(rowsForCode[0]?.workspaceLabel || '').trim()
-    pushGroup(code, isGenericEmployeeSidebarLabel(wsLabel) ? '' : wsLabel)
+    pushGroup(code, isGenericEmployeeWorkspaceLabel(wsLabel) ? '' : wsLabel)
   }
 
   return out.sort((a, b) => {
@@ -773,7 +771,7 @@ export function ShellSessionList({
   const employeeGroups = useMemo(() => {
     if (!isEmployeesTab) return [] as EmployeeSidebarGroup[]
     const sessionOnly = rows.filter((r) => r.workspaceKey === WORKSPACE_GROUP_PROACTIVE)
-    let groups = buildEmployeeSidebarGroups(sessionOnly, effectiveEmployeeRoles)
+    let groups = buildEmployeeSidebarGroups(sessionOnly, effectiveEmployeeRoles, agents)
     const q = String(sessionFilter || '').trim().toLowerCase()
     if (q) {
       groups = groups

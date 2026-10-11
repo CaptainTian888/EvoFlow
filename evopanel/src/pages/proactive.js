@@ -8,6 +8,7 @@
  *  4. 待审批 - 需人决策的事项，一键同意/拒绝
  */
 import { api, getGatewayBaseUrl } from '../lib/tauri-api.js'
+import { resolveEmployeeDisplayName } from '../react/lib/employee-display.js'
 import { toast } from '../components/toast.js'
 import { navigate } from '../router.js'
 import { notifyDesktopCompletion } from '../lib/desktop-notification.js'
@@ -266,13 +267,21 @@ function roleDisplayName(code) {
 }
 
 function roleCardTitle(role) {
-  const code = sanitizeRoleLabel(role?.agent_code, '')
-  const roleName = sanitizeRoleLabel(role?.role_name, '')
-  const agentName = sanitizeRoleLabel(role?.agent_name, '')
-  // 优先岗位名；无岗位名则 fallback 到智能体名；两者都没有才降级
-  if (roleName && roleName !== code) return roleName
-  if (agentName && agentName !== code) return agentName
-  return '未命名岗位'
+  const code = String(role?.agent_code || '').trim()
+  // 全局唯一入口(evopanel/src/react/lib/employee-display.ts);
+  // 优先岗位名 → agent_name → 整组常量「智能体员工」→ ''。
+  // 绝不显示「未命名岗位」字面量。
+  const resolved = resolveEmployeeDisplayName(code, {
+    roles: [
+      {
+        agent_code: code,
+        role_name: role?.role_name,
+        agent_name: role?.agent_name,
+      },
+    ],
+  })
+  if (resolved) return resolved
+  return code || ''
 }
 
 function roleDutyFallback(role) {

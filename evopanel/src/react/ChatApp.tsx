@@ -4591,8 +4591,9 @@ export default function ChatApp() {
     void loadProactiveRoles()
   }, [loadProactiveRoles])
 
-  // 启动时若第一次失败，后端就绪后补拉，避免侧栏员工下拉一直「未命名岗位」
-  useEffect(() => {
+// 启动时若第一次失败，后端就绪后补拉，避免侧栏员工下拉塌成英文 agent_code
+// (展示名解析统一走 evopanel/src/react/lib/employee-display.ts)
+useEffect(() => {
     let cancelled = false
     let unsub: (() => void) | undefined
     void import('../lib/tauri-api.js').then((mod) => {

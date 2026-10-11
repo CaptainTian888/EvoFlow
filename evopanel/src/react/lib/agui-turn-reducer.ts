@@ -174,29 +174,46 @@ export type AgUiTurnState = {
 const MIND_MAP_TAG_RE = /<session_mind_map[\s\S]*?<\/session_mind_map>/gi
 
 // Wire snapshots do not consistently carry block timestamps. Keep the first/last
-// observed times by message ID so a refresh/reconciliation can restore reasoning
-// duration instead of recomputing it from the new render time.
-const reasoningTimingByMessageId = new Map<string, { startedAtMs: number; endedAtMs?: number }>()
+// observed times by (runId, messageId) so a refresh/reconciliation inside one
+// run can restore reasoning duration instead of recomputing it from the new
+// render time. Keying by runId avoids cross-run bleed when the upstream message
+// id is reused (e.g. backend falls back to "reasoning-default" when block_id is
+// absent) — without it, the new run would inherit a stale startedAtMs from a
+// much earlier run and the live label would read "持续了 1 小时 18 分" while
+// the actual elapsed is only a few seconds.
+const reasoningTimingByMessageId = new Map<
+  string,
+  { runId: string; startedAtMs: number; endedAtMs?: number }
+>()
 const REASONING_TIMING_STORAGE_KEY = 'evopanel_reasoning_timing_v1'
+const REASONING_TIMING_KEY_SEP = '\u0001'
 
-function loadReasoningTiming(id: string): { startedAtMs: number; endedAtMs?: number } | undefined {
+type StoredReasoningTiming = { runId: string; startedAtMs: number; endedAtMs?: number }
+
+function timingKey(runId: string, messageId: string): string {
+  return `${runId}${REASONING_TIMING_KEY_SEP}${messageId}`
+}
+
+function loadReasoningTiming(key: string): StoredReasoningTiming | undefined {
   try {
     const raw = sessionStorage.getItem(REASONING_TIMING_STORAGE_KEY)
     const value = raw ? JSON.parse(raw) : null
-    const timing = value && typeof value === 'object' ? value[id] : undefined
-    if (timing && Number.isFinite(timing.startedAtMs)) return timing
+    const timing = value && typeof value === 'object' ? value[key] : undefined
+    if (timing && Number.isFinite(timing.startedAtMs) && typeof timing.runId === 'string') {
+      return timing as StoredReasoningTiming
+    }
   } catch {
     // Storage is optional (private mode/tests); in-memory timing still works.
   }
   return undefined
 }
 
-function saveReasoningTiming(id: string, timing: { startedAtMs: number; endedAtMs?: number }): void {
+function saveReasoningTiming(key: string, timing: StoredReasoningTiming): void {
   try {
     const raw = sessionStorage.getItem(REASONING_TIMING_STORAGE_KEY)
     const value = raw ? JSON.parse(raw) : {}
     const next = value && typeof value === 'object' ? value : {}
-    next[id] = timing
+    next[key] = timing
     const ids = Object.keys(next)
     for (const oldId of ids.slice(0, Math.max(0, ids.length - 1000))) delete next[oldId]
     sessionStorage.setItem(REASONING_TIMING_STORAGE_KEY, JSON.stringify(next))
@@ -205,16 +222,19 @@ function saveReasoningTiming(id: string, timing: { startedAtMs: number; endedAtM
   }
 }
 
-function rememberReasoningStart(messageId: string, at = Date.now()): number {
+function rememberReasoningStart(runId: string, messageId: string, at = Date.now()): number {
+  const rid = String(runId || '').trim()
   const id = String(messageId || '').trim()
   if (!id) return at
-  const existing = reasoningTimingByMessageId.get(id) || loadReasoningTiming(id)
-  if (existing) {
-    reasoningTimingByMessageId.set(id, existing)
+  const key = timingKey(rid, id)
+  const existing = reasoningTimingByMessageId.get(key) || loadReasoningTiming(key)
+  if (existing && existing.runId === rid) {
+    reasoningTimingByMessageId.set(key, existing)
     return existing.startedAtMs
   }
-  reasoningTimingByMessageId.set(id, { startedAtMs: at })
-  saveReasoningTiming(id, { startedAtMs: at })
+  const fresh: StoredReasoningTiming = { runId: rid, startedAtMs: at }
+  reasoningTimingByMessageId.set(key, fresh)
+  saveReasoningTiming(key, fresh)
   if (reasoningTimingByMessageId.size > 1000) {
     const oldest = reasoningTimingByMessageId.keys().next().value
     if (oldest) reasoningTimingByMessageId.delete(oldest)
@@ -222,14 +242,19 @@ function rememberReasoningStart(messageId: string, at = Date.now()): number {
   return at
 }
 
-function rememberReasoningEnd(messageId: string, at = Date.now()): number {
+function rememberReasoningEnd(runId: string, messageId: string, at = Date.now()): number {
+  const rid = String(runId || '').trim()
   const id = String(messageId || '').trim()
   if (!id) return at
-  const existing = reasoningTimingByMessageId.get(id) || loadReasoningTiming(id)
-  const timing = existing || { startedAtMs: at }
+  const key = timingKey(rid, id)
+  const existing = reasoningTimingByMessageId.get(key) || loadReasoningTiming(key)
+  const timing: StoredReasoningTiming =
+    existing && existing.runId === rid
+      ? existing
+      : { runId: rid, startedAtMs: at }
   if (timing.endedAtMs == null) timing.endedAtMs = at
-  reasoningTimingByMessageId.set(id, timing)
-  saveReasoningTiming(id, timing)
+  reasoningTimingByMessageId.set(key, timing)
+  saveReasoningTiming(key, timing)
   return timing.endedAtMs
 }
 
@@ -764,7 +789,7 @@ export function sealOpenAgUiMessages(state: AgUiTurnState): void {
   for (const msg of state.messages.values()) {
     if (!msg.closed) msg.closed = true
     if (msg.role === 'reasoning' && msg.endedAtMs == null) {
-      msg.endedAtMs = rememberReasoningEnd(msg.messageId, endedAtMs)
+      msg.endedAtMs = rememberReasoningEnd(state.runId, msg.messageId, endedAtMs)
     }
   }
 }
@@ -937,7 +962,7 @@ export function applyAgUiEvent(state: AgUiTurnState, event: AGUIEvent): AgUiTurn
   if (t === EventType.REASONING_START || t === EventType.REASONING_MESSAGE_START) {
     const e = event as { messageId: string }
     const msg = upsertTextMessage(state, e.messageId, 'reasoning')
-    if (msg.startedAtMs == null) msg.startedAtMs = rememberReasoningStart(e.messageId)
+    if (msg.startedAtMs == null) msg.startedAtMs = rememberReasoningStart(state.runId, e.messageId)
     msg.closed = false
     insertOrderEntry(state, {
       kind: 'reasoning',
@@ -976,7 +1001,7 @@ export function applyAgUiEvent(state: AgUiTurnState, event: AGUIEvent): AgUiTurn
     const msg = state.messages.get(e.messageId)
     if (msg) {
       msg.closed = true
-      if (msg.endedAtMs == null) msg.endedAtMs = rememberReasoningEnd(e.messageId)
+      if (msg.endedAtMs == null) msg.endedAtMs = rememberReasoningEnd(state.runId, e.messageId)
     }
     return syncAgUiCompatProjection(state)
   }

@@ -33,6 +33,7 @@ import {
   type PlatformRunEntry,
 } from '../../lib/right-stage/platform-feedback.js'
 import { parseProactiveSessionKey } from '../lib/session-list/workspace-groups.js'
+import { resolveEmployeeDisplayName } from '../lib/employee-display.js'
 import {
   boardTaskId,
   listSessionBoardTasks,
@@ -1210,7 +1211,19 @@ export function EmployeePane({
 }) {
   const [dutyExpanded, setDutyExpanded] = useState(false)
   const code = String(employeeInfo?.agentCode || agentCode || '').trim()
-  const roleName = String(employeeInfo?.roleName || '').trim() || '未命名岗位'
+  // 详见 evopanel/src/react/lib/employee-display.ts —— 优先 role_name,降级 agent_name,
+  // 绝不显示「未命名岗位」字面量;空时让 UI 自己决定用 code 或「智能体员工」。
+  const roleName =
+    resolveEmployeeDisplayName(code, {
+      roles: [
+        {
+          agent_code: code,
+          role_name: employeeInfo?.roleName,
+          agent_name: undefined,
+        },
+      ],
+      agentNameHint: agentLabel,
+    }) || code
   const employeeName = String(agentLabel || '').trim() || code || '智能体员工'
   const department = String(employeeInfo?.department || '').trim()
   const bio = String(agentDescription || '').trim()

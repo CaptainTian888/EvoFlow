@@ -297,12 +297,13 @@ export function tasksFromListResponse(tasksRes) {
  */
 export function normalizeWorkBoardTasks(rows, roleName = '') {
   const list = Array.isArray(rows) ? rows : []
-  const rn = String(roleName || '').trim()
   /** @type {Map<string, Record<string, unknown>>} */
   const byMain = new Map()
   for (const row of list) {
     const mainId = String(row.task_id || row.id || '').trim()
     if (!mainId) continue
+    // 跳过没有 assigned_role 的行（不能强补岗位名，否则会混入其他岗位的任务）
+    if (!String(row.assigned_role || '').trim()) continue
     const isSub = !!(row.subtask_id || row.is_subtask)
     if (!isSub) {
       const prev = byMain.get(mainId) || {
@@ -311,7 +312,7 @@ export function normalizeWorkBoardTasks(rows, roleName = '') {
         description: row.description,
         status: row.status,
         assigned_to: row.assigned_to,
-        assigned_role: row.assigned_role || rn,
+        assigned_role: row.assigned_role,
         source: row.source,
         source_ref: row.source_ref,
         progress: row.progress,
@@ -329,7 +330,7 @@ export function normalizeWorkBoardTasks(rows, roleName = '') {
         name: row.name ?? prev.name,
         description: row.description ?? prev.description,
         status: row.status ?? prev.status,
-        assigned_role: row.assigned_role || prev.assigned_role || rn,
+        assigned_role: row.assigned_role || prev.assigned_role,
         source: row.source ?? prev.source,
         source_ref: row.source_ref ?? prev.source_ref,
         progress: row.progress ?? prev.progress,
@@ -345,7 +346,7 @@ export function normalizeWorkBoardTasks(rows, roleName = '') {
         id: mainId,
         name: '',
         status: 'pending',
-        assigned_role: row.assigned_role || rn,
+        assigned_role: row.assigned_role,
         risk_level: row.risk_level ?? row.risk ?? '',
         subtasks: [],
       }
@@ -356,7 +357,7 @@ export function normalizeWorkBoardTasks(rows, roleName = '') {
         description: row.description,
         status: row.status,
         assigned_to: row.assigned_to,
-        assigned_role: row.assigned_role || rn,
+        assigned_role: row.assigned_role,
         source: row.source,
         source_ref: row.source_ref,
         progress: row.progress,
