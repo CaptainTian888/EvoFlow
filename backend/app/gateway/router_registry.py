@@ -22,20 +22,33 @@ def _include_module_router(
     *,
     label: str = "",
     slow_ms: float = _SLOW_ROUTER_IMPORT_MS,
+    optional: bool = False,
     **include_kwargs: Any,
-) -> None:
-    """Import one router module and mount it; log slow imports to STARTUP-TRACE."""
+) -> bool:
+    """Import one router module and mount it; log slow imports to STARTUP-TRACE.
+
+    Returns True when the router was mounted. When ``optional`` is True, import
+    / mount failures are logged and return False instead of aborting the rest of
+    ``register_extended_routers`` (packaged builds must not brick employee /
+    apps / automation behind a permanent ``loading_extended`` 503).
+    """
     from app.gateway.startup_trace import startup_mark
 
     tag = label or module.rsplit(".", 1)[-1]
     t0 = time.perf_counter()
-    mod = importlib.import_module(module)
-    router = getattr(mod, "router")
-    app.include_router(router, **include_kwargs)
-    # v4 routes 模块附带独立前缀的 conversation_router（ZCode v4 wire，H3-C）。
-    extra_router = getattr(mod, "conversation_router", None)
-    if extra_router is not None:
-        app.include_router(extra_router, **include_kwargs)
+    try:
+        mod = importlib.import_module(module)
+        router = getattr(mod, "router")
+        app.include_router(router, **include_kwargs)
+        # v4 routes 模块附带独立前缀的 conversation_router（ZCode v4 wire，H3-C）。
+        extra_router = getattr(mod, "conversation_router", None)
+        if extra_router is not None:
+            app.include_router(extra_router, **include_kwargs)
+    except Exception:
+        if optional:
+            logger.exception("optional router %s (%s) failed to register — continuing", tag, module)
+            return False
+        raise
     ms = (time.perf_counter() - t0) * 1000.0
     if ms >= slow_ms:
         startup_mark(
@@ -43,6 +56,7 @@ def _include_module_router(
             phase="routers",
             extra={"import_ms": round(ms, 1)},
         )
+    return True
 
 
 def register_core_routers(app: FastAPI) -> None:
@@ -113,7 +127,12 @@ def register_core_routers(app: FastAPI) -> None:
 
 
 def register_extended_routers(app: FastAPI) -> None:
-    """Heavy routers: knowledge, observability, eval, WebUI static, etc."""
+    """Heavy routers: knowledge, observability, eval, WebUI static, etc.
+
+    Each mount is best-effort (``optional=True``): one missing module in a
+    frozen desktop build must not leave ``extended_routers_registered`` unset
+    and 503 every employee / apps / automation / knowledge request forever.
+    """
 
     from app.gateway.deps.license import require_premium
     from app.gateway.startup_trace import startup_mark
@@ -121,67 +140,72 @@ def register_extended_routers(app: FastAPI) -> None:
     startup_mark("register_extended_routers.begin", phase="routers")
 
     # Deferred from core: not needed for first chat paint; cuts core import time.
-    _include_module_router(app, "app.gateway.routers.automation_scheduler", label="automation_scheduler")
-    _include_module_router(app, "app.gateway.routers.apps", label="apps")
-    _include_module_router(app, "app.gateway.routers.organizations", label="organizations")
-    _include_module_router(app, "app.gateway.routers.collab", label="collab")
+    _extended = (
+        ("app.gateway.routers.automation_scheduler", "automation_scheduler", {}),
+        ("app.gateway.routers.apps", "apps", {}),
+        ("app.gateway.routers.organizations", "organizations", {}),
+        ("app.gateway.routers.collab", "collab", {}),
+        ("app.gateway.routers.mcp", "mcp", {}),
+        ("app.gateway.routers.memory", "memory", {}),
+        ("app.gateway.routers.assets", "assets", {}),
+        ("app.gateway.routers.knowledge_owned", "knowledge_owned", {}),
+        ("app.gateway.routers.knowledge", "knowledge", {}),
+        ("app.gateway.routers.browser_embed", "browser_embed", {}),
+        ("app.gateway.routers.browser_snapshots", "browser_snapshots", {}),
+        ("app.gateway.routers.browser_stream", "browser_stream", {}),
+        ("app.gateway.routers.stage_news", "stage_news", {}),
+        ("app.gateway.routers.auth", "auth", {}),
+        ("app.gateway.routers.openai_compat_apps", "openai_compat_apps", {}),
+        ("app.gateway.routers.tools", "tools", {}),
+        ("app.gateway.routers.mcp_server", "mcp_server", {}),
+        ("app.gateway.routers.webui", "webui", {}),
+        ("app.gateway.routers.channels", "channels", {}),
+        ("app.gateway.routers.platform_config", "platform_config", {}),
+        ("app.gateway.routers.apps_debug", "apps_debug", {}),
+        ("app.gateway.routers.task_memory", "task_memory", {}),
+        ("app.gateway.routers.sessions", "sessions", {}),
+        ("app.gateway.routers.a2a", "a2a", {}),
+        ("app.gateway.routers.meetings", "meetings", {}),
+        ("app.gateway.routers.eval", "eval", {}),
+        # Packaged builds historically omitted app.gateway.v4 from hiddenimports.
+        ("app.gateway.v4.routes", "v4_sessions", {"include_in_schema": False}),
+        ("app.gateway.routers.client_trace", "client_trace", {"include_in_schema": False}),
+        ("app.gateway.routers.client_presence", "client_presence", {"include_in_schema": False}),
+        ("app.gateway.routers.runtime_paths", "runtime_paths", {}),
+        ("app.gateway.routers.debug_agent_trace", "debug_agent_trace", {}),
+        ("app.gateway.routers.hang_diagnostics", "hang_diagnostics", {}),
+        ("app.gateway.routers.debug_stream_paint", "debug_stream_paint", {}),
+        ("app.gateway.routers.observability", "observability", {}),
+        ("app.gateway.routers.diagnostics", "diagnostics", {}),
+        ("app.gateway.routers.platform", "platform", {}),
+    )
+
+    mounted = 0
+    failed: list[str] = []
+    for module, label, kwargs in _extended:
+        if _include_module_router(app, module, label=label, optional=True, **kwargs):
+            mounted += 1
+        else:
+            failed.append(label)
+
     try:
         from evoflow.proactive.router import router as proactive_router
 
         app.include_router(proactive_router, dependencies=[Depends(require_premium)])
+        mounted += 1
     except Exception:
         logger.exception("failed to register proactive router (extended)")
+        failed.append("proactive")
 
-    _include_module_router(app, "app.gateway.routers.mcp", label="mcp")
-    _include_module_router(app, "app.gateway.routers.memory", label="memory")
-    _include_module_router(app, "app.gateway.routers.assets", label="assets")
-    _include_module_router(app, "app.gateway.routers.knowledge_owned", label="knowledge_owned")
-    _include_module_router(app, "app.gateway.routers.knowledge", label="knowledge")
-    _include_module_router(app, "app.gateway.routers.browser_embed", label="browser_embed")
-    _include_module_router(app, "app.gateway.routers.browser_snapshots", label="browser_snapshots")
-    _include_module_router(app, "app.gateway.routers.browser_stream", label="browser_stream")
-    _include_module_router(app, "app.gateway.routers.stage_news", label="stage_news")
-    _include_module_router(app, "app.gateway.routers.auth", label="auth")
-    _include_module_router(app, "app.gateway.routers.openai_compat_apps", label="openai_compat_apps")
-    _include_module_router(app, "app.gateway.routers.tools", label="tools")
-    _include_module_router(app, "app.gateway.routers.mcp_server", label="mcp_server")
-    _include_module_router(app, "app.gateway.routers.webui", label="webui")
-    _include_module_router(app, "app.gateway.routers.channels", label="channels")
-    _include_module_router(app, "app.gateway.routers.platform_config", label="platform_config")
-    _include_module_router(app, "app.gateway.routers.apps_debug", label="apps_debug")
-    _include_module_router(app, "app.gateway.routers.task_memory", label="task_memory")
-    _include_module_router(app, "app.gateway.routers.sessions", label="sessions")
-    _include_module_router(app, "app.gateway.routers.a2a", label="a2a")
-    _include_module_router(app, "app.gateway.routers.meetings", label="meetings")
-    _include_module_router(app, "app.gateway.routers.eval", label="eval")
-    _include_module_router(app, "app.gateway.v4.routes", label="v4_sessions", include_in_schema=False)
-    _include_module_router(
-        app,
-        "app.gateway.routers.client_trace",
-        label="client_trace",
-        include_in_schema=False,
-    )
-    _include_module_router(
-        app,
-        "app.gateway.routers.client_presence",
-        label="client_presence",
-        include_in_schema=False,
-    )
-
-    client_trace = importlib.import_module("app.gateway.routers.client_trace")
-    print(
-        f"[gateway] client_trace routes: {[r.path for r in client_trace.router.routes]}",
-        file=sys.stderr,
-        flush=True,
-    )
-
-    _include_module_router(app, "app.gateway.routers.runtime_paths", label="runtime_paths")
-    _include_module_router(app, "app.gateway.routers.debug_agent_trace", label="debug_agent_trace")
-    _include_module_router(app, "app.gateway.routers.hang_diagnostics", label="hang_diagnostics")
-    _include_module_router(app, "app.gateway.routers.debug_stream_paint", label="debug_stream_paint")
-    _include_module_router(app, "app.gateway.routers.observability", label="observability")
-    _include_module_router(app, "app.gateway.routers.diagnostics", label="diagnostics")
-    _include_module_router(app, "app.gateway.routers.platform", label="platform")
+    try:
+        client_trace = importlib.import_module("app.gateway.routers.client_trace")
+        print(
+            f"[gateway] client_trace routes: {[r.path for r in client_trace.router.routes]}",
+            file=sys.stderr,
+            flush=True,
+        )
+    except Exception:
+        logger.debug("client_trace route dump skipped", exc_info=True)
 
     try:
         from evoflow.webui.auth import _load_webui_enabled
@@ -192,7 +216,21 @@ def register_extended_routers(app: FastAPI) -> None:
     except Exception:
         logger.warning("Failed to mount EvoPanel static files", exc_info=True)
 
-    startup_mark("register_extended_routers.done", phase="routers", extra={"route_count": len(app.routes)})
+    startup_mark(
+        "register_extended_routers.done",
+        phase="routers",
+        extra={
+            "route_count": len(app.routes),
+            "mounted": mounted,
+            "failed": failed,
+        },
+    )
+    if failed:
+        logger.warning(
+            "Extended routers partially registered mounted=%s failed=%s",
+            mounted,
+            ",".join(failed),
+        )
 
 
 def register_v4_demo_router(app: FastAPI) -> None:
