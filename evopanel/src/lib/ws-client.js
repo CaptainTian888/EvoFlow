@@ -1013,10 +1013,131 @@ export async function evoflowFetchStream(url, options = {}) {
     transportLog('chat forced webview HTTP (localStorage)', pathOnly)
   }
 
+  // ★ Final fallback: when all streaming paths fail for /runs/stream, use the
+  // synchronous /runs/wait endpoint (LangGraph SDK provides it natively) and
+  // wrap the JSON response in a ReadableStream of synthetic SSE frames. The
+  // downstream consumer still speaks SSE, so the rest of the pipeline is
+  // untouched. Trade-off: no token-by-token streaming — the assistant text
+  // appears in one shot after the full run completes.
+  if (isRunsStream) {
+    try {
+      return await _runsWaitFallbackStream(url, options)
+    } catch (waitErr) {
+      console.warn('[evoflow] runs/wait fallback failed', waitErr)
+      // fall through to the legacy gateway-http path
+    }
+  }
+
   transportLog('chat transport=gateway-http', pathOnly)
   const base = await _getGatewayBaseUrl()
   const fullUrl = `${base}${url}`
   return _gatewayAuthFetch(fullUrl, options)
+}
+
+/**
+ * Synchronous LangGraph `/runs/wait` fallback. POSTs to the same Gateway URL
+ * (with the path swapped from `/runs/stream` → `/runs/wait`), waits for the
+ * full run to complete, and emits a minimal SSE sequence:
+ *
+ *   event: ag-ui
+ *   data: {"type":"RUN_STARTED", ...}
+ *
+ *   event: ag-ui
+ *   data: {"type":"TEXT_MESSAGE_CONTENT", "delta":"<final assistant text>"}
+ *
+ *   event: ag-ui
+ *   data: {"type":"RUN_FINISHED", ...}
+ *
+ * Returning a ReadableStream-shaped `{ok,status,body}` keeps the downstream
+ * SSE parser and dispatch pipeline unchanged.
+ */
+async function _runsWaitFallbackStream(origUrl, options = {}) {
+  const base = await _getGatewayBaseUrl()
+  // Swap /runs/stream?... → /runs/wait (drop the original query — /runs/wait
+  // doesn't take the same stream_format/ui_sse params).
+  const waitPath = String(origUrl).split('?')[0].replace(/\/runs\/stream$/, '/runs/wait')
+  const fullUrl = `${base}${waitPath}`
+  transportLog('chat transport=runs-wait-api', waitPath)
+
+  // LangGraph /runs/wait requires the assistant_id; the runs/stream body
+  // normally contains it, but if the caller forgot we add a safe default.
+  let bodyText = options.body
+  if (bodyText) {
+    try {
+      const obj = JSON.parse(bodyText)
+      if (!obj.assistant_id) obj.assistant_id = 'lead_agent'
+      if (obj.input?.messages && !obj.context?.thread_id) {
+        obj.context = obj.context || {}
+      }
+      bodyText = JSON.stringify(obj)
+    } catch {
+      /* leave as-is */
+    }
+  }
+
+  const fetchOptions = {
+    method: options.method || 'POST',
+    headers: options.headers,
+    body: bodyText,
+    signal: options.signal,
+  }
+  const resp = await _gatewayAuthFetch(fullUrl, fetchOptions)
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => '')
+    throw new Error(`runs/wait HTTP ${resp.status}: ${text.slice(0, 200)}`)
+  }
+  const j = await resp.json()
+  // Extract the final assistant text from the LangGraph state shape.
+  let finalText = ''
+  const messages = j?.messages || j?.values?.messages || []
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i] || {}
+    const role = m.type || m.role
+    if (role === 'ai' || role === 'assistant' || role === 'AIMessage') {
+      const c = m.content
+      if (typeof c === 'string') {
+        finalText = c
+        break
+      } else if (Array.isArray(c)) {
+        finalText = c
+          .map((p) => (typeof p === 'string' ? p : p?.text || ''))
+          .filter(Boolean)
+          .join('')
+        if (finalText) break
+      }
+    }
+  }
+  const threadId = String(j?.thread_id || '').trim()
+  const runId =
+    String(j?.run_id || '').trim() || `run-${Math.random().toString(36).slice(2, 12)}`
+  const sseChunks = [
+    `event: ag-ui\ndata: ${JSON.stringify({
+      type: 'RUN_STARTED',
+      threadId: threadId || undefined,
+      runId,
+    })}\n\n`,
+    finalText
+      ? `event: ag-ui\ndata: ${JSON.stringify({
+          type: 'TEXT_MESSAGE_CONTENT',
+          messageId: `msg-${runId}`,
+          delta: finalText,
+        })}\n\n`
+      : '',
+    `event: ag-ui\ndata: ${JSON.stringify({
+      type: 'RUN_FINISHED',
+      threadId: threadId || undefined,
+      runId,
+    })}\n\n`,
+  ]
+    .filter(Boolean)
+    .map((s) => new TextEncoder().encode(s))
+  const stream = new ReadableStream({
+    start(controller) {
+      for (const chunk of sseChunks) controller.enqueue(chunk)
+      controller.close()
+    },
+  })
+  return { ok: true, status: 200, body: stream, structured: false }
 }
 
 /**
