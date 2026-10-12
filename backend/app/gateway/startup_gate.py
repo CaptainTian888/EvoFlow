@@ -147,10 +147,12 @@ class StartupGateMiddleware(BaseHTTPMiddleware):
             )
 
         if _needs_extended_routers(path) and not bool(getattr(state, "extended_routers_registered", False)):
+            # 2s (not 300ms): desktop panels poll many extended prefixes in parallel;
+            # aggressive retries exhaust Windows SelectorEventLoop select() FDs (~512).
             return startup_not_ready_response(
                 code="loading_extended",
                 message="扩展模块仍在加载，请稍后重试",
-                retry_after_ms=300,
+                retry_after_ms=2000,
             )
 
         if _needs_langgraph_ready(path) and getattr(state, "_lg_app", None) is None:

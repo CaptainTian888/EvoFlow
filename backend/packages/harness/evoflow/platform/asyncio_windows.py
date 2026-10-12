@@ -11,6 +11,9 @@ Mitigations (idempotent, safe to call multiple times):
 3. Patch ``httpx.Response.aclose`` to swallow closed-loop teardown errors.
 4. Loop exception handler: downgrade SSE/client disconnect noise
    (``ConnectionResetError`` / WinError 10054 from ``_call_connection_lost``).
+5. Cap uvicorn concurrency below Windows ``select()`` FD_SETSIZE (~512) so a
+   startup ``loading_extended`` retry storm cannot crash the loop with
+   ``ValueError: too many file descriptors in select()``.
 """
 
 from __future__ import annotations
@@ -29,9 +32,71 @@ _APPLIED = False
 _DISCONNECT_HANDLER_LOOPS: weakref.WeakSet[asyncio.AbstractEventLoop] = weakref.WeakSet()
 
 
+# Windows CPython select() uses FD_SETSIZE=512. Stay well under that headroom
+# for listeners / stdio / internal sockets that also occupy slots.
+_WINDOWS_SELECTOR_FD_SOFT_LIMIT = 512
+_WINDOWS_SELECTOR_DEFAULT_LIMIT_CONCURRENCY = 384
+
+
 def _windows_selector_event_loop_enabled() -> bool:
     raw = os.environ.get("EVOFLOW_WIN_SELECTOR_EVENT_LOOP", "1").strip().lower()
     return raw not in ("0", "false", "no", "off")
+
+
+def windows_selector_fd_soft_limit() -> int:
+    """Hard ceiling of sockets ``select()`` can watch on Windows CPython."""
+    return _WINDOWS_SELECTOR_FD_SOFT_LIMIT
+
+
+def windows_selector_recommended_limit_concurrency() -> int | None:
+    """Uvicorn ``limit_concurrency`` to keep SelectorEventLoop under FD_SETSIZE.
+
+    Returns ``None`` when Selector is disabled (Proactor has no select FD cap)
+    or the platform is not Windows. Override with ``EVOFLOW_WIN_LIMIT_CONCURRENCY``.
+    """
+    if sys.platform != "win32" or not _windows_selector_event_loop_enabled():
+        return None
+    raw = os.environ.get("EVOFLOW_WIN_LIMIT_CONCURRENCY", "").strip()
+    if raw:
+        try:
+            value = int(raw)
+        except ValueError:
+            logger.warning("Invalid EVOFLOW_WIN_LIMIT_CONCURRENCY=%r; using default", raw)
+            value = _WINDOWS_SELECTOR_DEFAULT_LIMIT_CONCURRENCY
+    else:
+        value = _WINDOWS_SELECTOR_DEFAULT_LIMIT_CONCURRENCY
+    # Keep a reserve for the listening socket, stdio RPC, and internal fds.
+    return max(32, min(value, _WINDOWS_SELECTOR_FD_SOFT_LIMIT - 64))
+
+
+def apply_windows_uvicorn_concurrency_limit(config: Any) -> int | None:
+    """Set ``config.limit_concurrency`` on Windows Selector builds (idempotent)."""
+    limit = windows_selector_recommended_limit_concurrency()
+    if limit is None:
+        return None
+    current = getattr(config, "limit_concurrency", None)
+    if current is None or (isinstance(current, int) and current > limit):
+        config.limit_concurrency = limit
+        logger.info(
+            "Windows SelectorEventLoop: uvicorn limit_concurrency=%s (select FD soft limit=%s)",
+            limit,
+            _WINDOWS_SELECTOR_FD_SOFT_LIMIT,
+        )
+    return int(getattr(config, "limit_concurrency", limit) or limit)
+
+
+def is_windows_select_fd_exhaustion_error(exc: BaseException | None) -> bool:
+    """True for ``ValueError: too many file descriptors in select()`` (and causes)."""
+    cur: BaseException | None = exc
+    seen: set[int] = set()
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if isinstance(cur, ValueError):
+            msg = str(cur).lower()
+            if "too many file descriptors" in msg and "select" in msg:
+                return True
+        cur = cur.__cause__ or cur.__context__
+    return False
 
 
 def _apply_windows_selector_event_loop_policy() -> None:
@@ -256,6 +321,21 @@ def run_uvicorn_with_windows_shutdown_guard(run_callable: Any) -> None:
     except (KeyboardInterrupt, SystemExit):
         raise
     except BaseException as exc:
+        if is_windows_select_fd_exhaustion_error(exc):
+            # SelectorEventLoop hard-fails once >~512 sockets are open. Prefer a
+            # clear exit over a double-fault during asyncio.run() cleanup.
+            limit = windows_selector_recommended_limit_concurrency()
+            logger.error(
+                "Windows select() FD exhaustion — Gateway exiting. "
+                "Too many concurrent sockets for SelectorEventLoop (limit≈%s). "
+                "Reduce client retry storms / raise EVOFLOW_WIN_LIMIT_CONCURRENCY headroom "
+                "only if you switch off selector (EVOFLOW_WIN_SELECTOR_EVENT_LOOP=0). "
+                "Recommended uvicorn limit_concurrency=%s. Original: %r",
+                _WINDOWS_SELECTOR_FD_SOFT_LIMIT,
+                limit,
+                exc,
+            )
+            raise SystemExit(75) from exc
         if is_benign_asyncio_shutdown_error(exc):
             logger.debug("Ignored benign Windows gateway shutdown I/O race: %r", exc)
             return
@@ -284,8 +364,9 @@ def apply_windows_langgraph_runtime_fixes() -> None:
     if not _APPLIED:
         _APPLIED = True
         logger.info(
-            "Windows LangGraph runtime fixes active (selector_loop=%s, BG_JOB_ISOLATED_LOOPS=%s, httpx_aclose_patch=on)",
+            "Windows LangGraph runtime fixes active (selector_loop=%s, limit_concurrency=%s, BG_JOB_ISOLATED_LOOPS=%s, httpx_aclose_patch=on)",
             _windows_selector_event_loop_enabled(),
+            windows_selector_recommended_limit_concurrency(),
             os.environ.get("BG_JOB_ISOLATED_LOOPS", ""),
         )
 
