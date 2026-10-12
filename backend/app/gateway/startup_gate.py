@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import logging
+
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
+
+logger = logging.getLogger(__name__)
 
 _STARTUP_EXEMPT_PREFIXES = (
     "/health",
@@ -117,14 +121,32 @@ class StartupGateMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         state = request.app.state
-        if not bool(getattr(state, "routers_registered", False)):
+        # A mounted LangGraph child app does not carry the parent Gateway's
+        # startup state. It is already behind the parent route gate, so do not
+        # interpret its missing state as "Gateway is starting up".
+        is_gateway_app = bool(getattr(state, "_is_evoflow_gateway_app", False))
+        if not is_gateway_app:
+            return await call_next(request)
+
+        routers_registered = bool(getattr(state, "routers_registered", False))
+        langgraph_mounted = getattr(state, "_lg_app", None) is not None
+        if not routers_registered and not (_needs_langgraph_ready(path) and langgraph_mounted):
+            logger.warning(
+                "Startup gate rejected request path=%s phase=%s startup_ready=%s routers_registered=%s extended=%s lg_app=%s",
+                path,
+                getattr(state, "startup_phase", "unknown"),
+                bool(getattr(state, "startup_ready", False)),
+                routers_registered,
+                bool(getattr(state, "extended_routers_registered", False)),
+                langgraph_mounted,
+            )
             return startup_not_ready_response(
                 code="starting_up",
                 message="Gateway 正在注册 API 路由，请稍后重试",
                 retry_after_ms=500,
             )
 
-        if _needs_extended_routers(path) and not bool(getattr(state, "extended_routers_registered", True)):
+        if _needs_extended_routers(path) and not bool(getattr(state, "extended_routers_registered", False)):
             return startup_not_ready_response(
                 code="loading_extended",
                 message="扩展模块仍在加载，请稍后重试",

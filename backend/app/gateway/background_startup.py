@@ -22,12 +22,24 @@ StLogFn = Callable[[str], None]
 
 
 def init_startup_state(app: FastAPI) -> None:
+    """Initialize lifespan state once per FastAPI app instance.
+
+    Uvicorn integrations can enter the lifespan more than once while reusing
+    the same app object. Resetting readiness on a second entry creates a short
+    window where already-mounted routes return the startup 503 again.
+    """
+    if bool(getattr(app.state, "_startup_state_initialized", False)):
+        logger.debug("Gateway startup state already initialized; preserving readiness state")
+        return
+
     app.state.startup_ready = False
     app.state.routers_registered = False
     app.state.extended_routers_registered = False
     app.state.startup_phase = "booting"
     app.state.startup_error = None
+    app.state.langgraph_ready = False
     app.state.startup_ready_event = asyncio.Event()
+    app.state.langgraph_ready_event = asyncio.Event()
     app.state.startup_background_tasks: list[asyncio.Task] = []
     app.state.startup_schedulers = {
         "retention": {"stop": None, "task": None},
@@ -35,6 +47,7 @@ def init_startup_state(app: FastAPI) -> None:
         "task_queue": {"stop": None, "task": None},
         "zombie_sweeper": {"stop": None, "task": None},
     }
+    app.state._startup_state_initialized = True
 
 
 def is_startup_ready(app: FastAPI) -> bool:
@@ -417,6 +430,10 @@ async def run_background_startup(app: FastAPI, st_log: StLogFn, _st: Any) -> Non
             "LangGraph external mode — skipping in-process mount/lifespan (upstream=%s)",
             resolve_langgraph_base_url(),
         )
+        app.state.langgraph_ready = True
+        langgraph_ready_event = getattr(app.state, "langgraph_ready_event", None)
+        if langgraph_ready_event is not None:
+            langgraph_ready_event.set()
     else:
         from app.gateway.lazy_langgraph import ensure_langgraph_mounted
 
@@ -713,6 +730,10 @@ async def run_background_startup(app: FastAPI, st_log: StLogFn, _st: Any) -> Non
                 raise
 
             print("[LG-LIFESPAN] Core components initialized", file=sys.stderr, flush=True)
+            langgraph_ready_event = getattr(app.state, "langgraph_ready_event", None)
+            if langgraph_ready_event is not None:
+                langgraph_ready_event.set()
+            app.state.langgraph_ready = True
             st_log("LG lifespan done")
         except Exception:
             logger.exception("Failed to initialize LangGraph lifespan components")
@@ -936,6 +957,13 @@ async def run_post_ready_warmups(app: FastAPI, st_log: StLogFn, _st: Any) -> Non
         logger.warning("Collab bridge ensure failed (non-fatal)", exc_info=True)
 
     try:
+        # Feishu/IM dispatch must not start before the LangGraph runtime is ready.
+        # The panel may use core APIs during this window, but channel messages
+        # immediately call /runs/stream and would otherwise receive startup 503.
+        if not bool(getattr(app.state, "langgraph_ready", False)):
+            langgraph_ready_event = getattr(app.state, "langgraph_ready_event", None)
+            if langgraph_ready_event is not None:
+                await langgraph_ready_event.wait()
         from app.channels.service import start_channel_service
 
         channel_service = await start_channel_service()

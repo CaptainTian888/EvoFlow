@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
@@ -67,6 +68,43 @@ def _tool_name_from_tc(tc: dict[str, Any]) -> str:
 
 def _tool_id_from_tc(tc: dict[str, Any]) -> str:
     return str(tc.get("id") or tc.get("tool_call_id") or "").strip()
+
+
+# Keys that carry the file path in write-family tool arguments.
+_PATH_ARG_KEYS = ("path", "target_file", "file_path", "file")
+
+
+def _tool_path_from_tc(tc: dict[str, Any]) -> str:
+    """Extract the file path from a write-family tool call's arguments.
+
+    Returns the path string if the key is found and the value is a non-empty
+    string; otherwise returns ``""``.  Consumers can use this in
+    ``TOOL_CALL_START`` to know the target file immediately without waiting
+    for ``TOOL_CALL_ARGS`` to deliver the path later.
+    """
+    fn = tc.get("function") if isinstance(tc.get("function"), dict) else {}
+    args_raw = fn.get("arguments")
+    if isinstance(args_raw, str):
+        # Fast path: check common pattern "path":"..."
+        m = re.search(r'"path"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"', args_raw)
+        if m:
+            return m.group(1)
+        try:
+            obj = json.loads(args_raw)
+        except Exception:
+            return ""
+        args = obj
+    elif isinstance(args_raw, dict):
+        args = args_raw
+    else:
+        args = tc.get("args") or tc.get("input") or {}
+    if not isinstance(args, dict):
+        return ""
+    for key in _PATH_ARG_KEYS:
+        val = args.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    return ""
 
 
 def _tool_args_text_from_tc(tc: dict[str, Any]) -> str:
@@ -241,7 +279,16 @@ def _ensure_tool_started(
     name = _tool_name_from_tc(tc)
     state.tool_started.add(tid)
     state.tool_names[tid] = name
-    out.append({"type": TOOL_CALL_START, "toolCallId": tid, "toolCallName": name})
+    event: dict[str, Any] = {"type": TOOL_CALL_START, "toolCallId": tid, "toolCallName": name}
+    # Surface the path immediately in TOOL_CALL_START for write-family tools so
+    # consumers do not have to wait for TOOL_CALL_ARGS to discover the target
+    # file.  Models often stream content before the "path" key.
+    name_lower = name.lower()
+    if name_lower in {"write", "write_to_file", "write_file", "replace", "str_replace", "replace_in_file"}:
+        path = _tool_path_from_tc(tc)
+        if path:
+            event["path"] = path
+    out.append(event)
     return tid
 
 

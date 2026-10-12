@@ -441,6 +441,7 @@ This gateway provides custom endpoints for models, MCP configuration, skills, ar
     register_health_routes(app)
     startup_mark("create_app.health_ok", phase="create_app")
 
+    app.state._is_evoflow_gateway_app = True
     app.state.routers_registered = False
     app.state._lg_app = None
     app.state._lg_mount_lock = asyncio.Lock()

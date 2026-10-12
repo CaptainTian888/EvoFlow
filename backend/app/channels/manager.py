@@ -563,6 +563,31 @@ def _is_thread_busy_error(exc: BaseException | None) -> bool:
     return "already running a task" in str(exc)
 
 
+def _is_startup_gate_error(exc: BaseException | None) -> bool:
+    """Detect transient 'Gateway starting up' errors that should be retried.
+    
+    These are 503 errors from StartupGateMiddleware indicating the Gateway
+    or LangGraph is still initializing. They're temporary and should retry.
+    """
+    if exc is None:
+        return False
+    msg = _exception_message_text(exc).lower()
+    # Match "starting_up", "warming_up", "loading_extended" error codes
+    # Also match the user-facing messages from startup_gate.py
+    return (
+        '"error":"starting_up"' in msg
+        or '"error":"warming_up"' in msg
+        or '"error":"loading_extended"' in msg
+        or "gateway 正在注册" in msg
+        or "agent 引擎仍在加载" in msg
+        or "扩展模块仍在加载" in msg
+        or "正在注册 api 路由" in msg
+        or "gateway starting up" in msg
+        or "agent engine" in msg
+        or "extension module" in msg
+    )
+
+
 def _exception_message_text(exc: BaseException) -> str:
     parts = [str(exc)]
     notes = getattr(exc, "__notes__", None)
@@ -2193,7 +2218,8 @@ class ChannelManager:
         event_counts: dict[str, int] = {}
         stream_params = _channel_stream_params(self._langgraph_url)
 
-        for attempt in range(2):
+        # Allow more retries for startup-gate errors (max 3 attempts when startup issues detected)
+        for attempt in range(3):
             streamed_buffers: dict[str, str] = {}
             current_message_id: str | None = None
             custom_text = ""
@@ -2333,6 +2359,20 @@ class ChannelManager:
                     )
                     active_thread_id = await self._create_thread(client, msg)
                     continue
+                # Retry transient startup-gate errors (e.g., router registration in progress)
+                # with exponential backoff: 0.5s, 1.0s, 2.0s
+                if _is_startup_gate_error(exc) and attempt < 2:
+                    delay_sec = 0.5 * (2 ** attempt)  # 0.5s, 1.0s
+                    logger.warning(
+                        "[Manager] stream got startup-gate error, retrying in %.1fs: thread_id=%s attempt=%d/%d error=%s",
+                        delay_sec,
+                        active_thread_id,
+                        attempt + 1,
+                        2,
+                        str(exc)[:100],
+                    )
+                    await asyncio.sleep(delay_sec)
+                    continue
                 if _is_thread_busy_error(exc):
                     logger.warning("[Manager] thread busy (concurrent run rejected): thread_id=%s", active_thread_id)
                 else:
@@ -2375,6 +2415,8 @@ class ChannelManager:
         elif stream_error:
             if _is_thread_busy_error(stream_error):
                 response_text = THREAD_BUSY_MESSAGE
+            elif _is_startup_gate_error(stream_error):
+                response_text = "🔄 服务正在启动，请稍后重试。"
             elif not (response_text or "").strip():
                 response_text = (latest_text or "").strip() or "处理请求时出错，请稍后重试。"
             attachments = []

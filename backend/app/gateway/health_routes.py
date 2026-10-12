@@ -60,13 +60,15 @@ def register_health_routes(app: FastAPI) -> None:
         phase = str(getattr(request.app.state, "startup_phase", "unknown") or "unknown")
         extended = bool(getattr(request.app.state, "extended_routers_registered", False))
         routers = bool(getattr(request.app.state, "routers_registered", False))
+        langgraph = bool(getattr(request.app.state, "langgraph_ready", False))
         if ready:
             return {
-                "status": "ready",
+                "status": "ready" if langgraph else "warming_up",
                 "service": "evo-flow-gateway",
                 "phase": phase,
                 "core_routers": routers,
                 "extended_routers": extended,
+                "langgraph": langgraph,
             }
         err = getattr(request.app.state, "startup_error", None)
         body: dict = {

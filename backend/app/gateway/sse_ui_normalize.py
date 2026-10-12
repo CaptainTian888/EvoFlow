@@ -862,7 +862,12 @@ def _unescape_partial_json_string(raw: str) -> str:
     return "".join(out)
 
 
-def _extract_json_string_value_for_key(raw: str, key: str) -> str | None:
+def _extract_json_string_value_for_key(
+    raw: str,
+    key: str,
+    *,
+    require_closed: bool = False,
+) -> str | None:
     """Extract a string value for ``key`` from partial JSON args.
 
     Only matches the key at the **root object** (depth 1). A naive
@@ -914,6 +919,8 @@ def _extract_json_string_value_for_key(raw: str, key: str) -> str | None:
                                 break
                             buf.append(c)
                             j += 1
+                        if require_closed and (j >= n or text[j] != '"'):
+                            return None
                         return _unescape_partial_json_string("".join(buf))
             in_string = True
             i += 1
@@ -934,7 +941,9 @@ def _extract_write_fields_from_partial_args(raw: str) -> dict[str, str]:
     text = str(raw or "")
     path = ""
     for key in _PATH_ARG_KEYS:
-        val = _extract_json_string_value_for_key(text, key)
+        # Keep growing path prefixes out of progress events; content may stream
+        # before the path, which becomes authoritative when its JSON string closes.
+        val = _extract_json_string_value_for_key(text, key, require_closed=True)
         if val and val.strip():
             path = val.strip()
             break
