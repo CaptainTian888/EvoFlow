@@ -184,15 +184,64 @@ export function getBackendBaseURL() {
 }
 
 const GATEWAY_RETRY_DELAYS_MS = [300, 500, 800, 1200, 2000]
+/** loading_extended storms previously opened hundreds of sockets and crashed
+ *  Windows SelectorEventLoop (select FD_SETSIZE≈512). Back off harder. */
+const GATEWAY_LOADING_EXTENDED_DELAYS_MS = [2000, 3000, 4000, 5000, 8000]
 const GATEWAY_RETRY_MAX = 60
 const GATEWAY_RETRY_BUDGET_MS = 90_000
+const GATEWAY_LOADING_EXTENDED_RETRY_MAX = 20
+const GATEWAY_LOADING_EXTENDED_BUDGET_MS = 60_000
+/** Soft cap on concurrent gatewayProxy calls (all callers share one pool). */
+const GATEWAY_MAX_CONCURRENT = 24
 const _gatewayInflight = new Map()
+let _gatewayActive = 0
+const _gatewaySlotWaiters = []
+/** Shared cooldown so every panel does not hammer /api/proactive/* at once. */
+let _loadingExtendedCooldownUntil = 0
 
 /** Prefetch core model list as soon as liveness unlocks (ChatApp mounts later). */
 let _modelCatalogPrefetch = null
 
 function gatewayRetryDelayMs(attempt) {
   return GATEWAY_RETRY_DELAYS_MS[Math.min(attempt, GATEWAY_RETRY_DELAYS_MS.length - 1)]
+}
+
+function gatewayLoadingExtendedDelayMs(attempt, serverRetryAfterMs) {
+  const fromServer = Number(serverRetryAfterMs)
+  const fromTable = GATEWAY_LOADING_EXTENDED_DELAYS_MS[
+    Math.min(attempt, GATEWAY_LOADING_EXTENDED_DELAYS_MS.length - 1)
+  ]
+  return Math.max(fromTable, Number.isFinite(fromServer) && fromServer > 0 ? fromServer : 0)
+}
+
+function noteLoadingExtendedCooldown(retryAfterMs) {
+  const wait = Math.max(500, Number(retryAfterMs) || 2000)
+  _loadingExtendedCooldownUntil = Math.max(_loadingExtendedCooldownUntil, Date.now() + wait)
+}
+
+async function waitSharedLoadingExtendedCooldown() {
+  const remain = _loadingExtendedCooldownUntil - Date.now()
+  if (remain > 0) {
+    await new Promise((r) => setTimeout(r, remain))
+  }
+}
+
+function _acquireGatewaySlot() {
+  if (_gatewayActive < GATEWAY_MAX_CONCURRENT) {
+    _gatewayActive += 1
+    return Promise.resolve()
+  }
+  return new Promise((resolve) => {
+    _gatewaySlotWaiters.push(resolve)
+  }).then(() => {
+    _gatewayActive += 1
+  })
+}
+
+function _releaseGatewaySlot() {
+  _gatewayActive = Math.max(0, _gatewayActive - 1)
+  const next = _gatewaySlotWaiters.shift()
+  if (next) next()
 }
 
 function parseGatewayErrorMessage(status, result) {
@@ -525,28 +574,41 @@ async function gatewayProxyWithRetry(method, path, body = null, query = null, op
   const apiPath = String(path || '').startsWith('/api/')
     ? String(path)
     : `/api${String(path || '').startsWith('/') ? path : `/${path || ''}`}`
+  const needsExtended = _pathNeedsExtendedRouters(apiPath)
   // Soft-wait for extended routers before burning the first attempt on 503.
-  if (!skipRetry && _pathNeedsExtendedRouters(apiPath) && _extendedReady !== true) {
+  if (!skipRetry && needsExtended && _extendedReady !== true) {
     await waitForExtendedReady(Math.min(15_000, budgetMs)).catch(() => {})
   }
   for (let attempt = 0; attempt <= maxAttempts; attempt += 1) {
     if (Date.now() - startedAt > budgetMs) break
+    if (needsExtended) {
+      await waitSharedLoadingExtendedCooldown()
+    }
     try {
       return await gatewayProxyOnce(method, path, body, query, options)
     } catch (err) {
       lastErr = err
+      const code = gatewayErrorCode(err?.gatewayResult)
+      const isLoadingExtended = code === 'loading_extended'
+      if (isLoadingExtended) {
+        noteLoadingExtendedCooldown(err?.gatewayResult?.retry_after_ms)
+        // Tighten budget once we know the gate is still closed — avoids FD storms.
+        maxAttempts = Math.min(maxAttempts, GATEWAY_LOADING_EXTENDED_RETRY_MAX)
+        budgetMs = Math.min(budgetMs, GATEWAY_LOADING_EXTENDED_BUDGET_MS)
+      }
       const retryable = !skipRetry && (
         err?.retryable
         || err?.status === 503
         || isRetryableGatewayResponse(err?.status, err?.gatewayResult, method)
       )
       if (!retryable || attempt >= maxAttempts) break
-      // Prefer server Retry-After / retry_after_ms (Codex-style explicit backpressure).
-      const delay = Number(err?.gatewayResult?.retry_after_ms) || gatewayRetryDelayMs(attempt)
+      const delay = isLoadingExtended
+        ? gatewayLoadingExtendedDelayMs(attempt, err?.gatewayResult?.retry_after_ms)
+        : (Number(err?.gatewayResult?.retry_after_ms) || gatewayRetryDelayMs(attempt))
       await new Promise((r) => setTimeout(r, delay))
       if (isTauri && attempt % 3 === 2) {
         try { await checkBackendReady() } catch { /* ignore */ }
-        if (_pathNeedsExtendedRouters(apiPath)) {
+        if (needsExtended) {
           try { await checkExtendedReady() } catch { /* ignore */ }
         }
       }
@@ -585,7 +647,14 @@ export async function gatewayProxy(method, path, body = null, query = null, opti
   if (key && _gatewayInflight.has(key)) {
     return _gatewayInflight.get(key)
   }
-  const work = gatewayProxyWithRetry(method, path, body, query, options)
+  const work = (async () => {
+    if (!isProbe) await _acquireGatewaySlot()
+    try {
+      return await gatewayProxyWithRetry(method, path, body, query, options)
+    } finally {
+      if (!isProbe) _releaseGatewaySlot()
+    }
+  })()
   if (key) {
     _gatewayInflight.set(key, work)
     // finally alone does not count as a rejection handler — without this, Chrome
@@ -1244,7 +1313,9 @@ export async function waitForExtendedReady(maxWaitMs = 120_000) {
   if (await checkExtendedReady()) return true
   const deadline = Date.now() + maxWaitMs
   while (Date.now() < deadline) {
-    await new Promise((r) => setTimeout(r, 300))
+    // 1s poll (was 300ms): /health/ready probes also consume select() slots on Windows.
+    await new Promise((r) => setTimeout(r, 1000))
+    await waitSharedLoadingExtendedCooldown()
     if (await checkExtendedReady()) return true
   }
   return false

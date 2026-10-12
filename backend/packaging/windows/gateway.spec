@@ -50,6 +50,11 @@ hiddenimports += collect_submodules("app.gateway.routers")
 # Missing models → ModuleNotFoundError → 503 on /api/models.
 hiddenimports += _filesystem_submodules("app.gateway.routers", backend_root / "app" / "gateway" / "routers")
 hiddenimports += ["app.gateway.routers.models"]
+# v4 sessions SSE: lazy-imported via register_extended_routers. Missing package
+# historically aborted extended registration → permanent loading_extended 503s.
+hiddenimports += collect_submodules("app.gateway.v4", on_error="ignore")
+hiddenimports += _filesystem_submodules("app.gateway.v4", backend_root / "app" / "gateway" / "v4")
+hiddenimports += ["app.gateway.v4", "app.gateway.v4.routes"]
 hiddenimports += collect_submodules("app.channels", on_error="ignore")
 # Lead-agent middleware stack: scan filesystem BEFORE collect_submodules so that
 # modules like loop_detection_middleware are already in hiddenimports when
@@ -66,6 +71,11 @@ if "app.gateway.routers.models" not in hiddenimports:
     raise SystemExit(
         "gateway.spec: app.gateway.routers.models missing from hiddenimports "
         "(desktop Gateway would 503 /api/models)"
+    )
+if "app.gateway.v4.routes" not in hiddenimports:
+    raise SystemExit(
+        "gateway.spec: app.gateway.v4.routes missing from hiddenimports "
+        "(desktop Gateway extended registration aborts → loading_extended 503)"
     )
 
 block_cipher = None

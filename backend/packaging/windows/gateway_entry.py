@@ -434,7 +434,11 @@ def main() -> None:
         log_level=args.log_level,
     )
     startup_mark("entry.uvicorn_run", phase="entry")
-    from evoflow.platform.asyncio_windows import run_uvicorn_with_windows_shutdown_guard, serve_uvicorn_config
+    from evoflow.platform.asyncio_windows import (
+        apply_windows_uvicorn_concurrency_limit,
+        run_uvicorn_with_windows_shutdown_guard,
+        serve_uvicorn_config,
+    )
 
     # CRITICAL: schema + fat router imports hold the CPython GIL. Doing them after
     # the event loop is live starves HTTP (port listens, probes die, CLOSE_WAIT).
@@ -453,6 +457,9 @@ def main() -> None:
         log_level=args.log_level,
         access_log=True,
     )
+    # Windows SelectorEventLoop + select() FD_SETSIZE≈512: cap concurrency so a
+    # loading_extended retry storm cannot crash the process.
+    apply_windows_uvicorn_concurrency_limit(config)
 
     import atexit
 
