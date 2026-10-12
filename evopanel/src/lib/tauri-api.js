@@ -108,6 +108,31 @@ export function clearGatewayBaseUrlCache() {
   _cachedGatewayUrl = null
 }
 
+/** Return the *profile-scoped* port list (only one port — the active profile's
+ *  hashed expected port). When the renderer is in Tauri and the user has a
+ *  profile id, we MUST NOT scan arbitrary local ports, because that's how
+ *  installed+dev clients used to route into each other's gateway. */
+async function getProfileScopedProbePorts() {
+  if (!isTauri) {
+    // Browser dev: keep the historical fallback list so users without
+    // EVOFLOW_GATEWAY_URL can still find a local gateway (Vite proxy
+    // handles the same-origin /api call, but some standalone harnesses
+    // need to bypass Vite).
+    return [8070, 8012, 8071, 8022, 8032]
+  }
+  try {
+    const { invoke } = await import('@tauri-apps/api/core')
+    const info = await invoke('get_profile_info')
+    const p = Number(info && info.expectedPort)
+    if (Number.isFinite(p) && p > 0 && p < 65536) return [p]
+  } catch {
+    /* older desktop builds without get_profile_info */
+  }
+  // No profile info: refuse to scan; better to wait than to latch onto a
+  // foreign gateway.
+  return []
+}
+
 async function gatewayBaseLooksAlive(base, timeoutMs = 600) {
   const trimmed = String(base || '').trim().replace(/\/+$/, '')
   if (!trimmed) return false
@@ -126,7 +151,21 @@ async function gatewayBaseLooksAlive(base, timeoutMs = 600) {
   }
 }
 
-/** 获取 Gateway 后端地址（缓存结果，只 resolve 一次） */
+/** 获取 Gateway 后端地址（缓存结果，只 resolve 一次）
+ *
+ * Resolution order (Tauri):
+ *   1. `window.__EVOFLOW_GATEWAY_BASE__` runtime override (set by Rust on first launch).
+ *   2. Rust `get_gateway_base_url` (per-profile, never cross-profile).
+ *   3. Profile-expected port only (NOT the legacy [8070,8012,…] array — that
+ *      scan was the root cause of installed+dev cross-talk when both happened
+ *      to be alive on localhost).
+ *   4. Empty string → caller waits / retries.
+ *
+ * Resolution order (browser):
+ *   1. Runtime override.
+ *   2. Browser Vite dev → empty (use same-origin /api proxy).
+ *   3. `VITE_EVOFLOW_GATEWAY_URL` / `VITE_EVOFLOW_GATEWAY_PORT`.
+ */
 export async function getGatewayBaseUrl() {
   if (_cachedGatewayUrl !== null) return _cachedGatewayUrl
   const fromRuntime = runtimeGatewayBaseUrl()
@@ -146,19 +185,45 @@ export async function getGatewayBaseUrl() {
   }
   if (isTauri) {
     const { invoke } = await import('@tauri-apps/api/core')
+    // Pin the active profile id on the renderer so other subsystems
+    // (client-presence, error toasts) can show it without an extra IPC.
+    try {
+      const profileId = await invoke('get_current_profile_id')
+      if (typeof window !== 'undefined') {
+        window.__EVOFLOW_PROFILE_ID__ = String(profileId || '')
+      }
+    } catch {
+      /* ignore — older desktop builds may not have this command */
+    }
     let base = String((await invoke('get_gateway_base_url')) || '').trim().replace(/\/+$/, '')
-    // Empty = Rust found no healthy listener; Stale runtime (e.g. 8012) while stack is on 8070.
-    if (!base || !(await gatewayBaseLooksAlive(base, 500))) {
-      const probed = await probeGatewayBaseUrl({ ports: [8070, 8012, 8071, 8022, 8032], timeoutMs: 500 })
+    if (base && (await gatewayBaseLooksAlive(base, 500))) {
+      _cachedGatewayUrl = base
+      return base
+    }
+    // Per-profile fallback: ask Rust for the *expected* port for this
+    // profile (FNV-1a hash → 8100..8999) and probe *only that port*. We
+    // never probe other profiles' ports; that's how two clients used to
+    // accidentally route into each other.
+    let expectedPort = null
+    try {
+      const info = await invoke('get_profile_info')
+      const p = Number(info && info.expectedPort)
+      if (Number.isFinite(p) && p > 0 && p < 65536) expectedPort = p
+    } catch {
+      /* older desktop builds: fall through */
+    }
+    if (expectedPort != null) {
+      const probed = await probeGatewayBaseUrl({
+        ports: [expectedPort],
+        timeoutMs: 500,
+      })
       if (probed) {
         setGatewayBaseUrlOverride(probed)
         return probed
       }
-      // Do not cache empty/unhealthy — next resolve can pick up a late sidecar.
-      return ''
     }
-    _cachedGatewayUrl = base
-    return base
+    // Do not cache empty/unhealthy — next resolve can pick up a late sidecar.
+    return ''
   } else {
     _cachedGatewayUrl = ''
   }
@@ -1182,8 +1247,9 @@ export async function checkBackendReady() {
       let ok = await _tauriHealthProbe('ready', LIVENESS_TIMEOUT_MS)
       if (!ok) {
         clearGatewayBaseUrlCache()
+        const probePorts = await getProfileScopedProbePorts()
         const probed = await probeGatewayBaseUrl({
-          ports: [8070, 8012, 8071, 8022, 8032],
+          ports: probePorts,
           timeoutMs: 800,
           kind: 'ready',
         })
@@ -1327,7 +1393,8 @@ export async function checkBackendHealth() {
       let ok = await _tauriHealthProbe('liveness', LIVENESS_TIMEOUT_MS)
       if (!ok) {
         clearGatewayBaseUrlCache()
-        const probed = await probeGatewayBaseUrl({ ports: [8070, 8012, 8071, 8022, 8032], timeoutMs: 500 })
+        const probePorts = await getProfileScopedProbePorts()
+        const probed = await probeGatewayBaseUrl({ ports: probePorts, timeoutMs: 500 })
         if (probed) {
           setGatewayBaseUrlOverride(probed)
           ok = await _tauriHealthProbe('liveness', LIVENESS_TIMEOUT_MS)
@@ -1341,7 +1408,8 @@ export async function checkBackendHealth() {
     } catch {
       clearGatewayBaseUrlCache()
       try {
-        const probed = await probeGatewayBaseUrl({ ports: [8070, 8012, 8071, 8022, 8032], timeoutMs: 500 })
+        const probePorts = await getProfileScopedProbePorts()
+        const probed = await probeGatewayBaseUrl({ ports: probePorts, timeoutMs: 500 })
         if (probed) {
           setGatewayBaseUrlOverride(probed)
           const ok = await _tauriHealthProbe('liveness', LIVENESS_TIMEOUT_MS)

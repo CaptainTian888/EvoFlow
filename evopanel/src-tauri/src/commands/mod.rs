@@ -21,11 +21,139 @@ pub mod mcp_market;
 pub mod update;
 pub mod voice_overlay;
 
+/// Per-profile subdirectory under `evoflow_dir()`. Lives next to the per-profile
+/// `evopanel.json`, `backend-runtime.json`, and EVOFLOW_HOME. Multiple profiles may
+/// coexist (installed client + dev client) without trampling each other.
+pub const PROFILES_SUBDIR: &str = "profiles";
+
+/// Default profile id used when neither `EVOFLOW_PROFILE` env nor
+/// `evopanel.json::defaultProfile` is set.
+pub const DEFAULT_PROFILE_ID: &str = "default";
+
+/// Stable default for the dev tree when no explicit profile is requested.
+pub const DEV_PROFILE_ID: &str = "dev";
+
+/// Returns the active profile id for this process. Resolution order:
+/// 1. `EVOFLOW_PROFILE` env (always wins — explicit operator override).
+/// 2. `~/.evoflow/profiles/<id>/profile.json` discovery: if exactly one profile
+///    exists, pick it; else fall back to `default`.
+/// 3. `default` for installed client, `dev` for debug builds (or when
+///    `EVOFLOW_CONFIG_DIR` is set to a `*-dev` style path).
+pub fn current_profile_id() -> String {
+    if let Ok(raw) = std::env::var("EVOFLOW_PROFILE") {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() && is_safe_profile_id(trimmed) {
+            return trimmed.to_string();
+        }
+    }
+
+    // 1) Persistent hint written by previous launches (lets a profile survive across restarts).
+    if let Some(stored) = read_persisted_profile_id() {
+        if is_safe_profile_id(&stored) {
+            return stored;
+        }
+    }
+
+    // 2) Auto-discover if there is exactly one profile on disk.
+    if let Some(existing) = discover_single_profile() {
+        return existing;
+    }
+
+    // 3) Built-in default per build flavour.
+    if cfg!(debug_assertions) {
+        DEV_PROFILE_ID.to_string()
+    } else {
+        DEFAULT_PROFILE_ID.to_string()
+    }
+}
+
+/// Sanitize profile ids: short, alnum / dash / underscore only. Avoids any path
+/// injection from a maliciously-set `EVOFLOW_PROFILE`.
+pub fn is_safe_profile_id(id: &str) -> bool {
+    let len = id.chars().count();
+    if !(1..=64).contains(&len) {
+        return false;
+    }
+    id.chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+}
+
+fn persisted_profile_id_path() -> PathBuf {
+    evoflow_dir().join("current-profile")
+}
+
+fn read_persisted_profile_id() -> Option<String> {
+    let p = persisted_profile_id_path();
+    let raw = std::fs::read_to_string(&p).ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
+fn write_persisted_profile_id(id: &str) {
+    let _ = std::fs::create_dir_all(evoflow_dir());
+    let _ = std::fs::write(persisted_profile_id_path(), id);
+}
+
+#[allow(dead_code)]
+fn discover_single_profile() -> Option<String> {
+    let dir = evoflow_dir().join(PROFILES_SUBDIR);
+    let entries = std::fs::read_dir(&dir).ok()?;
+    let mut names: Vec<String> = entries
+        .filter_map(|e| e.ok())
+        .filter_map(|e| e.file_name().to_str().map(|s| s.to_string()))
+        .filter(|n| is_safe_profile_id(n) && !n.starts_with('.'))
+        .collect();
+    names.sort();
+    if names.len() == 1 {
+        Some(names.remove(0))
+    } else {
+        None
+    }
+}
+
+/// Returns the on-disk directory for the active profile. Created lazily on first use.
+pub fn profile_dir() -> PathBuf {
+    let id = current_profile_id();
+    let dir = evoflow_dir().join(PROFILES_SUBDIR).join(&id);
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
+/// Persist `EVOFLOW_PROFILE` for subsequent launches in the same home (when the user
+/// sets a custom profile via env on first boot, subsequent boots without env still
+/// land in the same profile dir).
+#[allow(dead_code)]
+pub fn pin_profile_for_future_launches(id: &str) {
+    if is_safe_profile_id(id) {
+        write_persisted_profile_id(id);
+    }
+}
+
+/// Stable per-profile gateway port, derived from a FNV-1a hash of the profile id.
+/// Range `8100..9000` keeps installed/dev profiles away from common dev ports
+/// (8012/8070/1521) so a stray host on those ports cannot be mistaken as ours.
+pub fn gateway_port_for_profile(id: &str) -> u16 {
+    // FNV-1a 64-bit
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for b in id.as_bytes() {
+        hash ^= *b as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    let range: u64 = 900; // 8100..8999
+    let offset = (hash % range) as u16;
+    8100u16 + offset
+}
+
 /// 获取 EvoFlow 配置目录。
 /// 优先读取 `EVOFLOW_CONFIG_DIR` 环境变量（支持 dev/prod 隔离）；
 /// 未设置时：
 ///   - debug 构建自动使用 `~/.evoflow-dev`（开发隔离）
 ///   - release 构建回退到 `~/.evoflow`
+///
+/// 多个 profile 共存时此目录是共享根；profile 自己的数据落在 `<evoflow_dir>/profiles/<id>/`。
 pub fn evoflow_dir() -> PathBuf {
     if let Ok(config_dir) = std::env::var("EVOFLOW_CONFIG_DIR") {
         return PathBuf::from(config_dir);
@@ -43,6 +171,9 @@ pub fn evoflow_dir() -> PathBuf {
 
 /// 读取用户设置的数据工作空间根目录（基础目录）。
 /// 配置示例：{"userWorkspaceRoot":"D:/xxx"}
+///
+/// 注：root 仍来自 `evopanel.json`（共享根），profile 隔离在 `runtime_data_dir`
+/// 这一层完成，避免每个 profile 都要复制一份 workspace 路径配置。
 pub fn configured_user_workspace_root() -> Option<PathBuf> {
     let value = read_panel_config_value()?;
     let raw = value
@@ -60,35 +191,44 @@ pub fn configured_user_workspace_root() -> Option<PathBuf> {
 
 /// 运行时数据目录（用于 EVOFLOW_HOME）。
 /// 当配置了 userWorkspaceRoot 时，使用：
-///   <userWorkspaceRoot>/data
-/// 否则回退到 ~/.evoflow
+///   <userWorkspaceRoot>/data/profiles/<id>
+/// 否则回退到 `<evoflow_dir>/profiles/<id>`
+///
+/// 这保证两个 profile 各自拥有独立的 SQLite / checkpoints / logs，物理隔离，
+/// 不再共享 `~/.evoflow/evoflow.db`。
 pub fn runtime_data_dir() -> PathBuf {
-    runtime_data_dir_for_root(configured_user_workspace_root())
+    runtime_data_dir_for_root(configured_user_workspace_root(), current_profile_id())
 }
 
-/// Resolve EVOFLOW_HOME for an optional configured user workspace root.
-pub fn runtime_data_dir_for_root(root: Option<PathBuf>) -> PathBuf {
-    let Some(root) = root else {
-        return evoflow_dir();
+/// Resolve EVOFLOW_HOME for an optional configured user workspace root + profile id.
+pub fn runtime_data_dir_for_root(root: Option<PathBuf>, profile_id: String) -> PathBuf {
+    let safe_id = if is_safe_profile_id(&profile_id) {
+        profile_id
+    } else {
+        DEFAULT_PROFILE_ID.to_string()
     };
-    let mut s = root.to_string_lossy().replace('\\', "/");
-    while s.ends_with('/') {
-        s.pop();
-    }
-    let lower = s.to_ascii_lowercase();
-    if lower.ends_with("/data") {
-        return root;
-    }
-    // Legacy: panel pointed at .../workspace/data or .../workspace
-    if lower.ends_with("/workspace/data") {
-        return root;
-    }
-    if lower.ends_with("/workspace") {
-        if let Some(parent) = root.parent() {
-            return parent.join("data");
+    if let Some(root) = root {
+        let mut s = root.to_string_lossy().replace('\\', "/");
+        while s.ends_with('/') {
+            s.pop();
         }
+        let lower = s.to_ascii_lowercase();
+        let base = if lower.ends_with("/data") {
+            root
+        } else if lower.ends_with("/workspace/data") {
+            root
+        } else if lower.ends_with("/workspace") {
+            if let Some(parent) = root.parent() {
+                parent.join("data")
+            } else {
+                root.join("data")
+            }
+        } else {
+            root.join("data")
+        };
+        return base.join(PROFILES_SUBDIR).join(&safe_id);
     }
-    root.join("data")
+    evoflow_dir().join(PROFILES_SUBDIR).join(&safe_id)
 }
 
 /// 面板主配置文件（写入/读取都使用此文件）
@@ -97,8 +237,11 @@ pub const PANEL_CONFIG_FILE: &str = "evopanel.json";
 /// 面板数据目录名（热更新、助手数据等）
 pub const PANEL_DATA_DIR_NAME: &str = "evopanel";
 
+/// Per-profile panel config: each profile owns its own `evopanel.json` so flags
+/// like `enableDevtools` and `userWorkspaceRoot` can diverge between installed
+/// and dev clients.
 pub fn panel_config_primary_path() -> PathBuf {
-    evoflow_dir().join(PANEL_CONFIG_FILE)
+    profile_dir().join(PANEL_CONFIG_FILE)
 }
 
 /// 面板配置文件路径（仅使用 `evopanel.json`）

@@ -28,6 +28,11 @@ tauri-plugin-process = "2"
 tauri-plugin-updater = { version = "2", features = ["rustls-tls"] }
 tauri-plugin-notification = "2"
 tauri-plugin-global-shortcut = "2"
+# tauri-plugin-single-instance is kept in Cargo.toml to avoid dragging an
+# unrelated lockfile churn into this fix, but its `.plugin()` call is removed
+# in lib.rs because the plugin is global by design (system-wide named mutex)
+# and would collapse profiles that should coexist. Per-profile sidecar locks
+# in `commands::backend` replace it.
 tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

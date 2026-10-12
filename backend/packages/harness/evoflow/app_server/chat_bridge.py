@@ -216,6 +216,16 @@ async def proxy_turn_stream(
 
     Returns a small summary for the JSON-RPC result (after the stream completes).
     """
+    import os as _os_pt, time as _time_pt
+    _pt_log_path = _os_pt.environ.get("EVOFLOW_PSS_LOG", "").strip() or "D:/dev/github/EvoFlow/temp/evoflow-pss.log"
+    _pt_t0 = _time_pt.time()
+    def _pt_log(msg):
+        try:
+            with open(_pt_log_path, "a", encoding="utf-8") as f:
+                f.write(f"[t={_time_pt.time()-_pt_t0:.3f}s pid={_os_pt.getpid()} turn] {msg}\n")
+        except Exception:
+            pass
+    _pt_log(f"START proxy_turn_stream thread_id={thread_id} body_keys={list((body or {}).keys())[:5]}")
     url = _build_stream_url(gateway_base, thread_id, query)
     headers = _auth_headers(authorization)
     if extra_headers:
@@ -236,7 +246,9 @@ async def proxy_turn_stream(
 
             buffer = ""
             async for chunk in resp.aiter_text():
+                _pt_log(f"CHUNK bytes={len(chunk)} preview={chunk[:120]!r}")
                 if should_abort and should_abort():
+                    _pt_log("ABORT should_abort=True -> resp.aclose()")
                     await resp.aclose()
                     break
                 if not chunk:
@@ -264,6 +276,7 @@ async def proxy_turn_stream(
                 else:
                     dropped += 1
 
+    _pt_log(f"END forwarded={forwarded} dropped={dropped} frames={frames} status={status_code}")
     summary = {
         "ok": True,
         "status": status_code,
@@ -318,19 +331,32 @@ async def proxy_sse_stream(
 
     frames = 0
     status_code = 0
+    import os as _os_dbg, sys as _sys_dbg, time as _time_dbg
+    _pss_log_path = _os_dbg.environ.get("EVOFLOW_PSS_LOG", "").strip() or "D:/dev/github/EvoFlow/temp/evoflow-pss.log"
+    _pss_t0 = _time_dbg.time()
+    def _pss_log(msg):
+        try:
+            with open(_pss_log_path, "a", encoding="utf-8") as f:
+                f.write(f"[t={_time_dbg.time()-_pss_t0:.3f}s pid={_os_dbg.getpid()}] {msg}\n")
+        except Exception:
+            pass
+    _pss_log(f"START path={raw_path} method={method_u}")
     async with httpx.AsyncClient(timeout=None) as client:
         req_kwargs: dict[str, Any] = {"headers": headers, "params": params or None}
         if body is not None and method_u not in {"GET", "HEAD"}:
             req_kwargs["json"] = body
         async with client.stream(method_u, url, **req_kwargs) as resp:
             status_code = resp.status_code
+            _pss_log(f"CONNECTED status={status_code} ct={resp.headers.get('content-type')}")
             if resp.status_code >= 400:
                 text = (await resp.aread()).decode("utf-8", errors="replace")
                 raise RuntimeError(f"Gateway HTTP {resp.status_code}: {text[:800]}")
 
             buffer = ""
             async for chunk in resp.aiter_text():
+                _pss_log(f"CHUNK bytes={len(chunk)} preview={chunk[:80]!r}")
                 if should_abort and should_abort():
+                    _pss_log("ABORT should_abort=True -> resp.aclose()")
                     await resp.aclose()
                     break
                 if not chunk:
@@ -350,6 +376,7 @@ async def proxy_sse_stream(
                 event_name, data = _parse_sse_frame(buffer.strip("\r\n"))
                 await _emit_stream_event(emit, event_name, data)
 
+    _pss_log(f"END frames={frames} status={status_code}")
     summary = {"ok": True, "status": status_code, "frames": frames, "path": raw_path}
     maybe = emit({"method": "turn/completed", "params": summary})
     if maybe is not None and hasattr(maybe, "__await__"):

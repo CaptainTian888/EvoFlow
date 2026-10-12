@@ -20,14 +20,15 @@ pub fn run() {
         .join(commands::PANEL_DATA_DIR_NAME)
         .join("web-update");
 
+    // Note: tauri_plugin_single_instance is global by design (system-wide named
+    // mutex). It's the wrong primitive when we want *per-profile* single
+    // instance — i.e. installed client (profile=default) and dev client
+    // (profile=dev) must coexist. Per-profile lock is enforced in
+    // `commands::backend::ensure_backend_sidecar` via a file lock on
+    // `<profile_dir>/sidecar.lock`; the Tauri window itself is left to spawn
+    // freely. If a future flow genuinely needs a single shared window, gate
+    // that on a separate env like `EVOFLOW_SHARE_WINDOW=1`.
     tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.unminimize();
-                let _ = window.set_focus();
-            }
-        }))
         .manage(browser_embed::BrowserEmbedState::default())
         .manage(std::sync::Arc::new(
             browser_embed::BrowserCdpBroker::default(),
@@ -265,6 +266,8 @@ pub fn run() {
             backend::reload_gateway,
             backend::workspace_runtime_info,
             backend::get_gateway_base_url,
+            backend::get_current_profile_id,
+            backend::get_profile_info,
             backend::set_webview_zoom,
             // 网关代理
             gateway::gateway_proxy,

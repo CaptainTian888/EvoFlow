@@ -10,9 +10,22 @@ import { exec as _exec, spawn } from 'child_process'
 import { promisify } from 'util'
 
 const EVOFLOW_DIR = path.join(homedir(), '.evopanel')
-const CONFIG_PATH = path.join(EVOFLOW_DIR, 'evopanel.json')
-const PANEL_CONFIG_PATH = path.join(EVOFLOW_DIR, 'evopanel.json')
-const AUTOMATIONS_DIR = path.join(homedir(), '.evoflow', 'tasks', 'automations')
+const EVOFLOW_CONFIG_DIR =
+  process.env.EVOFLOW_CONFIG_DIR || path.join(homedir(), '.evoflow-dev')
+const PROFILES_SUBDIR = 'profiles'
+const ACTIVE_PROFILE_ID = (() => {
+  const fromEnv = (process.env.EVOFLOW_PROFILE || '').trim()
+  if (fromEnv && /^[A-Za-z0-9._-]{1,64}$/.test(fromEnv)) return fromEnv
+  return 'dev'
+})()
+const EVOFLOW_PROFILE_DIR = path.join(
+  EVOFLOW_CONFIG_DIR,
+  PROFILES_SUBDIR,
+  ACTIVE_PROFILE_ID,
+)
+const CONFIG_PATH = path.join(EVOFLOW_PROFILE_DIR, 'evopanel.json')
+const PANEL_CONFIG_PATH = CONFIG_PATH
+const AUTOMATIONS_DIR = path.join(EVOFLOW_PROFILE_DIR, 'tasks', 'automations')
 const PROJECT_ROOT = process.env.EVOFLOW_PROJECT_ROOT || path.resolve(process.cwd(), '..')
 function resolveGatewayUrl() {
   const explicit = String(process.env.EVOFLOW_GATEWAY_URL || '').trim().replace(/\/+$/, '')
@@ -275,19 +288,32 @@ function configuredUserWorkspaceRoot() {
 /** Align with Tauri ``runtime_data_dir()`` — ``EVOFLOW_HOME`` for sidecar / tools. */
 function resolveRuntimeDataDir() {
   const configured = configuredUserWorkspaceRoot()
-  if (!configured) return path.join(homedir(), '.evoflow')
+  if (!configured) {
+    // Mirror Tauri's profile-aware default: dev profile's home is the
+    // per-profile dir under the dev config root.
+    return EVOFLOW_PROFILE_DIR
+  }
   const norm = configured.replace(/\\/g, '/').replace(/\/+$/, '')
   const workspaceRoot = norm.toLowerCase().endsWith('/workspace') ? configured : path.join(configured, 'workspace')
-  return path.join(workspaceRoot, 'data')
+  return path.join(workspaceRoot, 'data', PROFILES_SUBDIR, ACTIVE_PROFILE_ID)
 }
 
 function readBackendRuntimeState() {
-  const fp = path.join(homedir(), '.evoflow', 'evopanel', 'backend-runtime.json')
-  try {
-    return JSON.parse(fs.readFileSync(fp, 'utf8'))
-  } catch {
-    return null
+  // Per-profile: Tauri writes to <config>/profiles/<id>/backend-runtime.json.
+  // We also check the legacy non-profiles path for one release so a
+  // pre-profile install doesn't lose its last-known port.
+  const candidates = [
+    path.join(EVOFLOW_PROFILE_DIR, 'backend-runtime.json'),
+    path.join(EVOFLOW_DIR, 'evopanel', 'backend-runtime.json'),
+  ]
+  for (const fp of candidates) {
+    try {
+      return JSON.parse(fs.readFileSync(fp, 'utf8'))
+    } catch {
+      /* try next */
+    }
   }
+  return null
 }
 
 async function readBody(req) {
@@ -501,7 +527,7 @@ const handlers = {
     if (!runtimeBaseUrl) {
       runtimeBaseUrl = EVOFLOW_GATEWAY_URL.replace(/\/$/, '')
     }
-    const runtimeStatePath = path.join(homedir(), '.evoflow', 'evopanel', 'backend-runtime.json')
+    const runtimeStatePath = path.join(EVOFLOW_PROFILE_DIR, 'backend-runtime.json')
     const checkpointsDbPath = path.join(runtimeDataDir, 'checkpoints.db')
     let backendRunning = false
     let langgraphRunning = false

@@ -10,6 +10,46 @@ import { transportLog } from './transport-log-gate.js'
 
 const APP_SERVER_EVENT = 'evoflow://app-server'
 
+// === DEBUG: write SSE lifecycle to a per-process file (Node fs sync append) ===
+// Browser-side fallback: POST to /__evoflow-log on the gateway (no fs in browser).
+// Path: $EVOFLOW_FE_LOG or "D:/dev/github/EvoFlow/temp/evoflow-fe.log"
+let _feDebugWrite = null
+const _FE_LOG_RING = [] // browser-side ring buffer (max 200 lines), exported via __dumpEvoflowFELog
+const _FE_LOG_FILE = 'D:/dev/github/EvoFlow/temp/evoflow-fe.log'
+try {
+  if (typeof window === 'undefined' || !window.__EVOFLOW_FE_LOG_DISABLED__) {
+    const fs = (() => { try { return require('node:fs') } catch { return null } })()
+    if (fs) {
+      _feDebugWrite = (msg) => {
+        try { fs.appendFileSync(_FE_LOG_FILE, `[t=${(Date.now()/1000).toFixed(3)}s] ${msg}\n`) } catch {}
+      }
+    }
+  }
+} catch {}
+function _feLog(msg) {
+  const line = `[t=${(Date.now()/1000).toFixed(3)}s] ${msg}`
+  if (_feDebugWrite) { _feDebugWrite(msg); return }
+  // Browser fallback: in-memory + POST to gateway /__evoflow-log
+  _FE_LOG_RING.push(line)
+  if (_FE_LOG_RING.length > 200) _FE_LOG_RING.shift()
+  try { localStorage.setItem('evoflow-fe-log', _FE_LOG_RING.slice(-200).join('\n')) } catch {}
+  try {
+    const gw = (typeof window !== 'undefined' && window.__EVOFLOW_GATEWAY_BASE__) || '/__evoflow'
+    fetch(`${gw}/__evoflow-log`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ msg: line }),
+      keepalive: true,
+    }).catch(() => {})
+  } catch {}
+}
+// Expose a tiny dumper for browser devtools
+if (typeof window !== 'undefined') {
+  try { window.__dumpEvoflowFELog = () => (localStorage.getItem('evoflow-fe-log') || '').split('\n') } catch {}
+}
+const _FE_T0 = Date.now()
+function _feTs() { return ((Date.now() - _FE_T0) / 1000).toFixed(3) }
+
 /** @type {Promise<{ ok: boolean, listen_port: number, gateway_base: string, warm?: boolean }> | null} */
 let _ensurePromise = null
 let _warm = false
@@ -319,11 +359,15 @@ export async function appServerFetchGatewayStream(streamPath, options = {}) {
     headers.Authorization || headers.authorization || (_authToken() ? `Bearer ${_authToken()}` : '')
 
   const turnId = `sse-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
-  const stream = _openTurnReadableStream(turnId, options.signal)
+  // panel-stream / stream-resume / event GET: NOT a turn, do not interrupt on cleanup
+  const methodU = String(options.method || 'GET').toUpperCase()
+  const noInterrupt = methodU === 'GET'
+  _feLog(`FE appServerFetchGatewayStream ENTER path=${path} method=${methodU} turnId=${turnId} noInterrupt=${noInterrupt}`)
+  const stream = _openTurnReadableStream(turnId, options.signal, { noInterrupt })
 
   try {
     await appServerRequest('gateway/stream', {
-      method: String(options.method || 'GET').toUpperCase(),
+      method: methodU,
       path,
       body,
       query: Object.keys(query).length ? query : null,
@@ -331,8 +375,10 @@ export async function appServerFetchGatewayStream(streamPath, options = {}) {
       headers,
       turnId,
     })
+    _feLog(`FE appServerRequest RESOLVED turnId=${turnId}`)
     transportLog('app-server gateway/stream accepted', { path, turnId })
   } catch (err) {
+    _feLog(`FE appServerRequest REJECTED turnId=${turnId} err=${err && err.message}`)
     stream.abort()
     throw err
   }
@@ -347,6 +393,7 @@ export async function appServerFetchGatewayStream(streamPath, options = {}) {
  *   onStreamEvent?: (eventName: string, data: any) => void,
  *   onTurnCompleted?: () => void,
  *   onTurnError?: (err: Error) => void,
+ *   noInterrupt?: boolean,  // true: do NOT send turn/interrupt on cleanup (panel-stream etc.)
  * }} [opts]
  */
 function _openTurnReadableStream(turnId, signal, opts = {}) {
@@ -362,10 +409,12 @@ function _openTurnReadableStream(turnId, signal, opts = {}) {
     if (finished) return
     const method = message.method
     const params = message.params || {}
+    _feLog(`FE listener RECV turnId=${turnId} method=${method} finished=${finished}`)
     // Structured LangGraph / UI wire events — preferred (no SSE re-wrap).
     if (method === 'stream/event') {
       const ev = String(params.event || 'message')
       const data = params.data
+      _feLog(`FE stream/event ev=${ev} dataType=${typeof data} dataPreview=${JSON.stringify(data).slice(0, 80)}`)
       if (onStreamEvent) {
         try {
           onStreamEvent(ev, data)
@@ -405,6 +454,7 @@ function _openTurnReadableStream(turnId, signal, opts = {}) {
       return
     }
     if (method === 'turn/error') {
+      _feLog(`FE turn/error message=${params.message}`)
       finished = true
       const err = new Error(String(params.message || 'app-server turn error'))
       try {
@@ -422,6 +472,7 @@ function _openTurnReadableStream(turnId, signal, opts = {}) {
       return
     }
     if (method === 'turn/completed' || method === 'turn/result') {
+      _feLog(`FE ${method} frames=${params.frames} ok=${params.ok} path=${params.path}`)
       finished = true
       try {
         opts.onTurnCompleted?.()
@@ -442,6 +493,11 @@ function _openTurnReadableStream(turnId, signal, opts = {}) {
     if (unsubscribed) return
     unsubscribed = true
     unsubscribe()
+    if (opts.noInterrupt) {
+      _feLog(`FE cleanup (noInterrupt) turnId=${turnId}`)
+      return
+    }
+    _feLog(`FE cleanup -> turn/interrupt turnId=${turnId}`)
     void appServerRequest('turn/interrupt', { turnId }).catch(() => undefined)
   }
 

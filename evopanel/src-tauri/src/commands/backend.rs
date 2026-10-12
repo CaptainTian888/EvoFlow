@@ -33,6 +33,116 @@ fn mark_startup_begin() {
     let _ = STARTUP_T0.set(Instant::now());
 }
 
+/// Per-profile sidecar file lock. Prevents two Tauri windows of the *same*
+/// profile (e.g. `pnpm dev:tauri` + installed client both resolving to
+/// `default` profile on the same machine) from racing on the same SQLite +
+/// port. Cross-profile coexistence is unaffected: each profile owns its own
+/// lock file.
+///
+/// Implementation: a `sidecar.lock` file in the per-profile runtime dir. The
+/// file contains the owner PID + spawn generation. On every acquire, the
+/// caller first checks if the recorded PID is still alive; if dead, the lock
+/// is treated as stale and taken over. This is racy in the strict sense, but
+/// our actual safety net is *separate per-profile SQLite files and separate
+/// per-profile ports*: even if two instances briefly think they own the lock,
+/// they cannot corrupt each other's data because they don't share state.
+static PROFILE_LOCK: OnceLock<Mutex<Option<fs::File>>> = OnceLock::new();
+
+fn profile_lock_path() -> PathBuf {
+    runtime_dir().join("sidecar.lock")
+}
+
+fn pid_alive(pid: u32) -> bool {
+    #[cfg(windows)]
+    {
+        // Lightweight Win32 liveness check via the `windows` crate (already a dep).
+        use windows::Win32::System::Threading::{
+            OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+        unsafe {
+            // OpenProcess returns Result<HANDLE>; is_err() is true when the
+            // PID does not exist or we lack access. For our purpose ("is
+            // this PID still alive?") any successful open is good enough —
+            // we never query the handle further.
+            OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).is_ok()
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        // Conservative: on non-Windows we cannot cheaply probe without
+        // adding a new dep. If a stale lock is encountered, the user can
+        // `rm <profile>/sidecar.lock` to recover. The data isolation
+        // (per-profile SQLite + port) is the real safety net.
+        let _ = pid;
+        true
+    }
+}
+
+fn read_lock_owner() -> Option<u32> {
+    let raw = fs::read_to_string(profile_lock_path()).ok()?;
+    raw.trim().parse::<u32>().ok()
+}
+
+fn try_acquire_profile_lock() -> Result<(), String> {
+    let slot = PROFILE_LOCK.get_or_init(|| Mutex::new(None));
+    {
+        let guard = slot.lock().map_err(|_| "sidecar lock slot poisoned".to_string())?;
+        if guard.is_some() {
+            // Same process already holds the lock.
+            return Ok(());
+        }
+    }
+
+    let path = profile_lock_path();
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+
+    // Stale-lock reclamation: if the recorded PID is not alive, we can take
+    // over. This is best-effort, not a hard correctness guarantee — but our
+    // data isolation (per-profile dirs + per-profile ports) is.
+    if let Some(prev_pid) = read_lock_owner() {
+        if prev_pid != std::process::id() && pid_alive(prev_pid) {
+            return Err(format!(
+                "profile '{}' sidecar 已被另一 EvoPanel 实例占用 (pid={}); 已存在 sidecar.lock={}",
+                super::current_profile_id(),
+                prev_pid,
+                path.display()
+            ));
+        }
+        append_startup_log(&format!(
+            "sidecar.lock stale (pid={prev_pid} dead); reclaiming"
+        ));
+    }
+
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&path)
+        .map_err(|e| format!("打开 profile 锁文件失败 {}: {e}", path.display()))?;
+    let payload = format!("{}\n", std::process::id());
+    let _ = fs::write(&path, payload);
+
+    let mut guard = slot.lock().map_err(|_| "sidecar lock slot poisoned".to_string())?;
+    *guard = Some(file);
+    Ok(())
+}
+
+fn release_profile_lock() {
+    let Some(slot) = PROFILE_LOCK.get() else {
+        return;
+    };
+    if let Ok(mut guard) = slot.lock() {
+        if guard.take().is_some() {
+            // Best-effort cleanup; another instance may already be waiting to
+            // reclaim, and that is fine.
+            let _ = fs::remove_file(profile_lock_path());
+        }
+    }
+}
+
 fn backend_child_slot() -> &'static Mutex<Option<Child>> {
     BACKEND_CHILD.get_or_init(|| Mutex::new(None))
 }
@@ -68,7 +178,10 @@ pub fn owns_backend_sidecar() -> bool {
 }
 
 fn runtime_dir() -> PathBuf {
-    super::evoflow_dir().join("evopanel")
+    // Profile-scoped: each profile's sidecar writes to its own directory so two
+    // profiles never observe each other's `backend-runtime.json` (and never
+    // accidentally latch onto the other profile's port).
+    super::profile_dir()
 }
 
 fn runtime_state_path() -> PathBuf {
@@ -169,19 +282,30 @@ fn sync_runtime_state_from_base_url(base: &str) {
     }
 }
 
-/// Probe common local Gateway ports when runtime state is stale
-/// (e.g. packaged sidecar wrote 8012, isolated stack listens on 8070).
-/// Prefer /health/ready so we never latch onto a half-started listener.
+/// Probe the active profile's expected gateway port(s). Per-profile isolation is
+/// the whole point: when the installed client and a dev client run side-by-side,
+/// they own different profiles, different `backend-runtime.json` files, and
+/// different ports. We must **not** fall through to a global port scan, because
+/// that's exactly how one client ends up routing requests into the other's
+/// gateway.
 fn probe_gateway_candidate_ports() -> Option<u16> {
+    let profile_id = super::current_profile_id();
+    let expected = super::gateway_port_for_profile(&profile_id);
+
+    // Order: own profile's expected port first, then a small ±8 jitter window
+    // (legacy `evopanel/backend-runtime.json` may have written a port slightly
+    // off the hash — common during dev when operator overrides via env).
     let mut ports: Vec<u16> = Vec::new();
     if let Some(p) = read_runtime_state_port() {
         ports.push(p);
     }
-    for p in [8070u16, 8012, 8071, 8022, 8032, 8042, 8052, 8062] {
+    for delta in -2i32..=2i32 {
+        let p = (expected as i32 + delta).clamp(1, 65535) as u16;
         if !ports.contains(&p) {
             ports.push(p);
         }
     }
+
     for port in &ports {
         if probe_http_ready(*port) {
             return Some(*port);
@@ -199,6 +323,14 @@ fn probe_gateway_candidate_ports() -> Option<u16> {
             }
         }
     }
+    // Hard floor: do NOT scan the global [8070, 8012, ...] list. That cross-port
+    // probing is what caused the installed client to route into a dev gateway
+    // (or vice versa) when both happened to be alive. If a profile's runtime
+    // is missing and the sidecar child isn't ours, we honestly don't know
+    // which gateway to talk to — return None and let the caller wait / respawn.
+    append_startup_log(&format!(
+        "profile '{profile_id}' gateway not yet up on expected port {expected}; will respawn"
+    ));
     None
 }
 
@@ -388,20 +520,35 @@ fn is_port_free(port: u16) -> bool {
 fn resolve_backend_port_flexible() -> Result<u16, String> {
     // Flexible port selection:
     // - Prefer runtime-state port (if present) or EVOPANEL_BACKEND_PORT (if set)
-    // - Otherwise scan a small range for a free port
-    // - This avoids startup panics when backend-runtime.json hasn't been written yet.
-    let preferred = read_runtime_state_port().or_else(preferred_sidecar_port_from_env);
+    // - Otherwise prefer the active profile's hashed port (8100..8999) so two
+    //   profiles never share a port and never need to fight over a global pool.
+    // - Fall back to a small range around the hashed port if it's busy.
+    //
+    // The previous default range `8012..8062` is what made installed client
+    // (8012) and dev client (8070) race for ports and cross-talk; profile
+    // hashing is the clean fix.
+    let runtime_port = read_runtime_state_port();
+    let env_port = preferred_sidecar_port_from_env();
+    let profile_id = super::current_profile_id();
+    let profile_port = super::gateway_port_for_profile(&profile_id);
+    let preferred = runtime_port.or(env_port).or(Some(profile_port));
 
+    let default_min: u16 = 8100;
+    let default_max: u16 = 8999;
     let min = std::env::var("EVOPANEL_BACKEND_PORT_MIN")
         .ok()
         .and_then(|s| s.parse::<u16>().ok())
-        .unwrap_or(8012);
+        .unwrap_or(default_min);
     let max = std::env::var("EVOPANEL_BACKEND_PORT_MAX")
         .ok()
         .and_then(|s| s.parse::<u16>().ok())
-        .unwrap_or(8062);
+        .unwrap_or(default_max);
 
     let (min, max) = if min <= max { (min, max) } else { (max, min) };
+
+    // Build a small per-profile window first, then expand to the configured range.
+    let window_lo: u16 = profile_port.saturating_sub(8).max(min);
+    let window_hi: u16 = profile_port.saturating_add(8).min(max);
 
     let mut candidates: Vec<u16> = Vec::new();
     if let Some(p) = preferred {
@@ -409,15 +556,24 @@ fn resolve_backend_port_flexible() -> Result<u16, String> {
             candidates.push(p);
         }
     }
-    for p in min..=max {
-        if preferred == Some(p) {
-            continue;
+    // Profile window first (so two profiles spread out even within the same range).
+    for p in window_lo..=window_hi {
+        if preferred != Some(p) && !candidates.contains(&p) {
+            candidates.push(p);
         }
-        candidates.push(p);
+    }
+    for p in min..=max {
+        if preferred != Some(p) && !candidates.contains(&p) {
+            candidates.push(p);
+        }
     }
 
     for p in candidates {
         if is_port_free(p) {
+            append_startup_log(&format!(
+                "selected backend port {p} (profile='{profile_id}', preferred={:?})",
+                preferred
+            ));
             return Ok(p);
         }
         // Preferred/runtime port occupied by a dead/zombie listener — reclaim once.
@@ -834,7 +990,10 @@ pub fn ensure_backend_sidecar(app: &tauri::AppHandle) -> Result<(), String> {
 
 fn ensure_backend_sidecar_inner(app: &tauri::AppHandle) -> Result<(), String> {
     mark_startup_begin();
-    append_startup_log("ensure_backend_sidecar begin");
+    append_startup_log(&format!(
+        "ensure_backend_sidecar begin (profile='{}')",
+        super::current_profile_id()
+    ));
     if let Some(state) = read_runtime_state() {
         RUNTIME_GENERATION.fetch_max(state.generation, Ordering::SeqCst);
     }
@@ -849,6 +1008,14 @@ fn ensure_backend_sidecar_inner(app: &tauri::AppHandle) -> Result<(), String> {
             "external Gateway is configured ({u}); skip spawning sidecar"
         ));
         return Ok(());
+    }
+
+    // Per-profile lock: prevents two Tauri windows of the same profile from
+    // racing on the same SQLite / port. Cross-profile coexistence is fine —
+    // each profile owns its own lock + runtime + port.
+    if let Err(e) = try_acquire_profile_lock() {
+        append_startup_log(&format!("profile lock acquire failed: {e}"));
+        return Err(e);
     }
 
     // If a previous sidecar is already running and healthy (e.g. app hot-reload
@@ -1057,6 +1224,7 @@ fn ensure_backend_sidecar_inner(app: &tauri::AppHandle) -> Result<(), String> {
     } else {
         work_dir.as_path()
     })
+        .env("EVOFLOW_PROFILE", super::current_profile_id())
         .env("EVOFLOW_HOME", &work_dir)
         .env("EVOFLOW_LOGS_DIR", logs_dir())
         .env("EVOFLOW_CONFIG_PATH", &config_yaml)
@@ -1193,6 +1361,10 @@ fn stop_backend_sidecar_inner() -> Result<(), String> {
     if let Ok(mut slot) = sidecar_stdio_slot().lock() {
         *slot = None;
     }
+    // Always release the per-profile sidecar lock so the next launch (even
+    // a different EvoPanel instance) can claim it promptly. We do this
+    // before the env-gateway short-circuit because lock files are cheap.
+    release_profile_lock();
     // Dev/external Gateway is operator-owned (e.g. `uvicorn` on 8070). Never kill by port.
     if let Some(u) = env_gateway_base_url() {
         append_startup_log(&format!(
@@ -1363,6 +1535,34 @@ pub fn get_gateway_base_url() -> String {
     resolved_gateway_base_url()
 }
 
+/// Active profile id for the current process. Tauri calls this on the JS side
+/// to expose `window.__EVOFLOW_PROFILE_ID__` so the renderer can isolate its
+/// `client_instance_id`, sidecar routing, and any other per-profile state.
+#[tauri::command]
+pub fn get_current_profile_id() -> String {
+    super::current_profile_id()
+}
+
+/// Full profile info: id, base dir, gateway port, runtime path. Useful for the
+/// "About" / settings panel and for debugging cross-profile collisions.
+#[tauri::command]
+pub fn get_profile_info() -> serde_json::Value {
+    let id = super::current_profile_id();
+    let port = super::gateway_port_for_profile(&id);
+    let profile_path = super::profile_dir();
+    let runtime_path = runtime_state_path();
+    let home = super::runtime_data_dir();
+    let base_url = resolved_gateway_base_url();
+    json!({
+        "profileId": id,
+        "profileDir": profile_path.to_string_lossy().to_string(),
+        "runtimeStatePath": runtime_path.to_string_lossy().to_string(),
+        "evoflowHome": home.to_string_lossy().to_string(),
+        "expectedPort": port,
+        "resolvedBaseUrl": base_url,
+    })
+}
+
 /// Set the webview page zoom factor (UI zoom feature).
 #[tauri::command]
 pub fn set_webview_zoom(window: tauri::WebviewWindow, scale: f64) -> Result<(), String> {
@@ -1407,8 +1607,10 @@ pub fn workspace_runtime_info() -> Result<serde_json::Value, String> {
         },
         Err(_) => false,
     };
+    let profile_id = super::current_profile_id();
 
     Ok(json!({
+        "profileId": profile_id,
         "configuredRoot": configured_root,
         "runtimeDataDir": runtime_data_dir,
         "runtimePort": runtime_port,

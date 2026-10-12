@@ -449,6 +449,32 @@ This gateway provides custom endpoints for models, MCP configuration, skills, ar
     app.state._lg_app = None
     app.state._lg_mount_lock = asyncio.Lock()
 
+    # === DEBUG: browser log dump endpoint (always registered) ===
+    import time as _dbg_t, os as _dbg_o
+    from fastapi import Request as _DbgReq
+
+    @app.post("/__evoflow-log")
+    async def _evoflow_fe_log(req: _DbgReq):
+        try:
+            body = await req.json()
+            line = body.get("msg", "")
+            _dbg_path = _dbg_o.environ.get("EVOFLOW_FE_LOG", "").strip() or "D:/dev/github/EvoFlow/temp/evoflow-fe.log"
+            with open(_dbg_path, "a", encoding="utf-8") as f:
+                f.write(f"[t={_dbg_t.time():.3f}s fe-post] {line}\n")
+        except Exception as exc:
+            return {"ok": False, "err": str(exc)}
+        return {"ok": True}
+
+    @app.get("/__evoflow-log-tail")
+    async def _evoflow_fe_log_tail(n: int = 200):
+        try:
+            _dbg_path = _dbg_o.environ.get("EVOFLOW_FE_LOG", "").strip() or "D:/dev/github/EvoFlow/temp/evoflow-fe.log"
+            with open(_dbg_path, "r", encoding="utf-8", errors="replace") as f:
+                lines = f.readlines()[-n:]
+            return {"ok": True, "lines": [l.rstrip("\n") for l in lines]}
+        except Exception as exc:
+            return {"ok": False, "err": str(exc)}
+
     from app.gateway.gateway_shell import install_pre_start_middleware
 
     install_pre_start_middleware(app)

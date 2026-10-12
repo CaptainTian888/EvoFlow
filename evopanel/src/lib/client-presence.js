@@ -1,11 +1,30 @@
 /**
  * EvoPanel client instance registration — backend stops orphaned panel runs on gateway cold attach.
+ *
+ * Per-profile scoping: the instance id is prefixed with the active profile id
+ * so two coexisting clients (installed = "default", dev = "dev") can never
+ * collide on the same backend `client_presence` slot, and a Tauri dev window
+ * and an installed client (when they happen to land on the same gateway) are
+ * trivially distinguishable.
  */
 
 const STORAGE_KEY = 'evopanel_client_instance_id'
 
 function isTauriRuntime() {
   return typeof window !== 'undefined' && !!window.__TAURI_INTERNALS__
+}
+
+function readProfileId() {
+  if (typeof window === 'undefined') return ''
+  const raw = window.__EVOFLOW_PROFILE_ID__
+  if (typeof raw === 'string' && raw.trim()) return raw.trim()
+  try {
+    const fromLs = localStorage.getItem('evoflow_profile_id')
+    if (fromLs) return fromLs
+  } catch {
+    /* ignore */
+  }
+  return ''
 }
 
 function readStoredClientInstanceId() {
@@ -53,7 +72,9 @@ function createClientInstanceId() {
 export function getClientInstanceId() {
   let id = readStoredClientInstanceId()
   if (!id) {
-    id = createClientInstanceId()
+    const profile = readProfileId() || 'unknown'
+    const uuid = createClientInstanceId()
+    id = `${profile}::${uuid}`
     writeStoredClientInstanceId(id)
   }
   if (isTauriRuntime() && typeof window !== 'undefined') {

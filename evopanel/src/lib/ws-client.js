@@ -7241,6 +7241,7 @@ export class WsClient {
         } catch (readErr) {
           if (isStreamReadTimeoutError(readErr) && !controller.signal.aborted) {
             streamReadTimedOut = true
+            console.warn(`[STREAM-DIAG] ⏰ read-loop TIMEOUT totalFrames=${sseFrameCount} runEndSeen=${!!evfLane?.evfRunEndSeen}`)
             try {
               await reader.cancel()
             } catch {
@@ -7250,8 +7251,10 @@ export class WsClient {
           }
           throw readErr
         }
-        if (done) break
-        streamLastEventTs = Date.now()
+        if (done) {
+          console.info(`[STREAM-DIAG] ✅ SSE done=true (stream 自然结束) totalFrames=${sseFrameCount} runEndSeen=${!!evfLane?.evfRunEndSeen} finalEmitted=${!!evfLane?.finalEmitted}`)
+          break
+        }
         if (streamSilentWarned) {
           streamSilentWarned = false
         }
@@ -7261,9 +7264,42 @@ export class WsClient {
         for (const frame of frames) {
           sseQueue.push(frame)
         }
+        // [STREAM-DIAG] read-loop 主循环每读一段打 1 行
+        if (typeof performance !== 'undefined') {
+          const _n = frames.length
+          const _b = value && value.byteLength ? value.byteLength : 0
+          const _t = Date.now()
+          if (!window.__evoflowLastSseLog || _t - window.__evoflowLastSseLog > 250) {
+            window.__evoflowLastSseLog = _t
+            console.info(
+              `[STREAM-DIAG] read-loop got frames=${_n} bytes=${_b} totalFrames=${typeof sseFrameCount === 'number' ? sseFrameCount : '?'} runEndSeen=${!!evfLane?.evfRunEndSeen} finalEmitted=${!!evfLane?.finalEmitted} tailDrainMsLeft=${runEndTailStartedAt ? Math.max(0, RUN_END_TAIL_DRAIN_MS - (_t - runEndTailStartedAt)) : RUN_END_TAIL_DRAIN_MS}`
+            )
+          }
+        }
+        // [STREAM-DIAG] 检测到 frame 列表里的 event 名 (会打断节流)
+        for (const f of frames) {
+          const _m = String(f || '').match(/^event:\s*(.+)$/m)
+          if (_m) {
+            const _en = _m[1].trim()
+            if (_en === 'evf' || _en === 'agui' || /^(run|state|values|messages|messages-tuple|end|error|complete|final|tool|tool_calls)$/i.test(_en)) {
+              console.info(`[STREAM-DIAG] event-name=${_en} totalFrames=${sseFrameCount} tailDrainMsLeft=${runEndTailStartedAt ? Math.max(0, RUN_END_TAIL_DRAIN_MS - (Date.now() - runEndTailStartedAt)) : RUN_END_TAIL_DRAIN_MS}`)
+            }
+          }
+        }
+        // [STREAM-DIAG] 检测到 frame 列表里的 event 名 (会打断节流)
+        for (const f of frames) {
+          const _m = String(f || '').match(/^event:\s*(.+)$/m)
+          if (_m) {
+            const _en = _m[1].trim()
+            if (_en === 'evf' || _en === 'agui' || /^(run|state|values|messages|messages-tuple|end|error|complete|final|tool|tool_calls)$/i.test(_en)) {
+              console.info(`[STREAM-DIAG] event-name=${_en} totalFrames=${sseFrameCount} tailDrainMsLeft=${runEndTailStartedAt ? Math.max(0, RUN_END_TAIL_DRAIN_MS - (Date.now() - runEndTailStartedAt)) : RUN_END_TAIL_DRAIN_MS}`)
+            }
+          }
+        }
         if (evfLane?.evfRunEndSeen && evfLane?.finalEmitted) {
           runEndTailStartedAt = runEndTailStartedAt ?? Date.now()
           if (Date.now() - runEndTailStartedAt >= RUN_END_TAIL_DRAIN_MS) {
+            console.warn(`[STREAM-DIAG] ⛔ TAIL-DRAIN-TIMEOUT — reader.cancel() after ${Date.now() - runEndTailStartedAt}ms (limit=${RUN_END_TAIL_DRAIN_MS}ms) totalFrames=${sseFrameCount}`)
             try {
               await reader.cancel()
             } catch {

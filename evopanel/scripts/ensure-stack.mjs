@@ -11,6 +11,11 @@ const GW_PORT = 8012
 const VITE_PORT = 1521
 const REPO = 'D:/dev/github/EvoFlow'
 const PANEL = `${REPO}/evopanel`
+// Per-profile dev stack: when the user runs `node scripts/ensure-stack.mjs` we
+// pin the dev profile so the dev gateway's runtime state, EVOFLOW_HOME, and
+// SQLite land in ~/.evoflow-dev/profiles/dev/ — never colliding with the
+// installed client (profile=default) or any other coexisting client.
+const DEV_PROFILE = process.env.EVOFLOW_PROFILE || 'dev'
 
 function alive(port) {
   return new Promise((res) => {
@@ -38,14 +43,27 @@ async function waitPort(port, ms = 30000) {
 const gwUp = await alive(GW_PORT)
 console.log(`gateway :${GW_PORT} -> ${gwUp ? 'up' : 'down'}`)
 if (!gwUp) {
+  // Per-profile dev isolation: when running outside Tauri, the gateway's
+  // data dir is decided by `EVOFLOW_HOME`. The Tauri sidecar injects the
+  // per-profile dir automatically; here we have to do it ourselves so the
+  // dev gateway's SQLite / checkpoints land in the dev profile dir, not in
+  // `~/.evoflow` (which is the installed client's territory).
+  const profileHome = `${REPO}/.evoflow-dev/profiles/${DEV_PROFILE}`
+  const fs = await import('node:fs')
+  fs.mkdirSync(profileHome, { recursive: true })
   const gw = spawn(`${REPO}/backend/dist/evoflow-gateway/evoflow-gateway.exe`, [], {
     cwd: REPO,
     detached: true,
     stdio: 'ignore',
-    env: { ...process.env, EVOFLOW_GATEWAY_PORT: String(GW_PORT) },
+    env: {
+      ...process.env,
+      EVOFLOW_PROFILE: DEV_PROFILE,
+      EVOFLOW_HOME: profileHome,
+      EVOFLOW_GATEWAY_PORT: String(GW_PORT),
+    },
   })
   gw.unref()
-  console.log('  started gateway pid', gw.pid)
+  console.log('  started gateway pid', gw.pid, '(profile=' + DEV_PROFILE + ', home=' + profileHome + ')')
   console.log('  gateway ready ->', await waitPort(GW_PORT))
 }
 
