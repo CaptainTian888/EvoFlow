@@ -56,6 +56,10 @@ hiddenimports += collect_submodules("app.gateway.routers")
 # Same pin as gateway.spec — obfuscated builds must still ship models router.
 hiddenimports += _filesystem_submodules("app.gateway.routers", backend_root / "app" / "gateway" / "routers")
 hiddenimports += ["app.gateway.routers.models"]
+# Same pin as gateway.spec — v4 must ship or extended registration used to abort.
+hiddenimports += collect_submodules("app.gateway.v4", on_error="ignore")
+hiddenimports += _filesystem_submodules("app.gateway.v4", backend_root / "app" / "gateway" / "v4")
+hiddenimports += ["app.gateway.v4", "app.gateway.v4.routes"]
 hiddenimports += collect_submodules("app.channels", on_error="ignore")
 hiddenimports += _filesystem_submodules("evoflow.agents.middlewares", _harness_evoflow / "agents" / "middlewares")
 hiddenimports += collect_submodules("evoflow", on_error="ignore")
@@ -69,6 +73,11 @@ if "app.gateway.routers.models" not in hiddenimports:
     raise SystemExit(
         "gateway-pyarmor.spec: app.gateway.routers.models missing from hiddenimports "
         "(desktop Gateway would 503 /api/models)"
+    )
+if "app.gateway.v4.routes" not in hiddenimports:
+    raise SystemExit(
+        "gateway-pyarmor.spec: app.gateway.v4.routes missing from hiddenimports "
+        "(desktop Gateway extended registration aborts → loading_extended 503)"
     )
 
 block_cipher = None

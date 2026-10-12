@@ -243,11 +243,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                     from app.gateway.router_registry import register_v4_demo_router
 
                     register_v4_demo_router(app)
-                    app.state.extended_routers_registered = True
-                    app.state.startup_phase = "ready"
                     _st_log("extended routers registered")
                 except Exception:
+                    # Still clear the loading_extended gate: register_extended_routers
+                    # is best-effort and may have mounted most routes before failing.
+                    # Leaving the flag unset permanently 503s employee/apps/automation.
                     logger.exception("Extended router registration failed (non-fatal)")
+                finally:
+                    app.state.extended_routers_registered = True
                     app.state.startup_phase = "ready"
 
             heavy_task = asyncio.create_task(_heavy_and_extended())
