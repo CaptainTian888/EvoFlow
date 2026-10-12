@@ -944,6 +944,34 @@ async function gatewayProxyFetchStream(url, options = {}) {
 }
 
 /**
+ * Extract the most useful diagnostic fields from a transport failure so we can
+ * tell at a glance whether the issue is upstream (LangGraph), proxy (Rust
+ * channel), pipe (app-server IPC), or client (abort).
+ */
+function _diagTransportErr(label, err) {
+  if (!err) return { label, kind: 'unknown', code: '', message: '' }
+  const name = String(err.name || '')
+  const msg = String(err.message || err || '')
+  let kind = 'other'
+  if (name === 'AbortError' || /aborted|cancel/i.test(msg)) kind = 'client-abort'
+  else if (name === 'TimeoutError' || /timeout/i.test(msg)) kind = 'timeout'
+  else if (/fetch failed|failed to fetch|networkerror/i.test(msg)) kind = 'network'
+  else if (/404|not found/i.test(msg)) kind = '404'
+  else if (/422/i.test(msg)) kind = '422'
+  else if (/5\d\d/i.test(msg)) kind = '5xx'
+  else if (/channel|pipe|app-server/i.test(msg)) kind = 'pipe'
+  return { label, kind, name, code: String(err.code || err.status || ''), message: msg.slice(0, 240) }
+}
+
+function _logTransportDiag(stage, info) {
+  try {
+    console.info(`[evoflow-transport-diag] stage=${stage}`, JSON.stringify(info))
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
  * Desktop stream transport:
  * - Chat ``/runs/stream`` (default): Rust ``gateway_proxy_stream`` — fast SSE bytes, no page port discovery.
  * - DEV 模式: 直走浏览器 fetch → DevTools Network 可见
@@ -953,6 +981,11 @@ async function gatewayProxyFetchStream(url, options = {}) {
  *
  * 传输选择日志默认静音（``localStorage EVOFLOW_DEBUG_TRANSPORT=1`` 打开），
  * 否则每开一条 SSE 就刷一行。
+ *
+ * 失败诊断：每个 fallback 阶段失败时会打 `[evoflow-transport-diag]` 1 行，
+ * 包含阶段名、错误分类（client-abort / timeout / network / 404 / 422 / 5xx /
+ * pipe / other）、HTTP 状态、原始 message 前 240 字符。下次复现时
+ * grep "evoflow-transport-diag" 即可定位卡在哪条 transport。
  */
 export async function evoflowFetchStream(url, options = {}) {
   if (!isEvoflowTauri() || !url.startsWith('/')) {
@@ -961,6 +994,10 @@ export async function evoflowFetchStream(url, options = {}) {
 
   const pathOnly = String(url).split('?')[0]
   const isRunsStream = String(url).includes('/runs/stream')
+  const diagRunStart = (typeof performance !== 'undefined' ? performance.now() : Date.now())
+  /** Stable id across fallback stages for grep correlation. */
+  const diagRunId = `evfstream-${Math.random().toString(36).slice(2, 8)}-${Date.now().toString(36)}`
+  const isRunsWait = /\/runs\/wait$/.test(pathOnly)
 
   // DEV 模式：直走 Vite proxy fetch，DevTools Network 可见（SSE 也走 /api proxy，ws: true）
   if (import.meta.env.DEV) {
@@ -980,10 +1017,21 @@ export async function evoflowFetchStream(url, options = {}) {
 
   // Default chat path: Rust owns Gateway URL (isolation OK) and streams raw SSE (fast).
   if (isRunsStream && !forcePipeChat && !forceWebviewHttp) {
+    const t0 = (typeof performance !== 'undefined' ? performance.now() : Date.now())
     try {
       transportLog('chat transport=gateway-proxy-stream', pathOnly)
-      return await gatewayProxyFetchStream(url, options)
+      const r = await gatewayProxyFetchStream(url, options)
+      const dt = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - t0
+      _logTransportDiag('runs-stream/gateway-proxy-stream/ok', {
+        id: diagRunId,
+        path: pathOnly,
+        elapsedMs: Math.round(dt),
+      })
+      return r
     } catch (err) {
+      const dt = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - t0
+      const diag = _diagTransportErr('gateway-proxy-stream', err)
+      _logTransportDiag('runs-stream/gateway-proxy-stream/fail', { id: diagRunId, path: pathOnly, elapsedMs: Math.round(dt), ...diag })
       // Stale thread after LangGraph restart — let chatSend recreate; do not mask with pipe fallback.
       if (isLangGraphThreadOrAssistantMissing(err)) throw err
       if (err?.name === 'AbortError' || /aborted/i.test(String(err?.message || err || ''))) throw err
@@ -992,6 +1040,7 @@ export async function evoflowFetchStream(url, options = {}) {
   }
 
   if (!forceWebviewHttp) {
+    const t0 = (typeof performance !== 'undefined' ? performance.now() : Date.now())
     try {
       const mod = await import('./app-server-client.js')
       await mod.ensureAppServer().catch(() => null)
@@ -1000,13 +1049,19 @@ export async function evoflowFetchStream(url, options = {}) {
           transportLog('chat transport=app-server-pipe', pathOnly, {
             structured: typeof options.onStreamEvent === 'function',
           })
-          return await mod.appServerFetchStream(url, options)
+          const r = await mod.appServerFetchStream(url, options)
+          const dt = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - t0
+          _logTransportDiag('runs-stream/app-server-pipe/ok', { id: diagRunId, path: pathOnly, elapsedMs: Math.round(dt) })
+          return r
         }
         transportLog('sse transport=app-server-pipe', pathOnly)
         return await mod.appServerFetchGatewayStream(url, options)
       }
       transportLog('sse pipe not warm yet; fallback gateway-http', pathOnly)
     } catch (err) {
+      const dt = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - t0
+      const diag = _diagTransportErr('app-server-pipe', err)
+      _logTransportDiag('runs-stream/app-server-pipe/fail', { id: diagRunId, path: pathOnly, elapsedMs: Math.round(dt), ...diag })
       console.warn('[evoflow] app-server stream pipe unavailable, fallback to Gateway fetch', err)
     }
   } else {
@@ -1019,10 +1074,19 @@ export async function evoflowFetchStream(url, options = {}) {
   // downstream consumer still speaks SSE, so the rest of the pipeline is
   // untouched. Trade-off: no token-by-token streaming — the assistant text
   // appears in one shot after the full run completes.
-  if (isRunsStream) {
+  if (isRunsStream && !isRunsWait) {
+    const t0 = (typeof performance !== 'undefined' ? performance.now() : Date.now())
     try {
-      return await _runsWaitFallbackStream(url, options)
+      const r = await _runsWaitFallbackStream(url, options, diagRunId)
+      const dt = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - t0
+      _logTransportDiag('runs-stream/runs-wait/ok', { id: diagRunId, path: pathOnly, elapsedMs: Math.round(dt) })
+      const totalDt = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - diagRunStart
+      _logTransportDiag('runs-stream/done', { id: diagRunId, path: pathOnly, transport: 'runs-wait-api', totalElapsedMs: Math.round(totalDt) })
+      return r
     } catch (waitErr) {
+      const dt = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - t0
+      const diag = _diagTransportErr('runs-wait', waitErr)
+      _logTransportDiag('runs-stream/runs-wait/fail', { id: diagRunId, path: pathOnly, elapsedMs: Math.round(dt), ...diag })
       console.warn('[evoflow] runs/wait fallback failed', waitErr)
       // fall through to the legacy gateway-http path
     }
@@ -1051,13 +1115,24 @@ export async function evoflowFetchStream(url, options = {}) {
  * Returning a ReadableStream-shaped `{ok,status,body}` keeps the downstream
  * SSE parser and dispatch pipeline unchanged.
  */
-async function _runsWaitFallbackStream(origUrl, options = {}) {
+async function _runsWaitFallbackStream(origUrl, options = {}, diagRunId = '') {
   const base = await _getGatewayBaseUrl()
   // Swap /runs/stream?... → /runs/wait (drop the original query — /runs/wait
   // doesn't take the same stream_format/ui_sse params).
   const waitPath = String(origUrl).split('?')[0].replace(/\/runs\/stream$/, '/runs/wait')
   const fullUrl = `${base}${waitPath}`
   transportLog('chat transport=runs-wait-api', waitPath)
+  const stageDiag = (stage, extra) => {
+    try {
+      console.info(
+        `[evoflow-transport-diag] stage=runs-wait/${stage}`,
+        JSON.stringify({ id: diagRunId, path: waitPath, fullUrl, ...extra }),
+      )
+    } catch {
+      /* ignore */
+    }
+  }
+  stageDiag('begin', { method: options.method || 'POST', bodyBytes: (options.body || '').length })
 
   // LangGraph /runs/wait requires the assistant_id; the runs/stream body
   // normally contains it, but if the caller forgot we add a safe default.
@@ -1070,7 +1145,8 @@ async function _runsWaitFallbackStream(origUrl, options = {}) {
         obj.context = obj.context || {}
       }
       bodyText = JSON.stringify(obj)
-    } catch {
+    } catch (parseErr) {
+      stageDiag('body-parse-warn', { error: String(parseErr?.message || parseErr).slice(0, 120) })
       /* leave as-is */
     }
   }
@@ -1081,15 +1157,46 @@ async function _runsWaitFallbackStream(origUrl, options = {}) {
     body: bodyText,
     signal: options.signal,
   }
-  const resp = await _gatewayAuthFetch(fullUrl, fetchOptions)
+  let resp
+  const fetchStart = (typeof performance !== 'undefined' ? performance.now() : Date.now())
+  try {
+    resp = await _gatewayAuthFetch(fullUrl, fetchOptions)
+  } catch (fetchErr) {
+    const dt = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - fetchStart
+    const diag = _diagTransportErr('runs-wait-fetch', fetchErr)
+    stageDiag('fetch/network-error', { elapsedMs: Math.round(dt), ...diag })
+    throw fetchErr
+  }
+  const fetchDt = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - fetchStart
+  stageDiag('fetch/done', {
+    status: resp.status,
+    ok: resp.ok,
+    contentType: resp.headers.get?.('content-type') || '',
+    elapsedMs: Math.round(fetchDt),
+  })
   if (!resp.ok) {
     const text = await resp.text().catch(() => '')
+    stageDiag('fetch/non-2xx', { status: resp.status, bodyPreview: text.slice(0, 240) })
     throw new Error(`runs/wait HTTP ${resp.status}: ${text.slice(0, 200)}`)
   }
-  const j = await resp.json()
+  let j
+  try {
+    j = await resp.json()
+  } catch (jsonErr) {
+    stageDiag('json-parse-error', { error: String(jsonErr?.message || jsonErr).slice(0, 120) })
+    throw jsonErr
+  }
+  // Surface LangGraph in-body error envelope (e.g. {"__error__": {error, message}})
+  if (j && typeof j === 'object' && j.__error__) {
+    stageDiag('langgraph-error', {
+      error: String(j.__error__.error || '').slice(0, 80),
+      message: String(j.__error__.message || '').slice(0, 240),
+    })
+  }
   // Extract the final assistant text from the LangGraph state shape.
   let finalText = ''
   const messages = j?.messages || j?.values?.messages || []
+  let assistantIdx = -1
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i] || {}
     const role = m.type || m.role
@@ -1097,19 +1204,28 @@ async function _runsWaitFallbackStream(origUrl, options = {}) {
       const c = m.content
       if (typeof c === 'string') {
         finalText = c
+        assistantIdx = i
         break
       } else if (Array.isArray(c)) {
         finalText = c
           .map((p) => (typeof p === 'string' ? p : p?.text || ''))
           .filter(Boolean)
           .join('')
-        if (finalText) break
+        if (finalText) { assistantIdx = i; break }
       }
     }
   }
   const threadId = String(j?.thread_id || '').trim()
   const runId =
     String(j?.run_id || '').trim() || `run-${Math.random().toString(36).slice(2, 12)}`
+  stageDiag('parsed', {
+    threadId,
+    runId,
+    messagesCount: messages.length,
+    finalTextLen: finalText.length,
+    assistantMessageIdx: assistantIdx,
+    rootKeys: Object.keys(j || {}).slice(0, 12),
+  })
   const sseChunks = [
     `event: ag-ui\ndata: ${JSON.stringify({
       type: 'RUN_STARTED',
@@ -1137,6 +1253,7 @@ async function _runsWaitFallbackStream(origUrl, options = {}) {
       controller.close()
     },
   })
+  stageDiag('ok', { sseFramesEmitted: sseChunks.length })
   return { ok: true, status: 200, body: stream, structured: false }
 }
 
