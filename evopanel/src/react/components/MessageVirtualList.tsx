@@ -1459,9 +1459,13 @@ export const MessageVirtualList = memo(function MessageVirtualList({
   }, [syncScrollJumpButtons])
 
   /** ZCode 对齐：回合导航条 —— 用户问题刻度（≥2 才显示，<864px 宽由 CSS 隐藏） */
+  // deps 用 baseHistoryItems（流式期间稳定）而非 historyItems：turnNavTurns 只取
+  // user 行，user 行来自历史落库，与 streamRow（_stream/assistant 续流合并）无关。
+  // 原依赖 historyItems 时，每条 delta 因 streamRow 浅拷贝换新引用 → O(rows) forEach
+  // 重算，N 轮后 20Hz×N 次/秒遍历 → 累积型卡顿。
   const turnNavTurns = useMemo(() => {
     const turns: Array<{ rowIndex: number; preview: string }> = []
-    historyItems.forEach((item, index) => {
+    baseHistoryItems.forEach((item, index) => {
       if (item.row.role !== 'user') return
       if (isHiddenToolApprovalUserMessage(item.row)) return
       turns.push({
@@ -1470,7 +1474,7 @@ export const MessageVirtualList = memo(function MessageVirtualList({
       })
     })
     return turns
-  }, [historyItems])
+  }, [baseHistoryItems])
   const turnNavTurnsRef = useRef(turnNavTurns)
   turnNavTurnsRef.current = turnNavTurns
   const [activeNavIndex, setActiveNavIndex] = useState(-1)
