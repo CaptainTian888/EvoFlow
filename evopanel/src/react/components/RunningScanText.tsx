@@ -15,7 +15,9 @@ export function RunningScanText({
   const tail = chars.length > head.length ? chars.slice(head.length).join('') : ''
   const n = head.length
   const stepSec = 0.048
-  const durationSec = Math.max(1.6, n * stepSec + 0.9)
+  // 量化到 0.5s 档位：流式期间字符数每 delta 增长，连续变化的 animation-duration
+  // 会让 CSS 动画反复重算（扫光跳变/闪烁）；档位化后 --scan-dur 仅偶尔变化。
+  const durationSec = Math.max(2, Math.ceil((n * stepSec + 0.9) / 0.5) * 0.5)
   return (
     <span
       className={className ? `tool-running-scan ${className}` : 'tool-running-scan'}
