@@ -172,6 +172,10 @@ export default defineConfig(({ mode }) => {
           find: /^fastdom$/,
           replacement: path.resolve(__dirname, 'src/lib/shims/fastdom-stub.mjs'),
         },
+        {
+          find: /^fastdom\/extensions\/fastdom-promised$/,
+          replacement: path.resolve(__dirname, 'src/lib/shims/fastdom-promised-stub.mjs'),
+        },
         // @mermaid-js/parser has broken package.json exports field.
         // Force direct path to avoid resolver failure.
         {
