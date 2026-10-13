@@ -18588,6 +18588,13 @@ html.dark .msg-tool-activity-fold-steps {
   display: none;
 }
 
+/* 对话结束后折叠态：隐藏思考块和工具列表，只显示正文（plain-body/live-tail/legacy-body）。
+   bodyAlwaysRendered=true 保证 body 在 DOM（展开不闪烁），由 CSS 控制可见性。 */
+.msg-turn-history-fold[data-history-open="false"] .react-chat-inline-reasoning,
+.msg-turn-history-fold[data-history-open="false"] .msg-tool.react-msg-tool {
+  display: none;
+}
+
 .msg-tool--in-activity-fold {
   margin-bottom: 0;
   gap: 0;

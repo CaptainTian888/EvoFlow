@@ -233,14 +233,11 @@ function ExploringActivityChunkInner({
     return (
       <div className="msg-tool-activity-fold-inner">
         {(() => {
-          // 2026-10-10 反馈：v5.5「只留最后 text」体验割裂（折叠后只剩 1 段、其它全藏），
-          //   改为「折叠态全量显示」：所有 piece 标 latest，CSS 折叠时不再按 role 隐藏。
-          //   仍是 v5.4 单一折叠入口（外层 TurnHistoryFold 头部），不引入二级折叠。
-          //   注：CSS 仍保留 `[data-piece-role="history"] { display: none }` 规则作
-          //   「有显式 history 时仍可隐藏」逃生口；之后如要重新启用 v5.5 行为，
-          //   把这里改回「仅 last text → latest，其余 → history」即可。
+          // 对话结束后折叠，只显示最终正文（plain-body/live-tail slot）。
+          // ExploringActivityChunk 内所有 piece（text/tools/reasoning）标为 history，
+          // 折叠时由 CSS display:none 隐藏；展开时全部可见。
           return pieces.map((piece, pi) => {
-            const role: 'latest' | 'history' = 'latest'
+            const role: 'latest' | 'history' = 'history'
             const inner = renderPiece(piece, pi)
             if (inner == null) return null
             return (
