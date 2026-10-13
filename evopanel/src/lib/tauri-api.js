@@ -62,6 +62,30 @@ function isBrowserDevViteProxy() {
   }
 }
 
+/**
+ * 桌面端是否优先直连 API（而不是通过 app-server pipe / Rust proxy）
+ * - 默认 true（构建时改 VITE_EVOFLOW_DESKTOP_DIRECT_API=0 关掉）
+ * - 运行时 localStorage 可覆盖：EVOFLOW_DESKTOP_DIRECT_API=0
+ * - 优先级：localStorage > Vite env > 默认(true)
+ */
+function isDesktopDirectApiMode() {
+  if (!isTauri) return false
+  try {
+    const stored = typeof localStorage !== 'undefined' ? localStorage.getItem('EVOFLOW_DESKTOP_DIRECT_API') : null
+    if (stored === '0' || stored === 'false') return false
+    if (stored === '1' || stored === 'true') return true
+    // Vite 构建时环境变量
+    const env = import.meta.env || {}
+    const envVal = env.VITE_EVOFLOW_DESKTOP_DIRECT_API
+    if (envVal === '0' || envVal === 'false') return false
+    if (envVal === '1' || envVal === 'true') return true
+    // 默认 true（桌面端优先直连 API）
+    return true
+  } catch {
+    return true
+  }
+}
+
 /** Override Gateway base for browser dev (e.g. agent-trace standalone auto-probe). */
 export function setGatewayBaseUrlOverride(baseUrl) {
   const trimmed = String(baseUrl || '').trim().replace(/\/+$/, '')
@@ -380,9 +404,10 @@ async function gatewayProxyOnce(method, path, body = null, query = null, options
     ? String(path)
     : `/api${String(path || '').startsWith('/') ? path : `/${path || ''}`}`
 
-  // 桌面端：优先走常驻 app-server 管道；未暖好则 Rust gateway_proxy → Gateway
-  // DEV 模式：跳过 Rust 代理，直走浏览器 fetch → DevTools Network 可见
-  if (isTauri && !import.meta.env.DEV) {
+  // 桌面端优先直连 API（skip pipe）；DEV 模式也直连
+  // 若要强制 pipe，设 VITE_EVOFLOW_DESKTOP_DIRECT_API=0 或 localStorage.EVOFLOW_DESKTOP_DIRECT_API=0
+  const shouldSkipPipe = isDesktopDirectApiMode() || import.meta.env.DEV
+  if (isTauri && !shouldSkipPipe) {
     const { invoke } = await import('@tauri-apps/api/core')
     /** @type {Record<string, string> | null} */
     let queryMap = null

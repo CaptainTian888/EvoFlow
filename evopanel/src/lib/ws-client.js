@@ -598,6 +598,31 @@ export function isEvoflowTauri() {
   )
 }
 
+/**
+ * 桌面端是否优先直连 API（而不是通过 app-server pipe / Rust proxy）
+ * 与 tauri-api.js 的同名函数保持一致（互相导入时避免环形依赖，各自实现一次）
+ * - 默认 true（构建时改 VITE_EVOFLOW_DESKTOP_DIRECT_API=0 关掉）
+ * - 运行时 localStorage 可覆盖：EVOFLOW_DESKTOP_DIRECT_API=0
+ * - 优先级：localStorage > Vite env > 默认(true)
+ */
+export function isDesktopDirectApiMode() {
+  if (!isEvoflowTauri()) return false
+  try {
+    const stored = typeof localStorage !== 'undefined' ? localStorage.getItem('EVOFLOW_DESKTOP_DIRECT_API') : null
+    if (stored === '0' || stored === 'false') return false
+    if (stored === '1' || stored === 'true') return true
+    // Vite 构建时环境变量
+    const env = import.meta.env || {}
+    const envVal = env.VITE_EVOFLOW_DESKTOP_DIRECT_API
+    if (envVal === '0' || envVal === 'false') return false
+    if (envVal === '1' || envVal === 'true') return true
+    // 默认 true（桌面端优先直连 API）
+    return true
+  } catch {
+    return true
+  }
+}
+
 let _cachedGwBaseUrl = null
 
 /** 获取 Gateway 后端地址（缓存结果，避免重复 invoke） */
@@ -973,7 +998,9 @@ function _logTransportDiag(stage, info) {
 
 /**
  * Desktop stream transport:
- * - Chat ``/runs/stream`` (default): Rust ``gateway_proxy_stream`` — fast SSE bytes, no page port discovery.
+ * - 桌面端（默认新行为）：直连 Gateway（跟 DEV 一样）→ pipe fallback → /runs/wait 兜底
+ * - 可改：设 VITE_EVOFLOW_DESKTOP_DIRECT_API=0 或 localStorage EVOFLOW_DESKTOP_DIRECT_API=0 强制走 pipe 优先
+ * - 传统 localStorage 开关仍保留：evoflow-desktop-pipe-chat=1（强制优先 pipe）/ =0（强制 webview HTTP）
  * - DEV 模式: 直走浏览器 fetch → DevTools Network 可见
  * - Opt-in stdio structured pipe: ``localStorage evoflow-desktop-pipe-chat=1`` (filtered; drops fat values).
  * - Other SSE: prefer warm app-server pipe; HTTP fallback.
@@ -999,10 +1026,14 @@ export async function evoflowFetchStream(url, options = {}) {
   const diagRunId = `evfstream-${Math.random().toString(36).slice(2, 8)}-${Date.now().toString(36)}`
   const isRunsWait = /\/runs\/wait$/.test(pathOnly)
 
-  // DEV 模式：直走 Vite proxy fetch，DevTools Network 可见（SSE 也走 /api proxy，ws: true）
-  if (import.meta.env.DEV) {
-    transportLog('sse transport=dev-fetch', pathOnly)
-    return fetch(url, options)
+  // DEV 模式 或 桌面端直连 API 模式：直走浏览器 fetch，DevTools Network 可见
+  const shouldUseDirectFetch = import.meta.env.DEV || isDesktopDirectApiMode()
+  if (shouldUseDirectFetch) {
+    transportLog('sse transport=direct-api-fetch', pathOnly)
+    return _gatewayAuthFetch(
+      (await _getGatewayBaseUrl()) + url,
+      options
+    )
   }
 
   let forcePipeChat = false
@@ -1015,6 +1046,7 @@ export async function evoflowFetchStream(url, options = {}) {
     /* ignore */
   }
 
+  // 若未开启直连模式，则保留原逻辑：优先 gateway-proxy-stream，再 pipe，最后 /runs/wait
   // Default chat path: Rust owns Gateway URL (isolation OK) and streams raw SSE (fast).
   if (isRunsStream && !forcePipeChat && !forceWebviewHttp) {
     const t0 = (typeof performance !== 'undefined' ? performance.now() : Date.now())
