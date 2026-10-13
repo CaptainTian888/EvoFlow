@@ -550,11 +550,41 @@ export function relaxMarkdownLineBreaks(text) {
     return `__EVF_CODE_SLOT_${i}__`
   })
 
+  // 行首 `#/path` 是裸路径，不是 Markdown 标题；活动 hashtag (`#中文标签`、`#ai...`)
+  // 也应留在正文。用占位符保护它们，避免后续标题修复规则再次处理实体内容。
+  const hashTextSlots = []
+  s = s.replace(/^(#{1,6})(?=(?:\/|[\p{Script=Han}]|[a-z]))/gmu, (_, hashes) => {
+    const i = hashTextSlots.length
+    hashTextSlots.push(`&#35;${hashes.slice(1)}`)
+    return `__EVF_HASH_TEXT_SLOT_${i}__`
+  })
+
+  // 被保护的 hashtag/路径行合并到上一行（用空格连接）。
+  // 场景：LLM 把（#标签1\n#标签2\n#标签3）拆成多行，GFM hard-break 渲染后标签竖排。
+  // 条件：上一行末尾不是 |（表格行由下方规则单独处理）、不是空行。
+  s = s.replace(/([^\n|])\n(__EVF_HASH_TEXT_SLOT_\d+__)/g, '$1 $2')
+
+  // 表格行后紧跟（可能有空行）hashtag/路径行 → 移除空行，补 | 前缀使其成为表格行。
+  // 场景：LLM 把 | 看板 | url |\n\n#/account/... | 拆成表格行 + 空行 + 裸路径行。
+  s = s.replace(
+    /(^\s*\|[^\n]*\|\s*$)\n+(\s*__EVF_HASH_TEXT_SLOT_\d+__[^\n]*)/gm,
+    '$1\n| $2',
+  )
+
   s = s.replace(/---+(?=\s*#{1,6})/g, '---\n\n')
   // 中文冒号 `：` / 全角分号 `；` / 全角逗号 `，` 后直接接 ATX 标题也要拆，
   // 否则 `…展开：## 概述这是正文。` 会让第二个标题不被识别。
   s = s.replace(/([。！？；.!?：，])(\s*)(?=#{1,6}(?![0-9]))/g, '$1\n\n')
   s = s.replace(/([^\n#|])(\s*)(#{1,6})(?=[^\s#\n|0-9])/g, '$1\n\n$3')
+
+  // Some persisted/history payloads have already lost the leading `#` from a
+  // `#/account/...` line. Keep that bare account path in the preceding prose/table
+  // instead of allowing the heading normalizer to promote it to an h1.
+  s = s.replace(/^(\/account\/[^\n|]+\|?)$/gm, (line) => {
+    const i = hashTextSlots.length
+    hashTextSlots.push(line)
+    return `__EVF_HASH_TEXT_SLOT_${i}__`
+  })
 
   // ##一、 / ###A. → ## 一、
   s = s.replace(/(#{1,6})([一二三四五六七八九十百千]+、)/g, '$1 $2')
@@ -582,8 +612,9 @@ export function relaxMarkdownLineBreaks(text) {
     })
     .join('\n')
 
-  // 恢复代码块和行内代码
+  // 恢复代码块、行内代码和被保护的正文 hashtag / hash 路径。
   s = s.replace(/__EVF_CODE_SLOT_(\d+)__/g, (_, i) => codeSlots[Number(i)] || '')
+  s = s.replace(/__EVF_HASH_TEXT_SLOT_(\d+)__/g, (_, i) => hashTextSlots[Number(i)] || '')
 
   return s
 }
