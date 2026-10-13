@@ -1,12 +1,27 @@
 /**
- * fastdom-promised stub for Vite ESM interop.
- * 
- * Extension of fastdom for promise-based API; same approach as fastdom-stub.
+ * Promise-based fastdom extension used by Mermaid.
  */
+const fastdomPromised = {
+  extend(extension = {}) {
+    return Object.assign(Object.create(this), extension)
+  },
+  read(fn) {
+    return Promise.resolve().then(() => fn?.())
+  },
+  write(fn) {
+    return Promise.resolve().then(() => fn?.())
+  },
+  measure(fn) {
+    return Promise.resolve().then(() => fn?.())
+  },
+  mutate(fn) {
+    return Promise.resolve().then(() => fn?.())
+  },
+}
 
-export default {}
-export const fastdom = {}
-export const read = () => Promise.resolve()
-export const write = (fn) => Promise.resolve(fn?.())
-export const measure = () => Promise.resolve()
-export const mutate = (fn) => Promise.resolve(fn?.())
+export default fastdomPromised
+export { fastdomPromised as fastdom }
+export const read = fastdomPromised.read
+export const write = fastdomPromised.write
+export const measure = fastdomPromised.measure
+export const mutate = fastdomPromised.mutate

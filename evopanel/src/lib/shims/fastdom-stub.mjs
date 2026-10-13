@@ -1,14 +1,28 @@
 /**
- * fastdom stub for Vite ESM interop.
- * 
- * fastdom is UMD-only and breaks Vite's ESM handling when imported by mermaid.
- * Mermaid has a try/catch fallback for missing fastdom, so we provide an empty stub
- * to satisfy the import and let mermaid continue without fastdom optimization.
+ * Minimal fastdom API for Mermaid's ESM imports.
+ * Mermaid extends the default export and uses measure() to read layout.
  */
+const fastdom = {
+  extend(extension = {}) {
+    return Object.assign(Object.create(this), extension)
+  },
+  read(fn) {
+    return fn?.()
+  },
+  write(fn) {
+    return fn?.()
+  },
+  measure(fn) {
+    return fn?.()
+  },
+  mutate(fn) {
+    return fn?.()
+  },
+}
 
-export default {}
-export const fastdom = {}
-export const read = () => {}
-export const write = (fn) => fn?.()
-export const measure = () => {}
-export const mutate = (fn) => fn?.()
+export default fastdom
+export { fastdom }
+export const read = fastdom.read
+export const write = fastdom.write
+export const measure = fastdom.measure
+export const mutate = fastdom.mutate

@@ -245,10 +245,11 @@ export class RightStageStore {
   hide(id = 'primary') {
     const matches = this.tabs.filter((t) => t.id === id)
     if (!matches.length) {
-      // 兼容旧调用：id 默认 'primary' 但激活标签可能用了其他 id——关闭激活者
+      // 兼容旧调用：id 默认 'primary' 但激活标签可能用了其他 id——
+      // 关闭激活者（而不是要求 active.id === id，避免 id 不一致导致静默不关）。
       if (this.activeKey) {
         const active = this.tabs.find((t) => this.tabKeyOf(t) === this.activeKey)
-        if (active && active.id === id) {
+        if (active) {
           this.recordClosed(this.tabKeyOf(active), active)
           this.tabs = this.tabs.filter((t) => t !== active)
           this.activeKey = this.tabs.length ? this.tabKeyOf(this.tabs[this.tabs.length - 1]) : null
@@ -272,6 +273,14 @@ export class RightStageStore {
   clearStreams() {
     if (this.streams.size === 0) return
     this.streams.clear()
+    this.bump()
+  }
+
+  /** 清空所有 tabs 并清空 activeKey —— rebuildSnapshot 会把 surface 推为 null。 */
+  hideAll() {
+    if (this.tabs.length === 0 && this.activeKey === null) return
+    this.tabs = []
+    this.activeKey = null
     this.bump()
   }
 
@@ -428,4 +437,10 @@ export function hideRightStageIfKind(...kinds: string[]) {
     matching: matching.map((t) => `${t.kind}:${t.id}`),
   })
   for (const t of matching) rightStageStore.closeTab(`${t.kind}:${t.id}`)
+  // 同时处理当前 surface 本身（browser 等 surface 通过 surface 字段而非 tabs 渲染）
+  const snap = rightStageStore.getSnapshot()
+  if (snap.surface && kindsNorm.includes(String(snap.surface.kind))) {
+    // surface 实际由 tabs 推导：清空 tabs + activeKey 后 rebuildSnapshot 会让 surface=null
+    rightStageStore.hideAll()
+  }
 }

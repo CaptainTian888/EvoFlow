@@ -1714,12 +1714,23 @@ export const BrowserPanel = memo(function BrowserPanel({
             tab={surfaceTab}
             onSelect={(kind) => handleSelectSurface(kind)}
             onClose={(kind) => {
-              if (kind === 'browser') {
-                // 关闭浏览器 surface 不允许（必须切换到另一个 surface）
-                return
-              }
-              // 关闭工作流/思维导图 surface = 切回浏览器
-              rightStageStore.show({ kind: 'browser', id: 'primary', title: '浏览器', layout: 'wide', data: {} })
+              const snap = rightStageStore.getSnapshot()
+              // eslint-disable-next-line no-console
+              console.log('[diag][collapse-panel] onClose surface tab', {
+                kind,
+                tabs: snap.tabs.map((t) => `${t.kind}:${t.id}`),
+                surface: snap.surface?.kind,
+                activeKey: snap.activeKey,
+              })
+              // 关掉当前 surface（不管什么 kind），清除 tabs → surface 被推导为 null → 右栏消失
+              rightStageStore.hideAll()
+              const snap2 = rightStageStore.getSnapshot()
+              // eslint-disable-next-line no-console
+              console.log('[diag][collapse-panel] after hideAll', {
+                tabs: snap2.tabs.map((t) => `${t.kind}:${t.id}`),
+                surface: snap2.surface?.kind,
+                activeKey: snap2.activeKey,
+              })
             }}
             onCloseWebTab={(engineIndex) => void handleCloseTab(engineIndex)}
             onSelectWebTab={(engineIndex) => void handleSelectTab(engineIndex)}

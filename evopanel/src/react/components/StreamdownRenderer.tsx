@@ -299,6 +299,9 @@ function StreamdownRendererInner({
           remarkPlugins={Object.values(defaultRemarkPlugins)}
           rehypePlugins={Object.values(defaultRehypePlugins)}
           components={components}
+          // Table actions belong to the surrounding module toolbar, not inside
+          // the assistant message body. Keep Markdown tables read-only here.
+          controls={{ table: false }}
           isAnimating={isStreaming}
           parseIncompleteMarkdown
         >
