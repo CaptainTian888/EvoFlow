@@ -221,6 +221,26 @@ const FlatHistoryBody = memo(function FlatHistoryBody(
 })
 
 /** 仅极长会话才用虚拟列表 */
+/**
+ * 虚拟行 style 对象缓存：按 vRow.start（像素偏移）复用同一引用。
+ * 原内联 style={{...}} 每条 delta 创建新对象 → HistoryMessageRow memo 浅比较
+ * 引用不等 → 所有可见行重渲染（10-15 行 × computeAssistantBodyBundle ≈ 10ms/delta）。
+ * 缓存后 start 不变的行 memo 命中，只有位置真变的行重渲染。
+ */
+const vRowStyleCache = new Map<number, React.CSSProperties>()
+function getVRowStyle(start: number): React.CSSProperties {
+  let s = vRowStyleCache.get(start)
+  if (!s) {
+    s = { position: 'absolute', top: 0, left: 0, width: '100%', transform: `translateY(${start}px)` }
+    vRowStyleCache.set(start, s)
+    if (vRowStyleCache.size > 500) {
+      const firstKey = vRowStyleCache.keys().next().value
+      if (firstKey != null) vRowStyleCache.delete(firstKey)
+    }
+  }
+  return s
+}
+
 const VirtualHistoryBody = memo(function VirtualHistoryBody(
   props: SharedHistoryProps & {
     historyItems: HistoryItem[]
@@ -397,13 +417,7 @@ const VirtualHistoryBody = memo(function VirtualHistoryBody(
             }
             measureRef={virtualizer.measureElement}
             measureIndex={vRow.index}
-            style={{
-              position: 'absolute',
-              top: 0,
-              left: 0,
-              width: '100%',
-              transform: `translateY(${vRow.start}px)`,
-            }}
+            style={getVRowStyle(vRow.start)}
           />
         )
       })}
