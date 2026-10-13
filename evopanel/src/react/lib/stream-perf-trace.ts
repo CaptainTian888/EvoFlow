@@ -66,8 +66,16 @@ function percentile(sorted: number[], p: number): number {
 }
 
 /** 每条流式 delta 开始时调用（在 MessageVirtualList render 开头）。 */
+let lastDeltaSeq = -1
 export function streamPerfBeginDelta(seq: number): void {
   if (!enabled) return
+  // 只在 seq 真正递增时记录：seq 不变说明是父组件 prop 变化触发的重渲染
+  // （非流式 delta），记录它会误报"啥都没干还在卡"。endDelta 会因 phases=null 跳过。
+  if (seq === lastDeltaSeq) {
+    currentDeltaPhases = null
+    return
+  }
+  lastDeltaSeq = seq
   currentDeltaPhases = new Map()
   currentDeltaStart = now()
   currentDeltaSeq = seq
