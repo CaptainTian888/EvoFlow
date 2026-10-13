@@ -97,6 +97,40 @@ tools/agent-browser/node_modules/.bin/agent-browser install
 
 Do **not** invent alternate browsers or fall back to a generic Chromium.
 
+## Login state (real desktop browser)
+
+`agent-browser` drives the browser the user actually uses, so **logins persist
+naturally** — whatever the user has signed into (content platforms, admin panels)
+is already available to the agent. Before any scraping or account-bound task:
+
+1. Verify login state from the snapshot: look for the user avatar / personal-center
+   link. A visible「登录」/「Sign in」button means logged out.
+2. If logged out, stop and tell the user to sign in first — do **not** scrape a
+   logged-out page: sites serve truncated data and pop login modals mid-flow.
+3. A login modal appearing mid-task (e.g.「扫码登录」) means the session expired or
+   the site gated deeper pages. Stop, hand the modal to the user, resume after
+   they sign in.
+
+## Anti-bot etiquette (CAPTCHA & rate limits)
+
+- CAPTCHA/slider overlay (e.g. `second_verify` masks): **the human solves it**.
+  Screenshot it, tell the user, wait 1-2 minutes, re-snapshot. Never brute-retry —
+  retrying escalates risk control.
+- Frequency: for batch scraping keep it to a handful of sites/accounts per day,
+  pause between rounds, and stop for the day once risk control appears.
+- Account hygiene: run automation on a secondary account; risk control is tied to
+  the logged-in account, keep the primary for manual use.
+
+## When to write a script instead
+
+`agent-browser` is for interactive and exploratory tasks. A flow that runs
+unchanged every day (scheduled collection, monitoring) should be a **script**
+driven by `terminal`/`process_start` (Playwright-core over CDP, or plain HTTP),
+with the agent only calling it and interpreting results. Same browser, same
+login, but no per-step model round-trips. Domain example: a
+`douyin-blogger-analysis` style skill — profile → scroll → parse → POST to a
+local store.
+
 ## Tips
 
 - `fill` types through the keyboard path (focus + insertText), so React/Vue controlled

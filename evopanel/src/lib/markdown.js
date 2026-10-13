@@ -197,8 +197,22 @@ export function renderMarkdown(text) {
   if (!text) return ''
   const cached = mdCacheGet(text)
   if (cached !== undefined) return cached
+  // Protect URLs whose hash-fragment contains a `/`-led path
+  // (e.g. `http://host:8787/#/account/...`) before any newline/linkify pass can
+  // split them. Slot is restored verbatim at the end of this function.
+  // Use control-char delimiters — `__…__` would be eaten by Markdown **bold**.
+  const linkifyFragSlots = []
+  const LINKIFY_FRAG_PH = '\x02'
+  const fragGuardText = String(text).replace(
+    /\bhttps?:\/\/[^\s<>'"]+\/#\/[A-Za-z0-9%._~!\$&'()*+,;=:@\/\-]+/g,
+    (raw) => {
+      const i = linkifyFragSlots.length
+      linkifyFragSlots.push(raw)
+      return `${LINKIFY_FRAG_PH}evflinkfrag${i}\x03`
+    },
+  )
   let html = linkifyWorkspaceAtMentions(
-    relaxMarkdownLineBreaks(normalizeCjkTypographyForMarkdown(text)),
+    relaxMarkdownLineBreaks(normalizeCjkTypographyForMarkdown(fragGuardText)),
   )
   html = protectMarkdownImagePaths(html)
   const mermaidBlocks = []
@@ -458,6 +472,9 @@ export function renderMarkdown(text) {
   if (mathTokens.length) {
     out = out.replace(/evfmath(\d+)/g, (_, idx) => mathTokens[Number(idx)] ?? '')
   }
+  if (linkifyFragSlots.length) {
+    out = out.replace(/\x02evflinkfrag(\d+)\x03/g, (_, idx) => linkifyFragSlots[Number(idx)] ?? '')
+  }
   mdCacheSet(text, out)
   return out
 }
@@ -552,6 +569,7 @@ export function relaxMarkdownLineBreaks(text) {
 
   // 行首 `#/path` 是裸路径，不是 Markdown 标题；活动 hashtag (`#中文标签`、`#ai...`)
   // 也应留在正文。用占位符保护它们，避免后续标题修复规则再次处理实体内容。
+  // 关键：必须加 `m` 让 `^` 逐行匹配；否则会吞掉正文里所有 #，把整段 hashtag 链吃成单行。
   const hashTextSlots = []
   s = s.replace(/^(#{1,6})(?=(?:\/|[\p{Script=Han}]|[a-z]))/gmu, (_, hashes) => {
     const i = hashTextSlots.length
@@ -564,12 +582,29 @@ export function relaxMarkdownLineBreaks(text) {
   // 条件：上一行末尾不是 |（表格行由下方规则单独处理）、不是空行。
   s = s.replace(/([^\n|])\n(__EVF_HASH_TEXT_SLOT_\d+__)/g, '$1 $2')
 
+  // 阶段 0：把未被行首保护器命中的 inline hashtag 链折叠回单行。
+  // 场景：`CJK）\n#hashtag` 中 #hashtag 不在行首（前面有空格等），未被 hashTextSlots 保护。
+  // 触发条件：上一行末尾是 CJK/拉丁/数字/中英括号之一，下一行以 # 开头。
+  s = s.replace(/([\p{L}\p{N}\p{Script=Han}\)）\]】」』\(（])\n+(#\s?[\p{L}\p{N}\p{Script=Han}][^\n]*)/gu, '$1 $2')
+
   // 表格行后紧跟（可能有空行）hashtag/路径行 → 移除空行，补 | 前缀使其成为表格行。
   // 场景：LLM 把 | 看板 | url |\n\n#/account/... | 拆成表格行 + 空行 + 裸路径行。
+  // 注意：用 [ \t]*$ 而非 \s*$，因为 \s 会匹配 \n 导致 $1 携带换行符、空行无法移除。
   s = s.replace(
-    /(^\s*\|[^\n]*\|\s*$)\n+(\s*__EVF_HASH_TEXT_SLOT_\d+__[^\n]*)/gm,
+    /(^\s*\|[^\n]*\|[ \t]*$)\n+(\s*__EVF_HASH_TEXT_SLOT_\d+__[^\n]*)/gm,
     '$1\n| $2',
   )
+
+  // 全角括号内 LLM 拆行的标签/短文本合并为一行。
+  // 场景：（\n标签1\n标签2\n标签3）→ （ 标签1 标签2 标签3）
+  // 条件：括号内不含空行、表格行、标题、分隔线等 Markdown 结构。
+  s = s.replace(/（\n([\s\S]*?)）/g, (m, inner) => {
+    if (/\n\s*\n/.test(inner)) return m
+    if (/^\s*[|]/m.test(inner)) return m
+    if (/^\s*#{1,6}\s/m.test(inner)) return m
+    if (/^\s*---/m.test(inner)) return m
+    return '（ ' + inner.replace(/\n/g, ' ').trim() + '）'
+  })
 
   s = s.replace(/---+(?=\s*#{1,6})/g, '---\n\n')
   // 中文冒号 `：` / 全角分号 `；` / 全角逗号 `，` 后直接接 ATX 标题也要拆，

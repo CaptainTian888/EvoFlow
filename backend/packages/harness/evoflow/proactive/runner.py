@@ -2624,6 +2624,22 @@ class ProactiveRunner:
         report["resumed_round"] = bool(resumed_round)
         if dispatch_task_id:
             report["dispatch_task_id"] = dispatch_task_id
+        
+        # Optimization: if a new task was created with this dispatch,
+        # trigger immediate agent wake-up instead of waiting for next patrol tick.
+        # This reduces task startup delay from ~60s to < 5s.
+        if dispatch_task_id and not role_lock_held:
+            try:
+                from evoflow.proactive.task_startup_accelerator import (
+                    maybe_wake_agent_for_new_task,
+                )
+                
+                maybe_wake_agent_for_new_task(
+                    {"task_id": dispatch_task_id, "assigned_to": code, "name": goal_s},
+                    runner=self,
+                )
+            except Exception:
+                logger.debug("task_startup_accelerator call failed", exc_info=True)
         logger.info(
             "proactive.dispatch role=%s source=%s goal=%s task=%s round=%s resumed=%s",
             code,

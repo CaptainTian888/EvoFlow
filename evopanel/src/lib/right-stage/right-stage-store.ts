@@ -408,9 +408,24 @@ export class RightStageStore {
 export const rightStageStore = new RightStageStore()
 
 export function hideRightStageIfKind(...kinds: string[]) {
+  // eslint-disable-next-line no-console
+  console.log('[diag][collapse-panel] hideRightStageIfKind called', { kinds })
   const kindsNorm = kinds.map((k) => normalizeRightStageKind(k))
+  // eslint-disable-next-line no-console
+  console.log('[diag][collapse-panel] rightStageStore.tabs snapshot', {
+    tabs: rightStageStore.getSnapshot().tabs.map((t) => `${t.kind}:${t.id}`),
+    surface: rightStageStore.getSnapshot().surface,
+    surfaceKind: rightStageStore.getSnapshot().surface?.kind,
+    activeKey: rightStageStore.getSnapshot().activeKey,
+  })
   const matching = rightStageStore.getSnapshot().tabs.filter((t) =>
     kindsNorm.includes(String(t.kind)),
   )
+  // eslint-disable-next-line no-console
+  console.log('[diag][collapse-panel] hideRightStageIfKind kindsNorm', { kindsNorm })
+  // eslint-disable-next-line no-console
+  console.log('[diag][collapse-panel] hideRightStageIfKind matching tabs', {
+    matching: matching.map((t) => `${t.kind}:${t.id}`),
+  })
   for (const t of matching) rightStageStore.closeTab(`${t.kind}:${t.id}`)
 }

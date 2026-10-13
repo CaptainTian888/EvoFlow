@@ -18,7 +18,7 @@ import {
   startTransition,
 } from 'react'
 import { createPortal, flushSync } from 'react-dom'
-import { ChevronDown, Folder, FolderOpen, PanelRightOpen, Share } from 'lucide-react'
+import { ChevronDown, Folder, FolderOpen, PanelRightClose, PanelRightOpen, Share } from 'lucide-react'
 import {
   wsClient,
   enqueuePendingInject,
@@ -4372,6 +4372,12 @@ export default function ChatApp() {
   /** 右侧信息 Drawer：默认关闭；与 Right Stage 互斥 */
   const [infoRailOpen, setInfoRailOpen] = useState(true)
   const [infoRailTab, setInfoRailTab] = useState<InfoRailTab>('agent')
+  /**
+   * 用户在当前会话内是否手动关过侧栏。
+   * 切会话时若该 ref 为 false，则默认开侧栏；为 true 则尊重用户意图保持关闭。
+   * 这样可避免「用户点关闭后立刻被切会话 effect 拉回 true」的竞态。
+   */
+  const userClosedInfoRailRef = useRef(false)
   /** 状态面板三态（面板 / 胶囊 / 隐藏），与右侧信息栏开合同为一个开关 */
   const [chatPanelMode, setChatPanelMode] = useState<ChatSummaryDisplayMode>(() => {
     try {
@@ -12118,8 +12124,11 @@ useEffect(() => {
 
   /** 顶栏只留一个入口；Agent / 产物等在侧栏内切换，避免与侧栏 tab 重复 */
   const toggleInfoRail = useCallback(() => {
+    // 在 updater 外记录用户意图，避免 React StrictMode 下 updater 二次执行导致 ref 抖动。
     setInfoRailOpen((open) => !open)
-  }, [])
+    // 由 true→false 时标记为「已手动关」，由 false→true 时复位 ref。
+    userClosedInfoRailRef.current = !infoRailOpen
+  }, [infoRailOpen])
 
   const [assetQuickBusy, setAssetQuickBusy] = useState(false)
   const handleAssetQuickAction = useCallback(
@@ -12199,12 +12208,19 @@ useEffect(() => {
       }
       aria-pressed={infoRailOpen}
       aria-label={infoRailOpen ? '关闭侧栏' : '打开侧栏'}
+      data-info-rail-open={infoRailOpen ? 'true' : 'false'}
       onClick={toggleInfoRail}
     >
-      <PanelRightOpen className="react-chat-header-icon" aria-hidden />
+      {infoRailOpen ? (
+        <PanelRightClose className="react-chat-header-icon" aria-hidden />
+      ) : (
+        <PanelRightOpen className="react-chat-header-icon" aria-hidden />
+      )}
     </button>
   )
 
+  // Right Stage 与侧栏互斥：Right Stage 打开时收起侧栏；Right Stage 关闭不强制恢复
+  // （用户的开关意图必须被尊重，否则会与顶栏切换按钮抢状态）。
   useEffect(() => {
     if (rightStageOpen) setInfoRailOpen(false)
   }, [rightStageOpen])
@@ -12215,8 +12231,25 @@ useEffect(() => {
     }
   }, [rightStageSurface?.kind])
 
+  // 切会话：复位「已手动关」标记，按初始默认行为（开 + 对应 tab）生效。
+  // 之前这里无条件 setInfoRailOpen(true)，会在用户点关闭按钮后立刻被回滚，
+  // 导致「点关闭没反应」的体验。改用 userClosedInfoRailRef 记录用户意图：
+  // 仅在 ref 标记为「已手动关」时，跳过打开动作、保留用户的关闭状态。
+  // 仅在 selectedSessionKey 真正变化时复位 ref（员工会话 ↔ 普通对话切换属于同一会话上下文，
+  // 不应把用户刚关掉的侧栏强行打开）。
+  const prevSelectedSessionKeyForInfoRailRef = useRef(selectedSessionKey)
   useEffect(() => {
-    // 普通对话默认打开 Agent 侧栏；员工会话默认当前任务
+    const sessionKeyChanged =
+      prevSelectedSessionKeyForInfoRailRef.current !== selectedSessionKey
+    prevSelectedSessionKeyForInfoRailRef.current = selectedSessionKey
+    if (sessionKeyChanged) {
+      userClosedInfoRailRef.current = false
+    }
+    if (userClosedInfoRailRef.current) {
+      // 用户在当前会话主动关过：尊重意图，保持关闭，仅同步 tab。
+      setInfoRailTab(isProactiveEmployeeSession ? 'task' : 'agent')
+      return
+    }
     setInfoRailOpen(true)
     setInfoRailTab(isProactiveEmployeeSession ? 'task' : 'agent')
   }, [selectedSessionKey, isProactiveEmployeeSession])

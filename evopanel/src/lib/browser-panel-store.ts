@@ -118,7 +118,11 @@ export function setBrowserTabs(tabs: BrowserTabSummary[]) {
 
 /** User-initiated close (panel X button). */
 export function closeBrowserStage() {
-  hideRightStageIfKind('browser')
+  // eslint-disable-next-line no-console
+  console.log('[diag][collapse-panel] closeBrowserStage() called')
+  // 直接关闭当前激活的 surface（不管 kind 是什么），而不依赖 tabs 列表匹配。
+  // surface 来自 rightStageStore.surface，hide() 无参数时关闭 activeKey。
+  rightStageStore.hide()
 }
 
 /** Publish the panel's *real* thread id (from the chat session) so the browser

@@ -489,9 +489,9 @@ function fixStreamingMarkdownFragments(markdown: string): string {
   //
   // So we escape `#` when followed by a non-space, non-`#` character at line start.
   return markdown.replace(/^(#+)(?![\s#])/gm, (match) => {
-    // If it's a single `#` followed by non-space, escape it
-    // If it's multiple `##`, it's probably a real heading that's malformed, so escape just the first
-    return match[0] + "&#35;" + match.slice(1);
+    // Remove the Markdown heading marker entirely; retaining the first `#`
+    // would still make the line a heading (e.g. `#&#35;tag`).
+    return "&#35;" + match.slice(1);
   });
 }
 

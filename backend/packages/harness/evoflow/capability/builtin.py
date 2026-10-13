@@ -187,6 +187,13 @@ def evo_create_task(ctx: CallerCtx, p: CreateTaskRequest) -> dict:
         task["source"] = src
         if channel:
             task["source_channel"] = channel
+        
+        # Track who created this task (for audit trail)
+        # Get the agent code from context if available
+        agent_code = getattr(ctx, "agent_code", None) or getattr(ctx, "caller_id", None)
+        if agent_code:
+            task["created_by"] = agent_code
+        
         if run_mode == "unattended":
             task["unattended_stage"] = "queued"
             task["unattended_enqueued_at"] = now

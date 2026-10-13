@@ -97,12 +97,12 @@ HOT_MCP_SERVERS: list[dict[str, Any]] = [
         **_hot_meta(auth="Token"),
     },
     {
-        "slug": "puppeteer",
-        "name": "Puppeteer Browser",
-        "description": "基于 Chromium 的浏览器自动化，支持截图、点击、表单填写",
-        "install_cmd": "npx -y @anthropic/mcp-server-puppeteer",
-        "stars": 6500,
-        **_hot_meta(author="anthropic"),
+        "slug": "playwright",
+        "name": "Playwright Browser",
+        "description": "通用浏览器自动化：导航/ARIA 快照/点击/表单/多标签页/截图，默认持久登录态（--user-data-dir 可自定义），适合网页操作与数据采集",
+        "install_cmd": "npx -y @playwright/mcp@latest",
+        "stars": 12800,
+        **_hot_meta(author="microsoft"),
     },
     {
         "slug": "memory",

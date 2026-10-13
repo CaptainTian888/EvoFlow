@@ -190,7 +190,7 @@ EvoFlow 把 MCP 工具**直接注册为 Agent 的 function 工具**，模型按�
 | **postgres** | stdio | PostgreSQL 查询 | `npx -y @modelcontextprotocol/server-postgres postgresql://...` |
 | **brave-search** | stdio | Brave 网页搜索 | `npx -y @modelcontextprotocol/server-brave-search`，需 `BRAVE_API_KEY` |
 | **slack** | stdio | Slack 收发消息 | `npx -y @modelcontextprotocol/server-slack`，需 `SLACK_BOT_TOKEN` |
-| **puppeteer** | stdio | 浏览器自动化 | `npx -y @modelcontextprotocol/server-puppeteer` |
+| **playwright** | stdio | 通用浏览器自动化：导航/ARIA 快照/点击/表单/多标签页/截图，默认持久登录态 | `npx -y @playwright/mcp@latest`（可选 `--user-data-dir` 固定 profile） |
 | **memory** | stdio | 持久化键值存储 | `npx -y @modelcontextprotocol/server-memory` |
 | **sequential-thinking** | stdio | 复杂推理辅助 | `npx -y @modelcontextprotocol/server-sequential-thinking` |
 | **lark / 飞书** | stdio | 飞书消息、文档、日历 | 见 [飞书集成](../integration/feishu-integration.md) [[guides/integration/feishu-integration|飞书集成]] |

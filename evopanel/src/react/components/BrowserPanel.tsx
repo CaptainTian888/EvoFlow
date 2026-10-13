@@ -1610,6 +1610,12 @@ export const BrowserPanel = memo(function BrowserPanel({
     () => normalizeRightStageKind(String(rightStageStore.getSnapshot().surface?.kind || '')),
   )
   const isBrowserSurface = activeKind === 'browser'
+  // eslint-disable-next-line no-console
+  console.log('[diag][collapse-panel] BrowserPanel activeKind', {
+    activeKind,
+    isBrowserSurface,
+    surfaceKind: rightStageStore.getSnapshot().surface?.kind,
+  })
   const overrideBody =
     !isBrowserSurface && bodySlot
       ? typeof bodySlot === 'function'
@@ -1743,7 +1749,41 @@ export const BrowserPanel = memo(function BrowserPanel({
           data-tauri-no-drag
           title="收起侧栏面板"
           aria-label="收起侧栏面板"
-          onClick={onClose}
+          onPointerDownCapture={(e) => {
+            // Tauri 无标题栏窗口：drag-region 容器下，部分 WebView2 实现在
+            // pointerdown 阶段会由 Tauri 决定是否开始拖拽；这里在 capture
+            // 阶段 stopPropagation / preventDefault，防止祖先 drag-region
+            // 把后续 click 链路吞掉。
+            // eslint-disable-next-line no-console
+            console.log('[diag][collapse-panel] pointerdown capture', {
+              type: e.type,
+              target: (e.target as HTMLElement)?.tagName,
+              currentTarget: (e.currentTarget as HTMLElement)?.tagName,
+              defaultPrevented: e.defaultPrevented,
+              phase: 'capture',
+            })
+            e.stopPropagation()
+            if (typeof onClose === 'function') onClose()
+          }}
+          onClick={(e) => {
+            // eslint-disable-next-line no-console
+            console.log('[diag][collapse-panel] click', {
+              type: e.type,
+              defaultPrevented: e.defaultPrevented,
+            })
+            e.stopPropagation()
+            e.preventDefault()
+            if (typeof onClose === 'function') onClose()
+          }}
+          onMouseDown={(e) => {
+            // eslint-disable-next-line no-console
+            console.log('[diag][collapse-panel] mousedown', {
+              type: e.type,
+              defaultPrevented: e.defaultPrevented,
+            })
+            e.stopPropagation()
+            e.preventDefault()
+          }}
         >
           <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
             <rect x="3" y="3" width="18" height="18" rx="2" />
