@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../../lib/tauri-api.js'
-import { renderMarkdown } from '../../lib/markdown.js'
+import { StreamdownRenderer } from './StreamdownRenderer.js'
 import { resolveHistoryMessageContent } from '../../lib/chat-normalize.js'
 
 type LeadMessage = {
@@ -109,15 +109,16 @@ export function LeadConversationPanel({
             // ignore
           }
         }
-        const contentHtml = msg.content ? renderMarkdown(msg.content) : ''
         return (
           <div key={`${i}-${msg.role}`} className={`conversation-message ${roleClass}`}>
             <div className="message-header">
               <span className="message-role">{roleLabel}</span>
               {timeStr ? <span className="message-time">{timeStr}</span> : null}
             </div>
-            {contentHtml ? (
-              <div className="message-content markdown-body" dangerouslySetInnerHTML={{ __html: contentHtml }} />
+            {msg.content ? (
+              <div className="message-content markdown-body">
+                <StreamdownRenderer text={msg.content} className="" />
+              </div>
             ) : null}
           </div>
         )
