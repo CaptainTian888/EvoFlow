@@ -42,6 +42,8 @@ import {
   streamPerfBeginDelta,
   streamPerfEndDelta,
   streamPerfTime,
+  streamPerfCountRender,
+  streamPerfSetVisibleRows,
   installStreamPerfGlobal,
 } from '../lib/stream-perf-trace.js'
 
@@ -139,6 +141,7 @@ const HistoryMessageRow = memo(function HistoryMessageRow({
   measureRef,
   measureIndex,
 }: HistoryMessageRowProps) {
+  streamPerfCountRender()
   const sk = String(sessionKey || 'default')
   const effectiveItem = continuedRow ? { ...item, row: continuedRow } : item
   const isContinuedStream = resolveMessageRowIsStreaming(
@@ -850,6 +853,7 @@ export const MessageVirtualList = memo(function MessageVirtualList({
   const streamSnapshotSeq = useStreamSnapshotSeq(sessionKeyForSend)
   streamPerfBeginDelta(streamSnapshotSeq)
   useLayoutEffect(() => {
+
     streamPerfEndDelta()
   })
   useEffect(() => {
@@ -1041,6 +1045,7 @@ export const MessageVirtualList = memo(function MessageVirtualList({
   }, [baseHistoryItems, streamContinuesAssistant, streamRow, continuationTargetIndex])
 
   const historyItems = baseHistoryItems
+  streamPerfSetVisibleRows(historyItems.length)
 
   const streamContinuedRowIndex =
     streamContinuesAssistant && streamRow ? continuationTargetIndex : -1

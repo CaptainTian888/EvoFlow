@@ -1,9 +1,16 @@
 /**
- * 流式渲染性能追踪：在每条 delta 的关键环节埋点，卡顿时打日志定位瓶颈。
+ * 流式渲染性能追踪：多维指标交叉定位卡顿根因。
+ *
+ * 指标维度：
+ *   1. 耗时分解（各 phase ms）→ 哪个环节慢
+ *   2. 重渲染行数 / 可见行数 → memo 是否生效
+ *   3. delta 频率（次/秒）→ 是否渲染风暴
+ *   4. 轮次恶化（当前 / 基线）→ 是否累积型
+ *   5. 内存趋势 → GC 压力
  *
  * 开关：?streamperf=1 或 localStorage.evoflow_streamperf=1
  *   开启后：单环节 > PHASE_WARN_MS 或 delta 总 > DELTA_WARN_MS 时 console.warn
- *   聚合：window.__streamPerf.report() 打各环节 p50/p95/max
+ *   聚合：window.__streamPerf.report() 打各环节 p50/p95/max + 多维诊断
  *
  * 关闭时所有函数空操作，零开销。
  */
@@ -11,16 +18,12 @@
 const PHASE_WARN_MS = 4
 const DELTA_WARN_MS = 12
 const WINDOW_SIZE = 200
+const MEM_SAMPLE_INTERVAL = 50
 
 function now(): number {
   return typeof performance !== 'undefined' ? performance.now() : Date.now()
 }
 
-/**
- * 默认开启：流式卡顿排查需要随时可用，且埋点开销极小（每 phase 两次
- * performance.now() + 一次 Map.set ≈ 微秒级，20Hz 下 <0.1ms/s）。
- * 显式关闭：?streamperf=0 或 localStorage.evoflow_streamperf=0
- */
 function detectEnabled(): boolean {
   if (typeof window === 'undefined') return false
   try {
@@ -41,7 +44,7 @@ function detectEnabled(): boolean {
 let enabled = detectEnabled()
 
 type PhaseStats = {
-  samples: number[] // 滑动窗口（最近 WINDOW_SIZE 条 delta 的该 phase 耗时）
+  samples: number[]
   max: number
 }
 
@@ -65,12 +68,20 @@ function percentile(sorted: number[], p: number): number {
   return sorted[Math.max(0, idx)]
 }
 
-/** 每条流式 delta 开始时调用（在 MessageVirtualList render 开头）。 */
 let lastDeltaSeq = -1
+let renderCountThisDelta = 0
+let visibleRowCountThisDelta = 0
+let deltaTimestamps: number[] = []
+let baselineDeltaTotal = 0
+let baselineDeltaSeq = -1
+let memSamples: { seq: number; mb: number }[] = []
+let memSampleCounter = 0
+
+const renderCountStats = { samples: [] as number[], max: 0 }
+const memoHitRateStats = { samples: [] as number[], max: 0 }
+
 export function streamPerfBeginDelta(seq: number): void {
   if (!enabled) return
-  // 只在 seq 真正递增时记录：seq 不变说明是父组件 prop 变化触发的重渲染
-  // （非流式 delta），记录它会误报"啥都没干还在卡"。endDelta 会因 phases=null 跳过。
   if (seq === lastDeltaSeq) {
     currentDeltaPhases = null
     return
@@ -79,9 +90,10 @@ export function streamPerfBeginDelta(seq: number): void {
   currentDeltaPhases = new Map()
   currentDeltaStart = now()
   currentDeltaSeq = seq
+  renderCountThisDelta = 0
+  visibleRowCountThisDelta = 0
 }
 
-/** 计时包裹一个同步环节。关闭时直接执行 fn，零开销。 */
 export function streamPerfTime<T>(phase: string, fn: () => T): T {
   if (!enabled) return fn()
   const t0 = now()
@@ -96,39 +108,110 @@ export function streamPerfTime<T>(phase: string, fn: () => T): T {
   return result
 }
 
-/** 每条流式 delta 结束时调用（在 MessageVirtualList useEffect/layoutEffect）。 */
+export function streamPerfCountRender(): void {
+  if (!enabled || !currentDeltaPhases) return
+  renderCountThisDelta++
+}
+
+export function streamPerfSetVisibleRows(n: number): void {
+  if (!enabled || !currentDeltaPhases) return
+  visibleRowCountThisDelta = n
+}
+
 export function streamPerfEndDelta(): void {
   if (!enabled || !currentDeltaPhases) return
   const total = now() - currentDeltaStart
-  // 计入各 phase 滑动窗口
+
   for (const [phase, ms] of currentDeltaPhases) {
     const s = ensureStats(phase)
     s.samples.push(ms)
     if (s.samples.length > WINDOW_SIZE) s.samples.shift()
     if (ms > s.max) s.max = ms
   }
-  // delta 总耗时超阈值：打详细分解
+
+  renderCountStats.samples.push(renderCountThisDelta)
+  if (renderCountStats.samples.length > WINDOW_SIZE) renderCountStats.samples.shift()
+  if (renderCountThisDelta > renderCountStats.max) renderCountStats.max = renderCountThisDelta
+
+  const memoHitRate =
+    visibleRowCountThisDelta > 0
+      ? 1 - renderCountThisDelta / visibleRowCountThisDelta
+      : 1
+  memoHitRateStats.samples.push(memoHitRate)
+  if (memoHitRateStats.samples.length > WINDOW_SIZE) memoHitRateStats.samples.shift()
+
+  deltaTimestamps.push(now())
+  if (deltaTimestamps.length > WINDOW_SIZE) deltaTimestamps.shift()
+
+  if (baselineDeltaTotal === 0 && total > 0 && total < DELTA_WARN_MS) {
+    baselineDeltaTotal = total
+    baselineDeltaSeq = currentDeltaSeq
+  }
+
+  memSampleCounter++
+  if (memSampleCounter >= MEM_SAMPLE_INTERVAL) {
+    memSampleCounter = 0
+    const mem = (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory
+    if (mem) {
+      memSamples.push({ seq: currentDeltaSeq, mb: mem.usedJSHeapSize / 1048576 })
+      if (memSamples.length > WINDOW_SIZE) memSamples.shift()
+    }
+  }
+
+  const degradation = baselineDeltaTotal > 0 ? total / baselineDeltaTotal : 1
+
   if (total > DELTA_WARN_MS) {
     const breakdown: Record<string, number> = {}
     for (const [phase, ms] of currentDeltaPhases) breakdown[phase] = +ms.toFixed(1)
     console.warn(
-      `[streamperf] delta #${currentDeltaSeq} 总耗时 ${total.toFixed(1)}ms（超 ${DELTA_WARN_MS}ms 阈值）`,
+      `[streamperf] delta #${currentDeltaSeq} ${total.toFixed(1)}ms` +
+        ` | render=${renderCountThisDelta}/${visibleRowCountThisDelta}行` +
+        ` | memo命中=${(memoHitRate * 100).toFixed(0)}%` +
+        ` | 恶化=${degradation.toFixed(1)}x`,
       breakdown,
     )
   }
-  // 保留最近一条 delta 快照，供 long task 关联
+
+  if (
+    visibleRowCountThisDelta > 0 &&
+    renderCountThisDelta > visibleRowCountThisDelta * 0.8 &&
+    renderCountThisDelta >= 5
+  ) {
+    console.warn(
+      `[streamperf] memo 大面积失效: ${renderCountThisDelta}/${visibleRowCountThisDelta} 行重渲染` +
+        `（命中率 ${(memoHitRate * 100).toFixed(0)}%）`,
+    )
+  }
+
+  if (degradation > 3 && total > DELTA_WARN_MS) {
+    console.warn(
+      `[streamperf] 累积恶化: 当前 ${total.toFixed(1)}ms vs 基线 ${baselineDeltaTotal.toFixed(1)}ms` +
+        `（${degradation.toFixed(1)}x，基线 delta #${baselineDeltaSeq}）`,
+    )
+  }
+
   lastDeltaSnapshot = {
     seq: currentDeltaSeq,
     total: +total.toFixed(1),
+    renderRows: renderCountThisDelta,
+    visibleRows: visibleRowCountThisDelta,
+    memoHitRate: +memoHitRate.toFixed(2),
+    degradation: +degradation.toFixed(1),
     phases: Object.fromEntries(currentDeltaPhases),
   }
   currentDeltaPhases = null
 }
 
-/** 最近一条 delta 的快照（供 long task 关联：卡顿发生在哪个 delta 之后）。 */
-let lastDeltaSnapshot: { seq: number; total: number; phases: Record<string, number> } | null = null
+let lastDeltaSnapshot: {
+  seq: number
+  total: number
+  renderRows: number
+  visibleRows: number
+  memoHitRate: number
+  degradation: number
+  phases: Record<string, number>
+} | null = null
 
-/** Long task 监控：捕获任意 >50ms 主线程阻塞（GC / 布局回流 / React commit / 未埋点环节）。 */
 let longTaskObserver: PerformanceObserver | null = null
 function installLongTaskMonitor(): void {
   if (longTaskObserver || typeof PerformanceObserver === 'undefined') return
@@ -139,11 +222,12 @@ function installLongTaskMonitor(): void {
         const snap = lastDeltaSnapshot
         if (snap) {
           console.warn(
-            `[streamperf] long task ${dur.toFixed(0)}ms（主线程阻塞）— 最近 delta #${snap.seq} ${snap.total}ms`,
+            `[streamperf] long task ${dur.toFixed(0)}ms — delta #${snap.seq} ${snap.total}ms` +
+              ` | render=${snap.renderRows}/${snap.visibleRows}行 | 恶化=${snap.degradation}x`,
             snap.phases,
           )
         } else {
-          console.warn(`[streamperf] long task ${dur.toFixed(0)}ms（主线程阻塞，无 delta 上下文）`)
+          console.warn(`[streamperf] long task ${dur.toFixed(0)}ms（无 delta 上下文）`)
         }
       }
     })
@@ -153,19 +237,55 @@ function installLongTaskMonitor(): void {
   }
 }
 
-/** 聚合报告：各环节 p50/p95/max（ms）。 */
-export function streamPerfReport(): Record<string, { p50: number; p95: number; max: number; count: number }> {
-  const out: Record<string, { p50: number; p95: number; max: number; count: number }> = {}
+export function streamPerfReport(): Record<string, unknown> {
+  const phaseReport: Record<string, { p50: number; p95: number; max: number; count: number }> = {}
   for (const [phase, s] of phaseStats) {
     const sorted = [...s.samples].sort((a, b) => a - b)
-    out[phase] = {
+    phaseReport[phase] = {
       p50: +percentile(sorted, 50).toFixed(1),
       p95: +percentile(sorted, 95).toFixed(1),
       max: +s.max.toFixed(1),
       count: s.samples.length,
     }
   }
-  return out
+
+  const renderSorted = [...renderCountStats.samples].sort((a, b) => a - b)
+  const memoSorted = [...memoHitRateStats.samples].sort((a, b) => a - b)
+
+  let deltaRate = 0
+  if (deltaTimestamps.length >= 2) {
+    const span = (deltaTimestamps[deltaTimestamps.length - 1] - deltaTimestamps[0]) / 1000
+    deltaRate = span > 0 ? deltaTimestamps.length / span : 0
+  }
+
+  let memTrend: { start: number; end: number; growth: number } | null = null
+  if (memSamples.length >= 2) {
+    const start = memSamples[0]
+    const end = memSamples[memSamples.length - 1]
+    memTrend = {
+      start: +start.mb.toFixed(1),
+      end: +end.mb.toFixed(1),
+      growth: +(end.mb - start.mb).toFixed(1),
+    }
+  }
+
+  return {
+    phases: phaseReport,
+    renderRows: {
+      p50: percentile(renderSorted, 50),
+      p95: percentile(renderSorted, 95),
+      max: renderCountStats.max,
+      count: renderCountStats.samples.length,
+    },
+    memoHitRate: {
+      p50: +percentile(memoSorted, 50).toFixed(2),
+      p95: +percentile(memoSorted, 95).toFixed(2),
+      count: memoHitRateStats.samples.length,
+    },
+    deltaRate: +deltaRate.toFixed(1),
+    baseline: baselineDeltaTotal > 0 ? { seq: baselineDeltaSeq, total: +baselineDeltaTotal.toFixed(1) } : null,
+    memTrend,
+  }
 }
 
 export function streamPerfEnabled(): boolean {
@@ -174,9 +294,15 @@ export function streamPerfEnabled(): boolean {
 
 export function streamPerfReset(): void {
   phaseStats.clear()
+  renderCountStats.samples = []
+  renderCountStats.max = 0
+  memoHitRateStats.samples = []
+  deltaTimestamps = []
+  baselineDeltaTotal = 0
+  baselineDeltaSeq = -1
+  memSamples = []
 }
 
-/** 安装 window.__streamPerf 调试入口 + long task 监控。 */
 export function installStreamPerfGlobal(): void {
   if (typeof window === 'undefined') return
   installLongTaskMonitor()
@@ -184,7 +310,14 @@ export function installStreamPerfGlobal(): void {
   g.__streamPerf = {
     report: () => {
       const r = streamPerfReport()
-      console.table(r)
+      console.table(r.phases)
+      console.log('[streamperf] 诊断:', {
+        renderRows: r.renderRows,
+        memoHitRate: r.memoHitRate,
+        deltaRate: r.deltaRate,
+        baseline: r.baseline,
+        memTrend: r.memTrend,
+      })
       return r
     },
     reset: streamPerfReset,
