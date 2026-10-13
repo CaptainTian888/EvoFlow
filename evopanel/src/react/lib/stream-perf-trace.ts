@@ -16,21 +16,26 @@ function now(): number {
   return typeof performance !== 'undefined' ? performance.now() : Date.now()
 }
 
+/**
+ * 默认开启：流式卡顿排查需要随时可用，且埋点开销极小（每 phase 两次
+ * performance.now() + 一次 Map.set ≈ 微秒级，20Hz 下 <0.1ms/s）。
+ * 显式关闭：?streamperf=0 或 localStorage.evoflow_streamperf=0
+ */
 function detectEnabled(): boolean {
   if (typeof window === 'undefined') return false
   try {
     const stored = localStorage.getItem('evoflow_streamperf')
-    if (stored === '1') return true
     if (stored === '0') return false
+    if (stored === '1') return true
   } catch {
     /* ignore */
   }
   try {
-    if (new URLSearchParams(window.location.search).get('streamperf') === '1') return true
+    if (new URLSearchParams(window.location.search).get('streamperf') === '0') return false
   } catch {
     /* ignore */
   }
-  return false
+  return true
 }
 
 let enabled = detectEnabled()
@@ -103,7 +108,41 @@ export function streamPerfEndDelta(): void {
       breakdown,
     )
   }
+  // 保留最近一条 delta 快照，供 long task 关联
+  lastDeltaSnapshot = {
+    seq: currentDeltaSeq,
+    total: +total.toFixed(1),
+    phases: Object.fromEntries(currentDeltaPhases),
+  }
   currentDeltaPhases = null
+}
+
+/** 最近一条 delta 的快照（供 long task 关联：卡顿发生在哪个 delta 之后）。 */
+let lastDeltaSnapshot: { seq: number; total: number; phases: Record<string, number> } | null = null
+
+/** Long task 监控：捕获任意 >50ms 主线程阻塞（GC / 布局回流 / React commit / 未埋点环节）。 */
+let longTaskObserver: PerformanceObserver | null = null
+function installLongTaskMonitor(): void {
+  if (longTaskObserver || typeof PerformanceObserver === 'undefined') return
+  try {
+    longTaskObserver = new PerformanceObserver((list) => {
+      for (const entry of list.getEntries()) {
+        const dur = entry.duration
+        const snap = lastDeltaSnapshot
+        if (snap) {
+          console.warn(
+            `[streamperf] long task ${dur.toFixed(0)}ms（主线程阻塞）— 最近 delta #${snap.seq} ${snap.total}ms`,
+            snap.phases,
+          )
+        } else {
+          console.warn(`[streamperf] long task ${dur.toFixed(0)}ms（主线程阻塞，无 delta 上下文）`)
+        }
+      }
+    })
+    longTaskObserver.observe({ type: 'longtask', buffered: true })
+  } catch {
+    longTaskObserver = null
+  }
 }
 
 /** 聚合报告：各环节 p50/p95/max（ms）。 */
@@ -129,9 +168,10 @@ export function streamPerfReset(): void {
   phaseStats.clear()
 }
 
-/** 安装 window.__streamPerf 调试入口。 */
+/** 安装 window.__streamPerf 调试入口 + long task 监控。 */
 export function installStreamPerfGlobal(): void {
   if (typeof window === 'undefined') return
+  installLongTaskMonitor()
   const g = window as unknown as Record<string, unknown>
   g.__streamPerf = {
     report: () => {
@@ -141,5 +181,6 @@ export function installStreamPerfGlobal(): void {
     },
     reset: streamPerfReset,
     enabled: () => enabled,
+    lastDelta: () => lastDeltaSnapshot,
   }
 }
