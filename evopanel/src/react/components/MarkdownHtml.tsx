@@ -15,6 +15,10 @@ import {
   buildStreamingPlainHtml,
   streamingPlainDisplayText,
   FULL_MARKDOWN_WORKER_MIN_CHARS,
+  STREAM_PLAIN_DISPLAY_MAX_CHARS,
+  STREAM_TWEEN_EASEOUT_K,
+  STREAM_TWEEN_MIN_STEP,
+  STREAM_TWEEN_MAX_STEP,
 } from '../lib/markdown-stream-paint.js'
 
 function extractMermaidSources(rawText: string): string[] {
@@ -143,9 +147,18 @@ function MarkdownHtmlInner({
     if (!projection || projection.comments.length === 0) return []
     return buildAssistantCodeCommentCards(projection.comments, getChatWorkspaceRoot(), 50)
   }, [projection])
+  const textRef = useRef(String(text || ''))
+  const streamTweenRafRef = useRef(0)
+  const streamShownLenRef = useRef(0)
+  const streamTargetLenRef = useRef(0)
   const [displayHtml, setDisplayHtml] = useState(() => {
     const raw = renderText
-    if (isStreaming) return buildStreamingPlainHtml(raw)
+    if (isStreaming) {
+      // 初始同步显示全量：shownLen 从全量基线起步，后续 delta 走 tween 渐显
+      streamShownLenRef.current = raw.length
+      streamTargetLenRef.current = raw.length
+      return buildStreamingPlainHtml(raw)
+    }
     if (!raw) return ''
     // ★ 关键修复：长 markdown 同步渲染。
     // 原逻辑 raw.length > 4096 时返回 ''，依赖 Effect 3 异步 setDisplayHtml
@@ -155,7 +168,6 @@ function MarkdownHtmlInner({
     // 看到空白再看到内容。常见短文本 (< 4096) 本就走同步路径。
     return renderMarkdown(raw)
   })
-  const textRef = useRef(String(text || ''))
   const streamPaintRafRef = useRef(0)
   const lastStreamPaintRef = useRef(0)
   const lastPaintedLenRef = useRef(0)
@@ -189,11 +201,11 @@ function MarkdownHtmlInner({
 
   /** 上次 paint 的文本长度；相同则跳过 (e.g. forceRemount 重 render)。 */
   const lastPaintedTextRef = useRef('')
-  const paintPlainStreamDom = (raw: string) => {
+  const writePlainDom = (displayRaw: string) => {
     const root = rootRef.current
     if (!root) return false
     // 幂等：相同文本不重复写 DOM (React 重 render / 重复 effect 时常见)
-    if (raw === lastPaintedTextRef.current) return true
+    if (displayRaw === lastPaintedTextRef.current) return true
     plainStreamActiveRef.current = true
     let pre = root.querySelector('pre.msg-stream-plain')
     if (!(pre instanceof HTMLElement)) {
@@ -208,14 +220,14 @@ function MarkdownHtmlInner({
       lastAppliedHtmlRef.current = 'plain-stream-dom'
     }
     const t0 = (typeof performance !== 'undefined' ? performance : Date).now()
-    const displayText = streamingPlainDisplayText(raw)
+    const displayText = streamingPlainDisplayText(displayRaw)
     pre.textContent = displayText
-    lastPaintedTextRef.current = raw
+    lastPaintedTextRef.current = displayRaw
     // dev-only telemetry: console-log paint gap + text len.
     // (Tauri webview can't reach localhost gateway via fetch; fall back to console.)
     try {
       if (typeof window !== 'undefined' && (window as { __streamPaintLog?: boolean }).__streamPaintLog) {
-        const len = String(raw || '').length
+        const len = displayRaw.length
         if (len !== lastPaintedLenRef.current) {
           const now = typeof performance !== 'undefined' ? performance.now() : Date.now()
           const gap = Math.round(now - lastStreamPaintRef.current)
@@ -240,10 +252,79 @@ function MarkdownHtmlInner({
     if (Number.isFinite(maxH) && pre.scrollHeight > maxH + 1) {
       pre.classList.add('msg-stream-plain--capped')
     }
-    // 换行/字体度量偶发滞后一帧：textContent 写入后 scrollHeight 可能未含
-    // 折行行高，下一个 rAF 再贴一次避免停在中间。
-    // 与 scheduler 路径合并：Effect 1 的 schedulePaint 本身就是 rAF 触发，
-    // 这次的 rAF 会和下一次 paint 合并触发，省去独立 rAF。
+    return true
+  }
+
+  const cancelStreamTween = () => {
+    if (streamTweenRafRef.current) {
+      if (typeof cancelAnimationFrame === 'function') {
+        try { cancelAnimationFrame(streamTweenRafRef.current) } catch { /* ignore */ }
+      }
+      streamTweenRafRef.current = 0
+    }
+  }
+
+  /**
+   * 打字机 tween：上游 IPC 每 50ms 一包（可能一大段文字），直接全量显示会
+   * "一跳一跳"。tween 每帧以 easeOut 步进推进 shownLen（新到的 delta 在
+   * ~200ms 内匀速渐显），rAF 循环持续到追平 targetLen。渲染频率仍被
+   * Effect 1 的 rAF schedulePaint + 上游 Rust 50ms 合并窗口兜底。
+   */
+  const startStreamTween = () => {
+    if (streamTweenRafRef.current) return
+    const step = () => {
+      streamTweenRafRef.current = 0
+      const root = rootRef.current
+      const raw = String(textRef.current || '')
+      if (!root || !raw) return
+      if (raw.length > STREAM_PLAIN_DISPLAY_MAX_CHARS || raw.length < streamShownLenRef.current) {
+        // 超长 tail 窗口滚动 / 文本变短（消息切换、tail 重置）：跳过 tween 直接全量
+        streamShownLenRef.current = raw.length
+        streamTargetLenRef.current = raw.length
+        writePlainDom(raw)
+        return
+      }
+      streamTargetLenRef.current = raw.length
+      const remaining = streamTargetLenRef.current - streamShownLenRef.current
+      if (remaining <= 0) return
+      const stepChars = Math.min(
+        STREAM_TWEEN_MAX_STEP,
+        Math.max(STREAM_TWEEN_MIN_STEP, Math.ceil(remaining * STREAM_TWEEN_EASEOUT_K)),
+      )
+      const shown = Math.min(streamTargetLenRef.current, streamShownLenRef.current + stepChars)
+      streamShownLenRef.current = shown
+      writePlainDom(raw.slice(0, shown))
+      if (shown < streamTargetLenRef.current || String(textRef.current || '').length > shown) {
+        streamTweenRafRef.current = requestAnimationFrame(step)
+      }
+    }
+    streamTweenRafRef.current = requestAnimationFrame(step)
+  }
+
+  const paintPlainStreamDom = (raw: string, smooth = true) => {
+    const root = rootRef.current
+    if (!root) return false
+    const text = String(raw || '')
+    if (!smooth || text.length > STREAM_PLAIN_DISPLAY_MAX_CHARS) {
+      cancelStreamTween()
+      streamShownLenRef.current = text.length
+      streamTargetLenRef.current = text.length
+      writePlainDom(text)
+      return true
+    }
+    if (text.length < streamShownLenRef.current) {
+      cancelStreamTween()
+      streamShownLenRef.current = text.length
+      streamTargetLenRef.current = text.length
+      writePlainDom(text)
+      return true
+    }
+    if (text === lastPaintedTextRef.current && streamShownLenRef.current >= text.length) {
+      return true
+    }
+    // tween：targetLen 前进，rAF 循环负责把 shownLen 平滑推进到 targetLen
+    streamTargetLenRef.current = text.length
+    startStreamTween()
     return true
   }
 
@@ -297,11 +378,12 @@ function MarkdownHtmlInner({
     scheduleStreamPaintRef.current = schedulePaint
 
     return () => {
+      cancelStreamTween()
       if (streamPaintRafRef.current) {
         // rAF / setTimeout id 都用数字，统一 clearTimeout 是安全的（数字非 0 即可）
         clearTimeout(streamPaintRafRef.current as unknown as number)
         if (typeof cancelAnimationFrame === 'function') {
-          try { cancelAnimationFrame(streamPaintRafRef.current as unknown as number) } catch { /* ignore */ }
+          try { cancelAnimationFrame(streamPaintRafRef.current) } catch { /* ignore */ }
         }
         streamPaintRafRef.current = 0
       }
@@ -337,7 +419,8 @@ function MarkdownHtmlInner({
       plainStreamActiveRef.current ||
       !!rootRef.current?.querySelector('pre.msg-stream-plain')
     if (holdPlain) {
-      paintPlainStreamDom(raw)
+      // 结束落 MD 前：跳过 tween 全量 flush，保证 markdown 渲染的是完整内容
+      paintPlainStreamDom(raw, false)
     } else {
       plainStreamActiveRef.current = false
     }

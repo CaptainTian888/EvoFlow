@@ -37,6 +37,15 @@ export const STREAM_PLAIN_DISPLAY_MAX_CHARS = 8_192
 /** Reasoning fold tail while streaming (shorter than body). */
 export const STREAM_REASONING_DISPLAY_MAX_CHARS = 6_144
 
+/**
+ * Typewriter tween for streaming body: new deltas paint smoothly over ~200ms
+ * (easeOut) instead of jumping in a batch, so the body reads as a continuous
+ * character stream even when upstream delivers 50ms merged chunks.
+ */
+export const STREAM_TWEEN_EASEOUT_K = 0.22
+export const STREAM_TWEEN_MIN_STEP = 1
+export const STREAM_TWEEN_MAX_STEP = 200
+
 const STREAM_PLAIN_TRUNC_HEAD = '…（前文已省略，仅显示最近部分）\n\n'
 
 export function resolveStreamMarkdownPaintMinMs(charLen: number): number {

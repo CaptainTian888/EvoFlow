@@ -369,9 +369,13 @@ export function buildStreamDisplayRow(
     textLen >= cached.textLen &&
     reasoningLen >= cached.reasoningLen
   ) {
-    // 纯文本/纯推理增量：复用 cached.row，仅就地 mutate 文本类字段。
-    // 这样下游 React.memo 可以基于 row 引用相等跳过整树重渲染，避免每条 SSE
-    // delta 让 MessageRow/AssistantBody/工具列表整树重渲造成视觉抖动。
+    // 纯文本/纯推理增量：浅拷贝生成新 row 引用，仅更新文本类字段。
+    // 必须换新引用：下游 MessageRow → MarkdownHtml 依赖 row/text 引用变化触发
+    // Effect 2 的 rAF 直写 DOM paint；若复用同一引用，整条 memo 链
+    // （HistoryBody → MemoMessageRow → MarkdownHtml）按引用相等跳过渲染，
+    // 正文只在 structural 事件时才一次性刷新 → 用户看到"积累一大段才显示"。
+    // 渲染频率由上游 Rust 50ms 合并窗口（≤20Hz）+ MarkdownHtml rAF(16ms)
+    // paint 节流兜底，不会造成 per-token 渲染风暴。
     const p = isolateStreamProjection(turnStateForStreamDisplay(s), priorTurnStrip)
     const cleaned = sanitizeLiveStreamDisplayFields(
       {
@@ -388,7 +392,7 @@ export function buildStreamDisplayRow(
     const liveToolIds = collectToolCallIdsFromToolList(p.tools)
     const st = filterSubagentTasksForToolIds(s.subagentTasks, liveToolIds)
     const tt = filterTerminalStreamsForToolIds(s.terminalStreams, liveToolIds)
-    const row = cached.row
+    const row: DisplayRow = { ...cached.row }
     row.text = cleaned.text
     row.reasoningPreview = cleaned.reasoningPreview
     row.reasoningSegments = cleaned.reasoningSegments
@@ -404,6 +408,7 @@ export function buildStreamDisplayRow(
     if (st) row.subagentTasks = st
     if (tt) row.terminalStreams = tt
     if (s.aguiTurn) row.aguiTurn = s.aguiTurn
+    cached.row = row
     cached.textLen = textLen
     cached.reasoningLen = reasoningLen
     if (sessionKey && row?.role === '_stream') {
