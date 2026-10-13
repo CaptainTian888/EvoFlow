@@ -48,27 +48,47 @@ def _send_account_for_target(role: Any, receive_id: str, receive_id_type: str) -
 def resolve_role_feishu_target(role: Any) -> tuple[str, str] | None:
     """Return ``(receive_id, receive_id_type)`` for this employee.
 
-    Prefer bound scanner ``open_id`` (DM), else gateway default chat.
+    Prefer bound scanner ``open_id`` (DM), else role-specific channel if available.
+    Each employee should have their own push target to avoid mixing notifications.
     """
     cfg = getattr(role, "config", None)
     open_id = str(getattr(cfg, "feishu_open_id", "") or "").strip()
     if open_id:
         return open_id, "open_id"
-    try:
-        from evoflow.runtime.ports import resolve_push_target
-
-        resolved = resolve_push_target(
-            push_enabled=True,
-            push_channel="feishu",
-            push_target_id="",
-        )
-        if resolved:
-            _, chat_id = resolved
-            cid = str(chat_id or "").strip()
-            if cid:
-                return cid, "chat_id"
-    except Exception:
-        logger.debug("feishu_notify: resolve default chat failed", exc_info=True)
+    
+    # Try to find role-specific chat using agent_code
+    agent_code = str(getattr(role, "agent_code", "") or "").strip()
+    if agent_code:
+        try:
+            from evoflow.runtime.ports import resolve_push_target
+            # Pass agent_code to allow role-specific routing
+            resolved = resolve_push_target(
+                push_enabled=True,
+                push_channel="feishu",
+                push_target_id=agent_code,
+            )
+            if resolved:
+                _, chat_id = resolved
+                cid = str(chat_id or "").strip()
+                if cid:
+                    logger.info(
+                        "[feishu_notify] resolved role-specific chat: agent=%s chat_id=%s",
+                        agent_code,
+                        cid,
+                    )
+                    return cid, "chat_id"
+        except Exception:
+            logger.debug(
+                "feishu_notify: role-specific chat lookup failed for agent=%s",
+                agent_code,
+                exc_info=True,
+            )
+    
+    # Fallback: no role-specific binding found
+    logger.warning(
+        "[feishu_notify] no push target found for role agent_code=%s (role should bind feishu_open_id or have a dedicated chat)",
+        agent_code,
+    )
     return None
 
 
