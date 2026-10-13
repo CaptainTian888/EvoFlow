@@ -548,6 +548,24 @@ export function relaxMarkdownLineBreaks(text) {
   let s = String(text || '').replace(/\r\n/g, '\n')
   if (!s.trim()) return s
 
+  // 阶段 0：把未被行首保护器命中的 inline hashtag 链折叠回单行。
+  // 必须在 hashTextSlots 替换**之前**：占位符一旦替换，下面正则的 `#` 锚点就丢了。
+  // 场景：原文为 "（#ai新星计划\n#抖音前沿科技首发计划\n#抖音精选）拿流量扶持"，
+  // 三个 `#…` 在自己的行上，会被下方 ATX 标题修复规则识别为 3 个 h1。
+  // 规则：上一行末尾是 CJK / 拉丁 / 数字 / 中英括号之一，下一行以 `#` 开头 → 合并。
+  // 允许多段空行（如 `\n#…\n\n#…`），并要求下一行 `#` 后紧跟非空白字符，
+  // 这样不会误吃 `## 标题`（标题后有空格，被 hashTextSlots 也不会到这里）。
+  // 注意：String.replace(/g, ...) 只扫一遍；n 个 hashtag 会产生 n-1 处匹配，
+  // 第一次扫只命中"首尾"两处，需要 do-while 迭代到稳定。
+  {
+    const HASH_MERGE_RE = /([\p{L}\p{N}\p{Script=Han}\)）\]】」』\(（])\n+(#\s?[\p{L}\p{N}\p{Script=Han}][^\n]*)/gu
+    let prev
+    do {
+      prev = s
+      s = s.replace(HASH_MERGE_RE, '$1 $2')
+    } while (s !== prev)
+  }
+
   // 保护代码块和行内代码，避免其中的 # 等字符被标题/表格正则误伤
   const codeSlots = []
   s = s.replace(/```[\s\S]*?```/g, (m) => {
@@ -569,23 +587,22 @@ export function relaxMarkdownLineBreaks(text) {
 
   // 行首 `#/path` 是裸路径，不是 Markdown 标题；活动 hashtag (`#中文标签`、`#ai...`)
   // 也应留在正文。用占位符保护它们，避免后续标题修复规则再次处理实体内容。
-  // 关键：必须加 `m` 让 `^` 逐行匹配；否则会吞掉正文里所有 #，把整段 hashtag 链吃成单行。
+  // 这里要求：行首 `#` 之后必须紧跟 `/` 或 CJK 或拉丁字母之一，且不能紧跟空白
+  // （这样不会误吃 `## 标题` 的双 # 标题）。逐行显式 split 处理，避免 V8 /u + ^ 行为
+  // 异常导致行内 # 一起被吞。
   const hashTextSlots = []
-  s = s.replace(/^(#{1,6})(?=(?:\/|[\p{Script=Han}]|[a-z]))/gmu, (_, hashes) => {
+  s = s.split('\n').map((line) => {
+    const m = line.match(/^(#{1,6})(?=(?:\/|[\p{Script=Han}]|[a-z])(?!\s))/)
+    if (!m) return line
     const i = hashTextSlots.length
-    hashTextSlots.push(`&#35;${hashes.slice(1)}`)
-    return `__EVF_HASH_TEXT_SLOT_${i}__`
-  })
+    hashTextSlots.push(`&#35;${m[1].slice(1)}`)
+    return `__EVF_HASH_TEXT_SLOT_${i}__` + line.slice(m[1].length)
+  }).join('\n')
 
   // 被保护的 hashtag/路径行合并到上一行（用空格连接）。
   // 场景：LLM 把（#标签1\n#标签2\n#标签3）拆成多行，GFM hard-break 渲染后标签竖排。
   // 条件：上一行末尾不是 |（表格行由下方规则单独处理）、不是空行。
   s = s.replace(/([^\n|])\n(__EVF_HASH_TEXT_SLOT_\d+__)/g, '$1 $2')
-
-  // 阶段 0：把未被行首保护器命中的 inline hashtag 链折叠回单行。
-  // 场景：`CJK）\n#hashtag` 中 #hashtag 不在行首（前面有空格等），未被 hashTextSlots 保护。
-  // 触发条件：上一行末尾是 CJK/拉丁/数字/中英括号之一，下一行以 # 开头。
-  s = s.replace(/([\p{L}\p{N}\p{Script=Han}\)）\]】」』\(（])\n+(#\s?[\p{L}\p{N}\p{Script=Han}][^\n]*)/gu, '$1 $2')
 
   // 表格行后紧跟（可能有空行）hashtag/路径行 → 移除空行，补 | 前缀使其成为表格行。
   // 场景：LLM 把 | 看板 | url |\n\n#/account/... | 拆成表格行 + 空行 + 裸路径行。
@@ -597,13 +614,22 @@ export function relaxMarkdownLineBreaks(text) {
 
   // 全角括号内 LLM 拆行的标签/短文本合并为一行。
   // 场景：（\n标签1\n标签2\n标签3）→ （ 标签1 标签2 标签3）
-  // 条件：括号内不含空行、表格行、标题、分隔线等 Markdown 结构。
+  // 注意：不禁忌 hashtag 行——阶段0已把括号内跨行 hashtag 合并，剩余 hashtag
+  // 如果仍在括号内（如 #ai新星计划  #抖音精选 仍分行），本规则会把它们一并合并。
   s = s.replace(/（\n([\s\S]*?)）/g, (m, inner) => {
     if (/\n\s*\n/.test(inner)) return m
     if (/^\s*[|]/m.test(inner)) return m
     if (/^\s*#{1,6}\s/m.test(inner)) return m
     if (/^\s*---/m.test(inner)) return m
     return '（ ' + inner.replace(/\n/g, ' ').trim() + '）'
+  })
+
+  // 保护行内 hashtag：单个 # 不在行首、前面非 #，后跟 CJK/拉丁/数字 → 用占位符保护。
+  // 避免 ATX 标题规则把 `（#ai新星计划 #抖音精选）` 拆行后升为 <h1>。
+  s = s.replace(/([^\n#])(#)(?![#])(?=[\p{L}\p{N}\p{Script=Han}])/gu, (_, pre) => {
+    const i = hashTextSlots.length
+    hashTextSlots.push('&#35;')
+    return `${pre}__EVF_HASH_TEXT_SLOT_${i}__`
   })
 
   s = s.replace(/---+(?=\s*#{1,6})/g, '---\n\n')
@@ -641,6 +667,15 @@ export function relaxMarkdownLineBreaks(text) {
       if (hm) {
         const hashes = hm[1]
         const rest = hm[2].trim()
+        // 单 `#` 后接 `/` 是裸路径行（#/account/...）；这是 panel 跳转，**不**是标题。
+        // 单 `#` 后紧跟 CJK/拉丁字符且整行 ≤ 24 字符的短 hashtag（如 `#ai新星计划`）
+        // 也是活动标签，不是标题。其它情况照常升级为 h1。
+        if (hashes.length === 1 && (
+          rest.startsWith('/') ||
+          /^(?=[a-zA-Z\p{Script=Han}])/u.test(rest) && line.length <= 24
+        )) {
+          return line
+        }
         if (!/^(#{1,6})\s/.test(line)) return `${hashes} ${rest}`
       }
       return line
