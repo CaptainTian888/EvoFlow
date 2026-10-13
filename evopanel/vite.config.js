@@ -166,6 +166,12 @@ export default defineConfig(({ mode }) => {
         // `@braintree/sanitize-url` ships CJS only; shim re-exports named ESM for Mermaid.
         { find: /^@braintree\/sanitize-url$/, replacement: sanitizeUrlShim },
         { find: 'braintree-sanitize-url-dist', replacement: braintreeSanitizeUrlDist },
+        // fastdom: UMD-only; mermaid 11.17+ uses it but ESM interop breaks in Vite dev.
+        // Map to an empty module to allow mermaid to skip the optional import.
+        {
+          find: /^fastdom$/,
+          replacement: path.resolve(__dirname, 'src/lib/shims/fastdom-stub.mjs'),
+        },
         // @mermaid-js/parser has broken package.json exports field.
         // Force direct path to avoid resolver failure.
         {
