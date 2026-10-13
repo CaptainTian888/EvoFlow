@@ -1,8 +1,7 @@
 """Proactive Feishu notifications for all smart employees.
 
-Pushes interactive cards (review / wrap-up digest) and resolves targets preferring
-the employee's bound PersonalAgent (``channels.feishu.accounts[agent_code]``)
-and scanner ``open_id`` when available.
+Pushes interactive cards (review / wrap-up digest) and resolves targets using
+RolePushPolicy (single source of truth for push configuration).
 """
 
 from __future__ import annotations
@@ -14,6 +13,10 @@ logger = logging.getLogger(__name__)
 
 
 def _role_wants_feishu(role: Any) -> bool:
+    """Check if role has feishu in approval_channels (legacy check).
+    
+    Note: This is transitional. After full P1 migration, use RolePushPolicy.should_push_to("feishu").
+    """
     channels = list(getattr(getattr(role, "config", None), "approval_channels", None) or [])
     if not channels:
         channels = ["desktop", "feishu"]
@@ -46,47 +49,47 @@ def _send_account_for_target(role: Any, receive_id: str, receive_id_type: str) -
 
 
 def resolve_role_feishu_target(role: Any) -> tuple[str, str] | None:
-    """Return ``(receive_id, receive_id_type)`` for this employee.
-
-    Prefer bound scanner ``open_id`` (DM), else role-specific channel if available.
-    Each employee should have their own push target to avoid mixing notifications.
+    """Return ``(receive_id, receive_id_type)`` for this employee using RolePushPolicy.
+    
+    Resolves in order:
+    1. Legacy config.feishu_open_id (for backward compat)
+    2. RolePushPolicy.resolve_target("feishu") (new system)
+    3. Return None if no valid binding found
     """
+    from .push_binding_repo import RolePushBindingRepository
+    
+    # Step 1: Check legacy config.feishu_open_id
     cfg = getattr(role, "config", None)
     open_id = str(getattr(cfg, "feishu_open_id", "") or "").strip()
     if open_id:
+        logger.debug("[feishu_notify] using legacy feishu_open_id for %s", getattr(role, "agent_code", "?"))
         return open_id, "open_id"
     
-    # Try to find role-specific chat using agent_code
+    # Step 2: Try RolePushPolicy
     agent_code = str(getattr(role, "agent_code", "") or "").strip()
     if agent_code:
         try:
-            from evoflow.runtime.ports import resolve_push_target
-            # Pass agent_code to allow role-specific routing
-            resolved = resolve_push_target(
-                push_enabled=True,
-                push_channel="feishu",
-                push_target_id=agent_code,
-            )
-            if resolved:
-                _, chat_id = resolved
-                cid = str(chat_id or "").strip()
-                if cid:
+            policy = RolePushBindingRepository.get_policy(agent_code)
+            if policy and policy.should_push_to("feishu"):
+                target = policy.resolve_target("feishu")
+                if target:
+                    target_id, target_type = target
                     logger.info(
-                        "[feishu_notify] resolved role-specific chat: agent=%s chat_id=%s",
+                        "[feishu_notify] resolved target from RolePushPolicy: agent=%s target=%s type=%s",
                         agent_code,
-                        cid,
+                        target_id,
+                        target_type,
                     )
-                    return cid, "chat_id"
-        except Exception:
-            logger.debug(
-                "feishu_notify: role-specific chat lookup failed for agent=%s",
-                agent_code,
-                exc_info=True,
-            )
+                    return target_id, target_type
+            elif policy:
+                logger.debug("[feishu_notify] policy exists but feishu not enabled for %s", agent_code)
+        except Exception as e:
+            logger.debug("[feishu_notify] failed to load RolePushPolicy for %s: %s", agent_code, e, exc_info=True)
     
-    # Fallback: no role-specific binding found
+    # Step 3: Fallback failed
     logger.warning(
-        "[feishu_notify] no push target found for role agent_code=%s (role should bind feishu_open_id or have a dedicated chat)",
+        "[feishu_notify] no valid push target found for role agent_code=%s "
+        "(role should bind feishu_open_id or configure RolePushPolicy)",
         agent_code,
     )
     return None
