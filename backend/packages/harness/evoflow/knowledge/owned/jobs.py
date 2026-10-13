@@ -319,6 +319,28 @@ def cancel_for_kb(kb_id: str) -> int:
         return int(cur.rowcount or 0)
 
 
+def cancel_jobs_for_doc(doc_id: str, *, reason: str = "document deleted") -> int:
+    """Cancel queued/running jobs of one document (soft-delete safety net).
+
+    Prevents the worker from claiming a job whose document row is already gone
+    and burning retries on "knowledge base or document not found".
+    """
+    did = str(doc_id or "").strip()
+    if not did:
+        return 0
+    now = utc_now()
+    with db() as conn:
+        cur = conn.execute(
+            """
+            UPDATE kb_jobs SET state='cancelled', error_message=?,
+              finished_at=?, updated_at=?, locked_by='', locked_at=NULL
+            WHERE doc_id=? AND state IN ('queued', 'running')
+            """,
+            (reason, now, now, did),
+        )
+        return int(cur.rowcount or 0)
+
+
 def _mirror_doc_status(kb_id: str, doc_id: str, sql: str, params: tuple) -> None:
     """Apply a document-status update in the KB's own index DB.
 
@@ -335,7 +357,12 @@ def _mirror_doc_status(kb_id: str, doc_id: str, sql: str, params: tuple) -> None
 
 
 def reclaim_stale_running(*, older_than_seconds: int = 1800) -> int:
-    """Re-queue jobs stuck in ``running`` (worker crash / process kill)."""
+    """Re-queue or fail jobs stuck in ``running`` (worker crash / process kill).
+
+    Reclaiming counts against the job's retry budget: a job that has exhausted
+    ``max_attempts`` goes to terminal ``error`` (and its document to ``failed``)
+    instead of bouncing between running/queued forever.
+    """
     import time
     from datetime import datetime
 
@@ -351,7 +378,7 @@ def reclaim_stale_running(*, older_than_seconds: int = 1800) -> int:
     with db() as conn:
         rows = conn.execute(
             """
-            SELECT id, locked_at, doc_id, type FROM kb_jobs
+            SELECT id, locked_at, doc_id, type, kb_id, attempts, max_attempts FROM kb_jobs
             WHERE state='running'
             """
         ).fetchall()
@@ -370,24 +397,83 @@ def reclaim_stale_running(*, older_than_seconds: int = 1800) -> int:
                     stale = True
             if not stale:
                 continue
-            conn.execute(
-                """
-                UPDATE kb_jobs SET state='queued', locked_by='', locked_at=NULL,
-                  error_message=?, run_after=?, updated_at=?,
-                  progress_json=?
-                WHERE id=? AND state='running'
-                """,
-                (
-                    "reclaimed stale running job",
-                    now,
-                    now,
-                    json.dumps(
-                        {"phase": "retry", "message": "任务超时，已重新排队"},
-                        ensure_ascii=False,
+            attempts = int(row["attempts"] or 0)
+            max_attempts = int(row["max_attempts"] or 3)
+            # attempts was already incremented at claim time, so attempts >=
+            # max_attempts means the budget is spent — do not queue again.
+            if attempts < max_attempts:
+                conn.execute(
+                    """
+                    UPDATE kb_jobs SET state='queued', locked_by='', locked_at=NULL,
+                      error_message=?, run_after=?, updated_at=?,
+                      progress_json=?
+                    WHERE id=? AND state='running'
+                    """,
+                    (
+                        "reclaimed stale running job",
+                        now,
+                        now,
+                        json.dumps(
+                            {"phase": "retry", "message": "任务超时，已重新排队"},
+                            ensure_ascii=False,
+                        ),
+                        row["id"],
                     ),
-                    row["id"],
-                ),
-            )
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE kb_jobs SET state='error', error_message=?,
+                      finished_at=?, updated_at=?, locked_by='', locked_at=NULL
+                    WHERE id=? AND state='running'
+                    """,
+                    (
+                        "reclaimed stale running job: retry budget exhausted",
+                        now,
+                        now,
+                        row["id"],
+                    ),
+                )
+                # Terminal failure for parse/reindex jobs must also surface on
+                # the document row, same as jobs.complete(permanent error) does.
+                doc_id = str(row["doc_id"] or "").strip()
+                jtype = str(row["type"] or "").strip()
+                kb_id = str(row["kb_id"] or "").strip()
+                if doc_id and jtype in ("parse_index", "reindex"):
+                    err = "task timed out repeatedly and was reclaimed (retry budget exhausted)"
+                    try:
+                        conn.execute(
+                            """
+                            UPDATE kb_documents
+                            SET parse_status='failed',
+                                index_status=CASE WHEN chunk_count > 0 THEN 'ready' ELSE 'failed' END,
+                                keyword_status=CASE WHEN chunk_count > 0 THEN 'ready' ELSE 'failed' END,
+                                vector_status=CASE WHEN chunk_count > 0 THEN 'degraded' ELSE 'failed' END,
+                                index_error=?, error_message=?, updated_at=?
+                            WHERE id=? AND deleted_at IS NULL
+                              AND parse_status IN ('pending', 'processing')
+                            """,
+                            (err, err, now, doc_id),
+                        )
+                    except Exception:
+                        # Document table may be in a per-KB index DB; the central
+                        # DB mirror below covers the cross-DB case.
+                        logger.debug("terminal doc-status update skipped in central db", exc_info=True)
+                    _mirror_doc_status(
+                        kb_id,
+                        doc_id,
+                        """
+                        UPDATE kb_documents
+                        SET parse_status='failed',
+                            index_status=CASE WHEN chunk_count > 0 THEN 'ready' ELSE 'failed' END,
+                            keyword_status=CASE WHEN chunk_count > 0 THEN 'ready' ELSE 'failed' END,
+                            vector_status=CASE WHEN chunk_count > 0 THEN 'degraded' ELSE 'failed' END,
+                            index_error=?, error_message=?, updated_at=?
+                        WHERE id=? AND deleted_at IS NULL
+                          AND parse_status IN ('pending', 'processing')
+                        """,
+                        (err, err, now, doc_id),
+                    )
             reclaimed += 1
     return reclaimed
 

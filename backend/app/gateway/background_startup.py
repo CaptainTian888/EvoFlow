@@ -960,12 +960,19 @@ async def run_post_ready_warmups(app: FastAPI, st_log: StLogFn, _st: Any) -> Non
         # Feishu/IM dispatch must not start before the LangGraph runtime is ready.
         # The panel may use core APIs during this window, but channel messages
         # immediately call /runs/stream and would otherwise receive startup 503.
+        logger.info("[Gateway] post-ready: preparing channel service startup (langgraph_ready=%s)", bool(getattr(app.state, "langgraph_ready", False)))
         if not bool(getattr(app.state, "langgraph_ready", False)):
             langgraph_ready_event = getattr(app.state, "langgraph_ready_event", None)
             if langgraph_ready_event is not None:
+                logger.info("[Gateway] post-ready: waiting on langgraph_ready_event before starting channels")
                 await langgraph_ready_event.wait()
+                logger.info("[Gateway] post-ready: langgraph_ready_event released, starting channels")
+            else:
+                logger.warning("[Gateway] post-ready: langgraph not ready and no ready_event — skipping channel start this pass")
+                return
         from app.channels.service import start_channel_service
 
+        logger.info("[Gateway] post-ready: calling start_channel_service()")
         channel_service = await start_channel_service()
         logger.info("Channel service started (post-ready): %s", channel_service.get_status())
     except Exception:

@@ -2178,6 +2178,9 @@ def delete_document(doc_id: str, *, record_activity: bool = True) -> None:
             (now, now, doc_id),
         )
         purge_document_index(conn, doc_id)
+    # Drop queued/running jobs for this document so the worker never picks up
+    # a deleted doc and burns retries on "document not found".
+    jobs.cancel_jobs_for_doc(doc_id, reason="document deleted")
     blob_store.delete_doc_blobs(kb_id, doc_id)
     _forget_doc_kb(doc_id)
     if record_activity:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 from collections.abc import Callable, Coroutine
@@ -228,6 +229,43 @@ class MessageBus:
         from app.channels.channel_io_log import log_channel_outbound
 
         log_channel_outbound(msg)
+        # Channel-audit: every outbound that flows through the bus (any IM channel
+        # whose channel.subscribe_outbound has been registered, including
+        # feishu / wecom / weixin / dingtalk / telegram / slack) must leave a
+        # trail in evoflow_channel_push_log. Internal EvoPanel replies do not
+        # flow through this bus, so this single hook captures "external IM
+        # outbound" only. Failures here must never break delivery.
+        with contextlib.suppress(Exception):
+            from evoflow.persistence.channel_push_repositories import safe_record_push
+
+            _meta = msg.metadata if isinstance(msg.metadata, dict) else {}
+            _event = "sent" if msg.is_final else "card_patched"
+            safe_record_push(
+                direction="outbound",
+                channel=str(msg.channel_name or "").strip() or "im",
+                kind="im_message",
+                event=_event,
+                transport="im_event",
+                sender_account_id=str(msg.account_id or ""),
+                external_message_id=str(msg.thread_ts or ""),
+                receive_id=str(msg.chat_id or ""),
+                receive_id_type="chat_id",
+                title="",
+                content_summary=str(msg.text or "")[:800],
+                payload={
+                    "thread_id": str(msg.thread_id or ""),
+                    "topic_id": str(msg.topic_id or ""),
+                    "is_final": bool(msg.is_final),
+                    "artifacts": list(msg.artifacts or [])[:8],
+                    "attachments": [
+                        getattr(a, "virtual_path", str(a)) if not isinstance(a, str) else a
+                        for a in (msg.attachments or [])
+                    ][:8],
+                    "metadata": {k: _meta[k] for k in list(_meta.keys())[:12]},
+                },
+                status="ok",
+                triggered_by="agent",
+            )
         # Route by (channel_name, account_id) so the reply lands on the same
         # channel instance that received the inbound. Empty account_id means
         # "primary bot" and is its own slot — it no longer catches replies

@@ -113,6 +113,27 @@ def safe_record_push(**kwargs: Any) -> str | None:
     Also mirrors the interaction into chat transcripts (same idea as normal
     channel user/assistant turns) so Panel trail / IM session can show it.
     """
+    # Dedup guard: when both a channel adapter (e.g. feishu._on_message) and
+    # the central bus/manager mirror hook try to record the same interaction
+    # in the same process, skip the second one. Match on
+    # (channel, direction, external_message_id, receive_id) when the upstream
+    # caller already stamped a message id, otherwise fall back to
+    # (channel, direction, receive_id, created_at second-precision). Best-
+    # effort: failures here just return the original id so the audit path
+    # stays available.
+    try:
+        ch = str(kwargs.get("channel") or "").strip().lower()
+        dr = str(kwargs.get("direction") or "").strip().lower()
+        ext = str(kwargs.get("external_message_id") or "").strip()
+        rid = str(kwargs.get("receive_id") or "").strip()
+        if ch and dr and rid:
+            if push_dedup_exists(
+                channel=ch, direction=dr,
+                external_message_id=ext, receive_id=rid,
+            ):
+                return None
+    except Exception:
+        logger.debug("channel_push_log: dedup probe failed", exc_info=True)
     try:
         pid = record_push(**kwargs)
     except Exception:
@@ -444,6 +465,59 @@ def list_by_approval(approval_id: str, *, limit: int = 50) -> list[dict[str, Any
         .fetchall()
     )
     return [_row_to_dict(r) for r in rows]
+
+
+def push_dedup_exists(
+    *,
+    channel: str,
+    direction: str,
+    external_message_id: str = "",
+    receive_id: str = "",
+) -> bool:
+    """Return True if a push-log row with this identity already exists.
+
+    The identity is ``(channel, direction, receive_id)`` plus, when the
+    caller has one, ``external_message_id``. Used by ``safe_record_push`` to
+    avoid double-recording when both the channel adapter and the central
+    bus/manager mirror fire on the same interaction.
+    """
+    ch = str(channel or "").strip().lower()
+    dr = str(direction or "").strip().lower()
+    rid = str(receive_id or "").strip()
+    if not ch or not dr or not rid:
+        return False
+    ext = str(external_message_id or "").strip()
+    try:
+        if ext:
+            row = (
+                get_db()
+                .execute(
+                    """
+                    SELECT 1 FROM evoflow_channel_push_log
+                    WHERE channel = ? AND direction = ?
+                      AND receive_id = ? AND external_message_id = ?
+                    ORDER BY created_at DESC LIMIT 1
+                    """,
+                    (ch, dr, rid, ext),
+                )
+                .fetchone()
+            )
+            return row is not None
+        row = (
+            get_db()
+            .execute(
+                """
+                SELECT 1 FROM evoflow_channel_push_log
+                WHERE channel = ? AND direction = ? AND receive_id = ?
+                ORDER BY created_at DESC LIMIT 1
+                """,
+                (ch, dr, rid),
+            )
+            .fetchone()
+        )
+        return row is not None
+    except Exception:
+        return False
 
 
 def list_recent(

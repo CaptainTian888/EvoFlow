@@ -7578,18 +7578,17 @@ export class WsClient {
             break
           }
         }
-        // Silent stream warning: if no events arrived for STREAM_SILENT_WARN_MS,
-        // let the user know the stream is still alive.
-        if (!streamSilentWarned && Date.now() - streamLastEventTs > STREAM_SILENT_WARN_MS) {
-          streamSilentWarned = true
-          this._emitEvent('chat', {
-            sessionKey: key,
-            runId,
-            state: 'stream_health',
-            status: 'silent',
-            message: '模型仍在分析中，请耐心等待…',
-          })
-        }
+        // Silent stream warning disabled
+        // if (!streamSilentWarned && Date.now() - streamLastEventTs > STREAM_SILENT_WARN_MS) {
+        //   streamSilentWarned = true
+        //   this._emitEvent('chat', {
+        //     sessionKey: key,
+        //     runId,
+        //     state: 'stream_health',
+        //     status: 'silent',
+        //     message: '模型仍在分析中，请耐心等待…',
+        //   })
+        // }
       }
       sseQueue.flush()
       if (buffer.trim()) {
@@ -7597,15 +7596,16 @@ export class WsClient {
       }
       }
 
-      if (streamReadTimedOut && !evfLane?.evfRunEndSeen && !controller.signal.aborted) {
-        this._emitEvent('chat', {
-          sessionKey: key,
-          runId,
-          state: 'stream_health',
-          status: 'silent',
-          message: '流读取超时，请刷新会话后查看进度',
-        })
-      }
+      // Stream read timeout warning disabled
+      // if (streamReadTimedOut && !evfLane?.evfRunEndSeen && !controller.signal.aborted) {
+      //   this._emitEvent('chat', {
+      //     sessionKey: key,
+      //     runId,
+      //     state: 'stream_health',
+      //     status: 'silent',
+      //     message: '流读取超时，请刷新会话后查看进度',
+      //   })
+      // }
 
       finalText = evfLane.finalText || finalText
       const turnHumanIdx = findLastNonCollabHumanIndex(lastStreamDisplayMessages)
