@@ -99,6 +99,8 @@ type SharedHistoryProps = {
 
 type HistoryMessageRowProps = SharedHistoryProps & {
   item: HistoryItem
+  /** 续流合并后的 row；仅传给续流目标行，避免击穿其余行 memo */
+  continuedRow?: DisplayRow | null
   historyIndex: number
   className: string
   style?: CSSProperties
@@ -110,6 +112,7 @@ type HistoryMessageRowProps = SharedHistoryProps & {
 
 const HistoryMessageRow = memo(function HistoryMessageRow({
   item,
+  continuedRow,
   historyIndex,
   sessionKey,
   toolApprovalHost,
@@ -137,8 +140,9 @@ const HistoryMessageRow = memo(function HistoryMessageRow({
   measureIndex,
 }: HistoryMessageRowProps) {
   const sk = String(sessionKey || 'default')
+  const effectiveItem = continuedRow ? { ...item, row: continuedRow } : item
   const isContinuedStream = resolveMessageRowIsStreaming(
-    item.i,
+    effectiveItem.i,
     streamContinuedRowIndex,
     isSending,
   )
@@ -152,11 +156,11 @@ const HistoryMessageRow = memo(function HistoryMessageRow({
       style={style}
     >
       <MemoMessageRow
-        row={item.row}
+        row={effectiveItem.row}
         isStreaming={isContinuedStream}
         // v5.10：threadBusy（齿轮兜底源）只给「当前活跃行」（续流合并目标），
         // 其余历史行恒 false —— 否则线程忙时每条旧 AI 回复都会挂一个齿轮。
-        threadBusy={item.i === streamContinuedRowIndex ? isSending : false}
+        threadBusy={effectiveItem.i === streamContinuedRowIndex ? isSending : false}
         showToolTiming
         onOpenFile={onOpenFile}
         onOpenKnowledgeMap={onOpenKnowledgeMap}
@@ -165,7 +169,7 @@ const HistoryMessageRow = memo(function HistoryMessageRow({
         interactiveToolApproval={
           toolApprovalUiDisabled
             ? false
-            : toolApprovalInteractiveForItem(approvalHost, item, {
+            : toolApprovalInteractiveForItem(approvalHost, effectiveItem, {
                 continuedStreamRowIndex: streamContinuedRowIndex,
               })
         }
@@ -187,9 +191,9 @@ const HistoryMessageRow = memo(function HistoryMessageRow({
 
 /** 普通文档流：浏览器原生滚动，读历史最稳 */
 const FlatHistoryBody = memo(function FlatHistoryBody(
-  props: SharedHistoryProps & { historyItems: HistoryItem[] },
+  props: SharedHistoryProps & { historyItems: HistoryItem[]; streamContinuedRow?: DisplayRow | null },
 ) {
-  const { historyItems, liveActivityDockLabel, liveTurnElapsedSec, ...rowProps } = props
+  const { historyItems, streamContinuedRow, liveActivityDockLabel, liveTurnElapsedSec, ...rowProps } = props
   const sk = String(props.sessionKey || 'default')
   return (
     <div className="react-vlist-inner react-vlist-inner--flat">
@@ -203,6 +207,7 @@ const FlatHistoryBody = memo(function FlatHistoryBody(
           <HistoryMessageRow
             key={historyItemStableKey(sk, item.row, item.i)}
             item={item}
+            continuedRow={historyIndex === rowProps.streamContinuedRowIndex ? streamContinuedRow : undefined}
             historyIndex={historyIndex}
             className={
               item.row.role === 'user'
@@ -244,6 +249,7 @@ function getVRowStyle(start: number): React.CSSProperties {
 const VirtualHistoryBody = memo(function VirtualHistoryBody(
   props: SharedHistoryProps & {
     historyItems: HistoryItem[]
+    streamContinuedRow?: DisplayRow | null
     parentRef: RefObject<HTMLDivElement | null>
     autoFollowRef: MutableRefObject<boolean>
     holdHistoryScrollRef: MutableRefObject<boolean>
@@ -261,6 +267,7 @@ const VirtualHistoryBody = memo(function VirtualHistoryBody(
 ) {
   const {
     historyItems,
+    streamContinuedRow,
     parentRef,
     autoFollowRef,
     holdHistoryScrollRef,
@@ -366,6 +373,7 @@ const VirtualHistoryBody = memo(function VirtualHistoryBody(
           <HistoryMessageRow
             key={vRow.key}
             item={item}
+            continuedRow={vRow.index === rowProps.streamContinuedRowIndex ? streamContinuedRow : undefined}
             historyIndex={vRow.index}
             sessionKey={rowProps.sessionKey}
             historyLoading={rowProps.historyLoading}
@@ -428,6 +436,7 @@ const VirtualHistoryBody = memo(function VirtualHistoryBody(
 const HistoryBody = memo(function HistoryBody(
   props: SharedHistoryProps & {
     historyItems: HistoryItem[]
+    streamContinuedRow?: DisplayRow | null
     parentRef: RefObject<HTMLDivElement | null>
     autoFollowRef: MutableRefObject<boolean>
     holdHistoryScrollRef: MutableRefObject<boolean>
@@ -445,6 +454,7 @@ const HistoryBody = memo(function HistoryBody(
 ) {
   const {
     historyItems,
+    streamContinuedRow,
     parentRef,
     autoFollowRef,
     holdHistoryScrollRef,
@@ -467,10 +477,11 @@ const HistoryBody = memo(function HistoryBody(
         </div>
       ) : null}
       {useFlat ? (
-        <FlatHistoryBody historyItems={historyItems} {...rowProps} />
+        <FlatHistoryBody historyItems={historyItems} streamContinuedRow={streamContinuedRow} {...rowProps} />
       ) : (
         <VirtualHistoryBody
           historyItems={historyItems}
+          streamContinuedRow={streamContinuedRow}
           parentRef={parentRef}
           autoFollowRef={autoFollowRef}
           holdHistoryScrollRef={holdHistoryScrollRef}
@@ -1022,18 +1033,14 @@ export const MessageVirtualList = memo(function MessageVirtualList({
     return displayRows.map((row, i) => ({ kind: 'row' as const, row, i }))
   }, [rows, inlineSubagentTasks])
 
-  const historyItems = useMemo((): HistoryItem[] => streamPerfTime('historyItems', () => {
-    if (!streamContinuesAssistant || !streamRow || continuationTargetIndex < 0) {
-      return baseHistoryItems
-    }
+  const streamContinuedRow = useMemo(() => {
+    if (!streamContinuesAssistant || !streamRow || continuationTargetIndex < 0) return null
     const last = baseHistoryItems[continuationTargetIndex]
-    if (last?.row.role !== 'assistant') return baseHistoryItems
-    return [
-      ...baseHistoryItems.slice(0, continuationTargetIndex),
-      { ...last, row: mergeAssistantRowWithStreamRow(last.row, streamRow) },
-      ...baseHistoryItems.slice(continuationTargetIndex + 1),
-    ]
-  }), [baseHistoryItems, streamContinuesAssistant, streamRow, continuationTargetIndex])
+    if (last?.row.role !== 'assistant') return null
+    return mergeAssistantRowWithStreamRow(last.row, streamRow)
+  }, [baseHistoryItems, streamContinuesAssistant, streamRow, continuationTargetIndex])
+
+  const historyItems = baseHistoryItems
 
   const streamContinuedRowIndex =
     streamContinuesAssistant && streamRow ? continuationTargetIndex : -1
@@ -2228,6 +2235,7 @@ export const MessageVirtualList = memo(function MessageVirtualList({
       >
         <HistoryBody
           historyItems={historyItems}
+          streamContinuedRow={streamContinuedRow}
           parentRef={parentRef}
           autoFollowRef={autoFollowRef}
           holdHistoryScrollRef={holdHistoryScrollRef}

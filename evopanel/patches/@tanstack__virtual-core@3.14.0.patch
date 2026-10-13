@@ -1,0 +1,66 @@
+diff --git a/dist/esm/index.js b/dist/esm/index.js
+index 11426132b1b5c6361f92ac519a7e131cd58712da..31dc057bb309539d6a0121e986b51a79fb8f8383 100644
+--- a/dist/esm/index.js
++++ b/dist/esm/index.js
+@@ -184,6 +184,7 @@ class Virtualizer {
+     this.scrollState = null;
+     this.measurementsCache = [];
+     this.itemSizeCache = /* @__PURE__ */ new Map();
++    this.itemSizeCacheVersion = 0;
+     this.laneAssignments = /* @__PURE__ */ new Map();
+     this.pendingMeasuredCacheIndexes = [];
+     this.prevLanes = void 0;
+@@ -438,7 +439,7 @@ class Virtualizer {
+       }
+     );
+     this.getMeasurements = memo(
+-      () => [this.getMeasurementOptions(), this.itemSizeCache],
++      () => [this.getMeasurementOptions(), this.itemSizeCacheVersion],
+       ({
+         count,
+         paddingStart,
+@@ -447,7 +448,7 @@ class Virtualizer {
+         enabled,
+         lanes,
+         laneAssignmentMode
+-      }, itemSizeCache) => {
++      }, _itemSizeCacheVersion) => {
+         if (!enabled) {
+           this.measurementsCache = [];
+           this.itemSizeCache.clear();
+@@ -495,7 +496,7 @@ class Virtualizer {
+           const cachedLane = this.laneAssignments.get(i);
+           let lane;
+           let start;
+-          const shouldCacheLane = laneAssignmentMode === "estimate" || itemSizeCache.has(key);
++          const shouldCacheLane = laneAssignmentMode === "estimate" || this.itemSizeCache.has(key);
+           if (cachedLane !== void 0 && this.options.lanes > 1) {
+             lane = cachedLane;
+             const prevIndex = laneLastIndex[lane];
+@@ -509,7 +510,7 @@ class Virtualizer {
+               this.laneAssignments.set(i, lane);
+             }
+           }
+-          const measuredSize = itemSizeCache.get(key);
++          const measuredSize = this.itemSizeCache.get(key);
+           const size = typeof measuredSize === "number" ? measuredSize : this.options.estimateSize(i);
+           const end = start + size;
+           measurements[i] = {
+@@ -653,7 +654,8 @@ class Virtualizer {
+           });
+         }
+         this.pendingMeasuredCacheIndexes.push(item.index);
+-        this.itemSizeCache = new Map(this.itemSizeCache.set(item.key, size));
++        this.itemSizeCache.set(item.key, size);
++        this.itemSizeCacheVersion = (this.itemSizeCacheVersion || 0) + 1;
+         this.notify(false);
+       }
+     };
+@@ -818,6 +820,7 @@ class Virtualizer {
+     };
+     this.measure = () => {
+       this.itemSizeCache = /* @__PURE__ */ new Map();
++      this.itemSizeCacheVersion = (this.itemSizeCacheVersion || 0) + 1;
+       this.laneAssignments = /* @__PURE__ */ new Map();
+       this.notify(false);
+     };

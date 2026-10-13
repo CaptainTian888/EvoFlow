@@ -7,6 +7,9 @@ settings:
 overrides:
   mermaid: 11.15.0
 
+patchedDependencies:
+  '@tanstack/virtual-core@3.14.0': 6ba50136a96ecaaa921e041393d01eec1bc02df580de22cc77fd55d1a2384b2e
+
 importers:
 
   .:
@@ -9103,11 +9106,11 @@ snapshots:
 
   '@tanstack/react-virtual@3.13.24(react-dom@19.2.6(react@19.2.6))(react@19.2.6)':
     dependencies:
-      '@tanstack/virtual-core': 3.14.0
+      '@tanstack/virtual-core': 3.14.0(patch_hash=6ba50136a96ecaaa921e041393d01eec1bc02df580de22cc77fd55d1a2384b2e)
       react: 19.2.6
       react-dom: 19.2.6(react@19.2.6)
 
-  '@tanstack/virtual-core@3.14.0': {}
+  '@tanstack/virtual-core@3.14.0(patch_hash=6ba50136a96ecaaa921e041393d01eec1bc02df580de22cc77fd55d1a2384b2e)': {}
 
   '@tauri-apps/api@2.11.0': {}
 
