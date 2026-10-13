@@ -1,4 +1,4 @@
-; EvoFlow: 安装后写入 ~/.evoflow/evopanel.json（默认用户目录）；卸载前不再弹窗、不自动删除用户数据。
+; Captain Work: 安装后写入 ~/.evoflow/evopanel.json（默认用户目录）；卸载前不再弹窗、不自动删除用户数据。
 ; 许可协议由 Tauri `bundle.licenseFile` 的标准 MUI 许可页提供。
 ;
 ; 以下宏在 `!insertmacro MUI_PAGE_LICENSE` 之前生效（本文件在 Tauri 的 installer.nsi 里先于各 Page 插入）。
@@ -19,7 +19,7 @@
 ; Desktop owns one gateway child (stdio). Kill parent tree first so the
 ; sidecar exits with it; then sweep leftover gateway / legacy names.
 !macro EvpKillRunningAppProcesses
-  DetailPrint "Stopping EvoFlow (desktop parent tree + gateway sidecar)..."
+  DetailPrint "Stopping Captain Work (desktop parent tree + gateway sidecar)..."
   ; Parent first (/T): takes stdio Gateway child with the desktop process tree.
   nsExec::Exec 'taskkill /IM "${MAINBINARYNAME}.exe" /F /T'
   Pop $0
@@ -89,7 +89,7 @@ evp_unlock_retry_${EVP_UNLOCK_UID}:
 
 evp_unlock_fail_${EVP_UNLOCK_UID}:
   MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION \
-    "无法写入安装目录中的文件（仍被占用）。$\r$\n$\r$\n请完全退出 EvoFlow（含托盘），并在任务管理器确认已结束：$\r$\n  · evoflow.exe$\r$\n  · evoflow-gateway.exe（若仍残留）$\r$\n然后点击「重试」。$\r$\n$\r$\n若反复失败，请重启电脑后再安装。$\r$\n$\r$\n安装目录：$INSTDIR" \
+    "无法写入安装目录中的文件（仍被占用）。$\r$\n$\r$\n请完全退出 Captain Work（含托盘），并在任务管理器确认已结束：$\r$\n  · evoflow.exe$\r$\n  · evoflow-gateway.exe（若仍残留）$\r$\n然后点击「重试」。$\r$\n$\r$\n若反复失败，请重启电脑后再安装。$\r$\n$\r$\n安装目录：$INSTDIR" \
     IDRETRY evp_unlock_retry_kill_${EVP_UNLOCK_UID}
   Abort
 evp_unlock_retry_kill_${EVP_UNLOCK_UID}:

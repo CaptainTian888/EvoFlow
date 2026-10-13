@@ -1,5 +1,5 @@
 /**
- * EvoFlow 桌面端入口
+ * Captain Work 桌面端入口
  */
 import { registerRoute, initRouter, navigate, setDefaultRoute, removeBootSplash, isAuthRoute } from './router.js'
 import { initShellAside, openMobileShellAside } from './components/shell-aside.js'
@@ -517,7 +517,7 @@ async function boot() {
     <button class="mobile-hamburger" id="btn-mobile-menu">
       <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
     </button>
-    <span class="mobile-topbar-title">EvoFlow</span>
+    <span class="mobile-topbar-title">Captain Work</span>
   `
     topbar.querySelector('.mobile-hamburger').addEventListener('click', openMobileShellAside)
     mainCol.prepend(topbar)
@@ -573,7 +573,7 @@ async function boot() {
         try {
           const { showCelebrateDialog } = await import('./components/celebrate-dialog.js')
           showCelebrateDialog({
-            title: '欢迎使用 EvoFlow',
+            title: '欢迎使用 Captain Work',
             descHtml:
               '<p>检测到尚未配置 AI 模型。先 <b>添加至少一个模型</b>，即可开始对话与任务。</p>',
             heroCaption: '让我们开始吧',
@@ -586,7 +586,7 @@ async function boot() {
         } catch {
           /* dialog 加载失败则退回 toast */
           const { toast } = await import('./components/toast.js')
-          toast('👋 欢迎使用 EvoFlow! 请先配置至少一个 AI 模型', 'info', 5000)
+          toast('👋 欢迎使用 Captain Work! 请先配置至少一个 AI 模型', 'info', 5000)
         }
       }
     } catch {
@@ -689,7 +689,7 @@ function renderUpdateBanner(banner, offer) {
     <div class="update-banner-content">
       <div class="update-banner-text">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-        <span class="update-banner-ver">${ready ? '更新已就绪' : `EvoFlow v${escapeHtml(offer.ver)} 可用`}</span>
+        <span class="update-banner-ver">${ready ? '更新已就绪' : `Captain Work v${escapeHtml(offer.ver)} 可用`}</span>
         ${!ready && offer.changelog ? `<span class="update-banner-changelog">· ${escapeHtml(offer.changelog)}</span>` : ''}
         ${ready && !isFrontend ? '<span class="update-banner-changelog">· 重启后完成更新</span>' : ''}
         <div class="update-progress-wrap update-progress-hidden" id="update-banner-progress">
@@ -967,7 +967,7 @@ async function checkWebuiRemoteAuth() {
         <div style="font-size:18px;font-weight:600;margin-bottom:8px;color:#18181b">页面加载失败</div>
         <div style="font-size:13px;color:#71717a;max-width:400px;line-height:1.6;margin-bottom:16px">${String(bootErr?.message || bootErr).replace(/</g,'&lt;')}</div>
         <button onclick="location.reload()" style="padding:8px 20px;border-radius:8px;border:none;background:#6366f1;color:#fff;font-size:13px;cursor:pointer">刷新重试</button>
-        <div style="margin-top:24px;font-size:11px;color:#a1a1aa">如果问题持续出现，请尝试重新安装 EvoFlow<br>或在 <a href="https://github.com/EvovexAI/EvoFlow/issues" target="_blank" style="color:#6366f1">GitHub Issues</a> 反馈</div>
+        <div style="margin-top:24px;font-size:11px;color:#a1a1aa">如果问题持续出现，请尝试重新安装 Captain Work<br>或在 <a href="https://github.com/EvovexAI/EvoFlow/issues" target="_blank" style="color:#6366f1">GitHub Issues</a> 反馈</div>
       </div>`
   }
   startUpdateChecker()

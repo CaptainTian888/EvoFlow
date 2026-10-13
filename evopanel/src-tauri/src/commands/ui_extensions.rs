@@ -1,4 +1,4 @@
-//! UI Extension registry + managed sidecar (EvoFlow UI Extension Standard v1).
+//! UI Extension registry + managed sidecar (Captain Work UI Extension Standard v1).
 use crate::commands::evoflow_dir;
 use serde_json::{json, Value};
 use std::collections::HashMap;

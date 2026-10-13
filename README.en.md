@@ -1,6 +1,6 @@
 <div align="center">
 
-# EvoFlow
+# Captain Work
 
 **A native Agent Runtime and Control Plane for long-running work.**
 
@@ -22,9 +22,9 @@ Built by [EvovexAI](https://www.evovexai.com): plan, decompose, execute, recover
 
 ## Overview
 
-EvoFlow runs long tasks with collaborative Agent Teams: clarify and plan first, then execute tools and sandboxed work in isolated context, with recovery and human review. The control plane covers chat, Plan, Goal, task center, workflows, and observability.
+Captain Work runs long tasks with collaborative Agent Teams: clarify and plan first, then execute tools and sandboxed work in isolated context, with recovery and human review. The control plane covers chat, Plan, Goal, task center, workflows, and observability.
 
-Further reading: [Why EvoFlow](docs/user/explanation/why-evoflow.md) · [Ecosystem comparison (DeerFlow / Hermes / Codex / OpenClaw)](docs/user/explanation/ecosystem-comparison.md) · [Agent system](docs/user/explanation/agent-system.md)
+Further reading: [Why Captain Work](docs/user/explanation/why-evoflow.md) · [Ecosystem comparison (DeerFlow / Hermes / Codex / OpenClaw)](docs/user/explanation/ecosystem-comparison.md) · [Agent system](docs/user/explanation/agent-system.md)
 
 ---
 
@@ -67,7 +67,7 @@ For contributors and self-hosters.
 
 ```bash
 git clone https://github.com/EvovexAI/EvoFlow.git
-cd EvoFlow
+cd Captain Work
 cp config.example.yaml config.yaml   # sandbox / tools / channels; models via the UI after start
 ```
 
@@ -108,7 +108,7 @@ Also: [SUPPORT.md](SUPPORT.md)
 
 ## Support the project
 
-If EvoFlow helps you, consider supporting ongoing development and iteration (including customization). A coffee tip is welcome; sponsors who can contribute more are especially appreciated. Support is optional and does not change license terms or grant commercial rights. For commercial use or custom work, contact [cloud@evovexai.com](mailto:cloud@evovexai.com).
+If Captain Work helps you, consider supporting ongoing development and iteration (including customization). A coffee tip is welcome; sponsors who can contribute more are especially appreciated. Support is optional and does not change license terms or grant commercial rights. For commercial use or custom work, contact [cloud@evovexai.com](mailto:cloud@evovexai.com).
 
 <p align="center">
   <img src="docs/assets/sponsors/wechat.png" width="220" alt="WeChat support QR">
@@ -126,7 +126,7 @@ Copyright © 2026 **景银泰（EvovexAI）**. [PolyForm Noncommercial License 1
 
 ## Acknowledgements
 
-EvoFlow is an independent product. Development drew design inspiration from [DeerFlow](https://github.com/bytedance/deer-flow), [Hermes Agent](https://github.com/NousResearch/hermes-agent), [OpenClaw](https://github.com/openclaw/openclaw), [OpenAI Codex](https://github.com/openai/codex), [LangGraph](https://github.com/langchain-ai/langgraph) / [LangChain](https://github.com/langchain-ai/langchain), [MCP](https://modelcontextprotocol.io), and [Tauri](https://tauri.app). Full notices: [NOTICE](NOTICE).
+Captain Work is an independent product. Development drew design inspiration from [DeerFlow](https://github.com/bytedance/deer-flow), [Hermes Agent](https://github.com/NousResearch/hermes-agent), [OpenClaw](https://github.com/openclaw/openclaw), [OpenAI Codex](https://github.com/openai/codex), [LangGraph](https://github.com/langchain-ai/langgraph) / [LangChain](https://github.com/langchain-ai/langchain), [MCP](https://modelcontextprotocol.io), and [Tauri](https://tauri.app). Full notices: [NOTICE](NOTICE).
 
 ---
 

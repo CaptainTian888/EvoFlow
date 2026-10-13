@@ -1,5 +1,5 @@
 /**
- * EvoFlow 桌面端 CSS 入口。
+ * Captain Work 桌面端 CSS 入口。
  *
  * v3.5 阶段 F1 commit 1：把全部 33 个 style/*.css + 1 个 global-assistant css
  * 从 main.js 移到本文件,main.js 仅留 `import './boot/0-styles.js'`。

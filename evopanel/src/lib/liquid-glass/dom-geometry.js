@@ -1,5 +1,5 @@
 /**
- * EvoFlow DOM → WebGL 光学几何（liquid-glass theme-layer / glass-shader 探测逻辑）
+ * Captain Work DOM → WebGL 光学几何（liquid-glass theme-layer / glass-shader 探测逻辑）
  */
 
 const LENS_SELECTORS = [

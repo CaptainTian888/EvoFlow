@@ -453,7 +453,7 @@ export function initShellAside(el) {
     <div class="react-chat-aside-toolbar">
       <div class="react-chat-aside-brand">
         <img class="react-chat-aside-brand-logo" src="/images/logo.png" alt="" width="18" height="18" />
-        <span class="react-chat-aside-toolbar-title">EvoFlow</span>
+        <span class="react-chat-aside-toolbar-title">Captain Work</span>
         <span class="react-chat-aside-version">v${APP_VERSION}</span>
       </div>
       <span id="shell-aside-init-status" class="react-chat-aside-init-status" title="服务初始化状态" aria-live="polite" style="display:none;margin-left:6px;font-size:11px;opacity:0.75;white-space:nowrap;"></span>

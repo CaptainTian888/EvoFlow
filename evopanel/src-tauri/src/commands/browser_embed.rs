@@ -671,7 +671,7 @@ fn create_embed_window(
     WebviewWindow::builder(app, label, WebviewUrl::External(target_url.clone()))
         .parent(parent)
         .map_err(|e| format!("attach embedded browser parent failed: {e}"))?
-        .title("EvoFlow Browser")
+        .title("Captain Work Browser")
         .decorations(false)
         .resizable(false)
         .shadow(false)
@@ -712,7 +712,7 @@ fn create_embed_window(
 ///
 /// ZCode parity: in ZCode the Electron main process owns a `webContents` per
 /// thread from app start; the renderer simply `show()`s it when the user
-/// opens the panel.  EvoFlow has a separate Python gateway, but the same
+/// opens the panel.  Captain Work has a separate Python gateway, but the same
 /// property — "the host process owns the webview, the user just sees it when
 /// they open the panel" — can be mirrored by spawning a hidden child window
 /// the moment the agent first drives the thread.
@@ -751,7 +751,7 @@ pub fn ensure_webview_for_cdp(
     )
     .parent(&parent)
     .map_err(|e| format!("attach embedded browser parent failed: {e}"))?
-    .title("EvoFlow Browser")
+    .title("Captain Work Browser")
     .decorations(false)
     .resizable(false)
     .shadow(false)

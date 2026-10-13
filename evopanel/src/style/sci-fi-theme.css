@@ -1,5 +1,5 @@
 /**
- * EvoFlow Sci-Fi Theme v10
+ * Captain Work Sci-Fi Theme v10
  *
  * 设计参考:Baixiao Reading Cockpit (csuyincs-creator/Baixiao-Reading-Cockpit)
  *
@@ -1768,7 +1768,7 @@ html[data-scifi-ui='1'] .react-chat-icon-send-btn:disabled {
 }
 
 /* ============================================================
- * v16 — Home Surface 区域(EvoFlow 顶部 / 模型 / 计数 / 上下文 / 资产沉淀)
+ * v16 — Home Surface 区域(Captain Work 顶部 / 模型 / 计数 / 上下文 / 资产沉淀)
  *
  * v16.0 — 隐藏 home_background.png,改用 body 辉光透出
  * ============================================================ */
@@ -1778,7 +1778,7 @@ html[data-scifi-ui='1'] .react-chat-main-col--home {
 }
 
 /* ============================================================
- * v16 — Home Surface 区域(EvoFlow 顶部 / 模型 / 计数 / 上下文 / 资产沉淀)
+ * v16 — Home Surface 区域(Captain Work 顶部 / 模型 / 计数 / 上下文 / 资产沉淀)
  *
  * 涉及 className:
  *  - AgentCapabilityTabs:  Skills/Tools/Knowledge/MCP 计数

@@ -1,5 +1,5 @@
 /**
- * EvoFlow WebGL 液态玻璃引擎（基于 DSH glass-shader，MIT）
+ * Captain Work WebGL 液态玻璃引擎（基于 DSH glass-shader，MIT）
  */
 import { attachLiquidGlassShader, DEFAULT_GLASS_SHADER_OPTIONS } from './glass-shader.js'
 import { collectEvoFlowGlassGeometry } from './dom-geometry.js'

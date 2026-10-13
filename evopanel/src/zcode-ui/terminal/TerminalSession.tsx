@@ -689,7 +689,7 @@ export function TerminalSession({
                 }
               }, TERMINAL_INPUT_FALLBACK_FLUSH_DELAY_MS);
             };
-            // [evoflow-vendor] EvoFlow tsconfig 开 strict（ZCode base 无 strictFunctionTypes），
+            // [evoflow-vendor] Captain Work tsconfig 开 strict（ZCode base 无 strictFunctionTypes），
             // (e: InputEvent) => void 不能直接赋给 addEventListener 的 (e: Event) => void。
             textarea.addEventListener("input", handleInput as EventListener, true);
             registryDisposers.push({

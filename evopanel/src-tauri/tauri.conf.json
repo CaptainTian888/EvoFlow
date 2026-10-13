@@ -1,6 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/crates/tauri-config-schema/schema.json",
-  "productName": "EvoFlow",
+  "productName": "Captain Work",
   "version": "1.0.8",
   "identifier": "com.evovex.evoflow",
   "build": {
@@ -14,7 +14,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "EvoFlow",
+        "title": "Captain Work",
         "width": 1440,
         "height": 810,
         "minWidth": 960,
@@ -54,8 +54,8 @@
     "publisher": "EvovexAI",
     "copyright": "Copyright © 2024-2026 EvovexAI. All rights reserved.",
     "category": "DeveloperTool",
-    "shortDescription": "EvoFlow — AI Agent Orchestration Desktop",
-    "longDescription": "EvoFlow is a super agent orchestration framework powered by EvovexAI, featuring a visual management desktop panel built with Tauri v2.",
+    "shortDescription": "Captain Work — AI Agent Orchestration Desktop",
+    "longDescription": "Captain Work is a super agent orchestration framework powered by EvovexAI, featuring a visual management desktop panel built with Tauri v2.",
     "licenseFile": "windows/installer-license.txt",
     "resources": [
       "binaries/evoflow-gateway",

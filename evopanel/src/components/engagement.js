@@ -66,7 +66,7 @@ export function tryShowEngagement() {
   _showing = true
   localStorage.setItem(KEYS.lastShown, String(Date.now()))
 
-  const shareText = '推荐源码可见的 EvoFlow（非商业许可）桌面客户端，一键搭建、便捷管理模型和 Agent，还内置 AI 助手帮你排查问题，小白也能轻松上手'
+  const shareText = '推荐源码可见的 Captain Work（非商业许可）桌面客户端，一键搭建、便捷管理模型和 Agent，还内置 AI 助手帮你排查问题，小白也能轻松上手'
 
   const overlay = document.createElement('div')
   overlay.className = 'engage-overlay'
@@ -78,11 +78,11 @@ export function tryShowEngagement() {
         <div class="engage-icon">
           <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/></svg>
         </div>
-        <div class="engage-title">感谢你使用 EvoFlow</div>
+        <div class="engage-title">感谢你使用 Captain Work</div>
       </div>
 
       <div class="engage-message">
-        EvoFlow 是一个<strong>源码可见、个人与非商业可用（商用需授权）</strong>的项目，由 Evovex AI 维护更新。如果它帮到了你，对我们最大的鼓励就是：
+        Captain Work 是一个<strong>源码可见、个人与非商业可用（商用需授权）</strong>的项目，由 Evovex AI 维护更新。如果它帮到了你，对我们最大的鼓励就是：
       </div>
 
       <div class="engage-actions-grid">

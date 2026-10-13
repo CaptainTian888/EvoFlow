@@ -1,5 +1,5 @@
 /**
- * EvoFlow 启动期 3 个兜底机制（v3.5 阶段 F1 commit 2 抽出）。
+ * Captain Work 启动期 3 个兜底机制（v3.5 阶段 F1 commit 2 抽出）。
  *
  * 1. **syncAppOccluded** — 窗口失焦时给 <html data-app-occluded="1">，
  *    CSS 用这个属性暂停无限动画（Mac 省电 / 合成器优化）。

@@ -29,7 +29,7 @@ function matches(entry: TabEntry, query: string): boolean {
 /**
  * ZCode 式标签总览：搜索全部打开的标签 + 最近关闭的标签。
  *
- * 与 zcode 的 Command 组件职责一致，但 EvoFlow 未引入 cmdk，这里用原生
+ * 与 zcode 的 Command 组件职责一致，但 Captain Work 未引入 cmdk，这里用原生
  * input + 过滤实现，保留 Radix Popover 提供的 focus trap 与 Esc 关闭。
  */
 export function RightStageTabOverview({

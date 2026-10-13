@@ -1,5 +1,5 @@
 /**
- * EvoFlow 全局服务健康 banner（v3.5 阶段 F1 commit 4 抽出）。
+ * Captain Work 全局服务健康 banner（v3.5 阶段 F1 commit 4 抽出）。
  *
  * 设计动机:ChatApp 是按需懒加载(用户在非聊天路由时根本不 mount),
  * 单纯在 ChatApp 里显示 banner 不能覆盖"用户在别的页面"或"ChatApp 加载中"的场景。

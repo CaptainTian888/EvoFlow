@@ -46,7 +46,7 @@ import { createPttController, PTT_SHORT_PRESS_HINT } from './voice-ptt.js'
 /** @type {boolean} */
 let wakeWordEnabled = false
 
-const TRAY_BASE = 'EvoFlow'
+const TRAY_BASE = 'Captain Work'
 
 /** @type {boolean} */
 let inited = false

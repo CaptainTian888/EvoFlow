@@ -12,7 +12,7 @@
 //! where ``AppHandle::state`` and WebView2 COM live.
 //!
 //! Python discovers the port via the well-known ``browser-cdp-http-port`` file
-//! in the EvoFlow home dir.
+//! in the Captain Work home dir.
 
 #![cfg(target_os = "windows")]
 
@@ -136,7 +136,7 @@ fn launch_edge_fallback() -> u16 {
     // for remote debugging (logs: "DevTools remote debugging requires a
     // non-default data directory") AND also rejects any path that smells
     // like a default Edge profile (e.g. anything inside LocalAppData that
-    // looks canonical). We use a per-process subdirectory under the EvoFlow
+    // looks canonical). We use a per-process subdirectory under the Captain Work
     // config dir, which is clearly non-default. The directory must exist
     // before Edge launches or the spawn fails with access-denied.
     let evoflow_root = crate::commands::evoflow_dir();

@@ -1,6 +1,6 @@
 <div align="center">
 
-# EvoFlow
+# Captain Work
 
 **面向长任务的原生 Agent Runtime 与控制平面。**
 
@@ -22,9 +22,9 @@
 
 ## 简介
 
-EvoFlow 把长任务交给可协作的 Agent Teams：先澄清与规划，再在隔离上下文中执行工具与沙箱作业，失败可恢复，过程可验收。控制平面覆盖对话、Plan、Goal、任务中心、工作流与可观测性。
+Captain Work 把长任务交给可协作的 Agent Teams：先澄清与规划，再在隔离上下文中执行工具与沙箱作业，失败可恢复，过程可验收。控制平面覆盖对话、Plan、Goal、任务中心、工作流与可观测性。
 
-延伸阅读：[为什么用 EvoFlow](docs/user/explanation/why-evoflow.md) · [生态对照（DF / 爱马仕 / Codex / 小龙虾）](docs/user/explanation/ecosystem-comparison.md) · [Agent 体系](docs/user/explanation/agent-system.md)
+延伸阅读：[为什么用 Captain Work](docs/user/explanation/why-evoflow.md) · [生态对照（DF / 爱马仕 / Codex / 小龙虾）](docs/user/explanation/ecosystem-comparison.md) · [Agent 体系](docs/user/explanation/agent-system.md)
 
 ---
 
@@ -69,7 +69,7 @@ xattr -cr /Applications/EvoFlow.app
 
 ```bash
 git clone https://github.com/EvovexAI/EvoFlow.git
-cd EvoFlow
+cd Captain Work
 cp config.example.yaml config.yaml   # 沙箱 / 工具 / 渠道等；模型在启动后的界面配置
 ```
 
@@ -110,7 +110,7 @@ Windows：`.\scripts\windows\dev-stack-isolated.bat`
 
 ## 支持项目
 
-如果 EvoFlow 对你有帮助，欢迎支持项目的持续优化与迭代（含定制化等方向）。可以请作者喝杯咖啡，也欢迎有能力的老板多多资助——自愿支持，不影响使用与授权；打赏不构成商用许可。商业合作或定制请联系 [cloud@evovexai.com](mailto:cloud@evovexai.com)。
+如果 Captain Work 对你有帮助，欢迎支持项目的持续优化与迭代（含定制化等方向）。可以请作者喝杯咖啡，也欢迎有能力的老板多多资助——自愿支持，不影响使用与授权；打赏不构成商用许可。商业合作或定制请联系 [cloud@evovexai.com](mailto:cloud@evovexai.com)。
 
 <p align="center">
   <img src="docs/assets/sponsors/wechat.png" width="220" alt="微信支持二维码">
@@ -128,7 +128,7 @@ Windows：`.\scripts\windows\dev-stack-isolated.bat`
 
 ## 致谢
 
-EvoFlow 是独立产品。开发中参考了 [DeerFlow](https://github.com/bytedance/deer-flow)、[Hermes Agent](https://github.com/NousResearch/hermes-agent)、[OpenClaw](https://github.com/openclaw/openclaw)、[OpenAI Codex](https://github.com/openai/codex)、[LangGraph](https://github.com/langchain-ai/langgraph) / [LangChain](https://github.com/langchain-ai/langchain)、[MCP](https://modelcontextprotocol.io)、[Tauri](https://tauri.app) 等项目的设计思路；完整版权与许可证说明见 [NOTICE](NOTICE)。
+Captain Work 是独立产品。开发中参考了 [DeerFlow](https://github.com/bytedance/deer-flow)、[Hermes Agent](https://github.com/NousResearch/hermes-agent)、[OpenClaw](https://github.com/openclaw/openclaw)、[OpenAI Codex](https://github.com/openai/codex)、[LangGraph](https://github.com/langchain-ai/langgraph) / [LangChain](https://github.com/langchain-ai/langchain)、[MCP](https://modelcontextprotocol.io)、[Tauri](https://tauri.app) 等项目的设计思路；完整版权与许可证说明见 [NOTICE](NOTICE)。
 
 ---
 

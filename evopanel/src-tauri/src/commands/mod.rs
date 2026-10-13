@@ -147,7 +147,7 @@ pub fn gateway_port_for_profile(id: &str) -> u16 {
     8100u16 + offset
 }
 
-/// 获取 EvoFlow 配置目录。
+/// 获取 Captain Work 配置目录。
 /// 优先读取 `EVOFLOW_CONFIG_DIR` 环境变量（支持 dev/prod 隔离）；
 /// 未设置时：
 ///   - debug 构建自动使用 `~/.evoflow-dev`（开发隔离）

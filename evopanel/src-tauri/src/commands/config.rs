@@ -362,11 +362,11 @@ pub fn write_mcp_config(config: Value) -> Result<(), String> {
     fs::write(&path, json).map_err(|e| format!("写入失败: {e}"))
 }
 
-// EvoFlow 版本列表与升级入口已移除
+// Captain Work 版本列表与升级入口已移除
 
-// EvoFlow 历史安装/卸载内部实现已移除
+// Captain Work 历史安装/卸载内部实现已移除
 
-// EvoFlow 初始化/Node 检测旧功能已移除
+// Captain Work 初始化/Node 检测旧功能已移除
 
 #[tauri::command]
 pub fn write_env_file(path: String, config: String) -> Result<(), String> {

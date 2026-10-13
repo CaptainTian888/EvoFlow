@@ -1,5 +1,5 @@
 /**
- * EvoFlow 启动期后端就绪轮询 + 离线兜底（v3.5 阶段 F1 commit 3 抽出）。
+ * Captain Work 启动期后端就绪轮询 + 离线兜底（v3.5 阶段 F1 commit 3 抽出）。
  *
  * 1. **showBackendWarmingBanner** — 在 `#tauri-main-chrome` 拖拽区域右侧
  *    插一行"引擎加载中…"文字提示。仅 Tauri 桌面端生效。
@@ -164,7 +164,7 @@ function showBackendDownOverlay() {
       ${_logoSvg}
       <div class="login-title" style="color:var(--error,#ef4444)">后端未启动</div>
       <div class="login-desc" style="line-height:1.8">
-        ${isTauri ? '内置后端仍在启动或已异常退出。' : 'EvoFlow 后端服务未运行，无法获取真实数据。'}<br>
+        ${isTauri ? '内置后端仍在启动或已异常退出。' : 'Captain Work 后端服务未运行，无法获取真实数据。'}<br>
         <span style="font-size:12px;color:var(--text-tertiary)">${isTauri ? '请点击重新检测，或查看日志定位启动失败原因。' : '请在服务器上启动后端服务后刷新页面。'}</span>
       </div>
       ${desktopHint}

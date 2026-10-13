@@ -5,7 +5,7 @@ import type { TaskListE2EActions } from "@/lib/taskListE2EActions.js";
 import { useEffect } from "react";
 
 // [evoflow-vendor] 删除本地 `declare global { interface ImportMeta { env } }`：
-// EvoFlow 程序已有 src/vite-env.d.ts（vite/client）声明 import.meta.env，重复声明且形状不同会冲突。
+// Captain Work 程序已有 src/vite-env.d.ts（vite/client）声明 import.meta.env，重复声明且形状不同会冲突。
 
 /**
  * E2E 测试可通过 window.__testActions 调用的操作集合。

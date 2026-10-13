@@ -41,5 +41,5 @@ export async function readConfigWithFallback({
       }
     }
   }
-  throw new Error('未找到 EvoFlow 配置文件，请先填写 EvoFlow 项目地址后点“使用此地址”')
+  throw new Error('未找到 Captain Work 配置文件，请先填写 Captain Work 项目地址后点“使用此地址”')
 }

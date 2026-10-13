@@ -945,7 +945,7 @@ fn verify_sidecar_panel_pin(backend_exe: &Path) -> Result<(), String> {
                     manifest_path.display()
                 ));
                 return Err(
-                    "内置网关缺少版本清单，与桌面端不是同一安装包。请重新安装官方 EvoFlow 桌面端。"
+                    "内置网关缺少版本清单，与桌面端不是同一安装包。请重新安装官方 Captain Work 桌面端。"
                         .to_string(),
                 );
             }
@@ -965,7 +965,7 @@ fn verify_sidecar_panel_pin(backend_exe: &Path) -> Result<(), String> {
         .unwrap_or("");
     if got.is_empty() {
         return Err(
-            "内置网关版本清单缺少 panel_version。请重新安装官方 EvoFlow 桌面端。".to_string(),
+            "内置网关版本清单缺少 panel_version。请重新安装官方 Captain Work 桌面端。".to_string(),
         );
     }
     if got != expected {

@@ -998,7 +998,7 @@ function extractLatestGoalProposalFromRows(rows: DisplayRow[]): ThreadGoalPropos
   return null
 }
 
-/** 子智能体流事件 → 协作子任务 status（与 EvoFlow 存储 / SessionSidebar 一致） */
+/** 子智能体流事件 → 协作子任务 status（与 Captain Work 存储 / SessionSidebar 一致） */
 function collabStatusFromSubagentStreamEv(ev: Record<string, unknown>): string | null {
   const t = ev.type
   // running/started 只能表示"执行中"，绝不能把子任务误置为终态（否则 UI 会抖动：变绿/显示名称）
@@ -4035,7 +4035,7 @@ export default function ChatApp() {
         document.getElementById('shell-aside-overlay')?.classList.remove('visible')
         const title = aside?.querySelector('.react-chat-aside-toolbar-title') as HTMLElement | null
         if (title && !title.dataset.desktopTitle) {
-          title.dataset.desktopTitle = title.textContent || 'EvoFlow'
+          title.dataset.desktopTitle = title.textContent || 'Captain Work'
           title.textContent = '对话'
         }
       } else {
@@ -4950,16 +4950,16 @@ useEffect(() => {
     const row = agents.find((a) => String(a?.agent_code || '').trim().toLowerCase() === code)
     const name = String(row?.agent_name || '').trim()
     if (name) return name
-    if (code === 'main') return 'EvoFlow'
+    if (code === 'main') return 'Captain Work'
     if (code === 'claude-code') return '代码助手'
-    return code || 'EvoFlow · Agent'
+    return code || 'Captain Work · Agent'
   }, [currentRoleCodeForUi, agents])
 
   const currentRoleLabel = useMemo(() => {
     const code = currentRoleCodeForUi
     const row = agents.find((a) => String(a?.agent_code || '').trim().toLowerCase() === code)
     const dn = row && String(row.agent_name || '').trim()
-    const roleName = dn || (code === 'main' ? 'EvoFlow' : code === 'claude-code' ? '代码助手' : code)
+    const roleName = dn || (code === 'main' ? 'Captain Work' : code === 'claude-code' ? '代码助手' : code)
     // Skip meta source tags like「自定义 / 核心 / SkillHub」— they clutter the rail signature.
     const META_PREFIX = new Set(['自定义', '核心', 'SkillHub', 'skillhub'])
     const tagLabels = normalizeAgentTags(row?.tags).filter((t) => !META_PREFIX.has(t))
@@ -5630,13 +5630,13 @@ useEffect(() => {
         collabTaskStatusNotifyRef.current.set(taskId, nextTaskSt)
         if (nextTaskSt === 'completed' && prevTaskSt !== 'completed') {
           void notifyDesktopCompletion({
-            title: 'EvoFlow · 任务完成',
+            title: 'Captain Work · 任务完成',
             body: taskName ? `「${taskName}」已完成` : '协作任务已完成',
             tag: `task:${taskId}:completed`,
           })
         } else if (nextTaskSt === 'failed' && prevTaskSt !== 'failed') {
           void notifyDesktopCompletion({
-            title: 'EvoFlow · 任务失败',
+            title: 'Captain Work · 任务失败',
             body: taskName ? `「${taskName}」执行失败` : '协作任务执行失败',
             tag: `task:${taskId}:failed`,
           })
@@ -11599,7 +11599,7 @@ useEffect(() => {
         }
         if (!isBackground && skPersist) {
           void notifyDesktopCompletion({
-            title: 'EvoFlow · 对话完成',
+            title: 'Captain Work · 对话完成',
             body: '本轮 AI 回复已完成',
             tag: `chat-final:${skPersist}`,
           })
@@ -13095,7 +13095,7 @@ useEffect(() => {
         const { api } = await import('../lib/tauri-api.js')
         await api.chatUpdateContext(sessionKey, { use_claude_code_chat: false })
         setRoleUiNonce((n) => n + 1)
-        toast('已切换为 EvoFlow（当前会话）', 'success')
+        toast('已切换为 Captain Work（当前会话）', 'success')
         return
       }
       // /goal <目标内容> — 直接启动当前会话目标（不进入普通聊天）
@@ -13120,7 +13120,7 @@ useEffect(() => {
         void goal.goal.startGoalWithPrompt(goalText)
         return
       }
-      // 本机聊天：用短指令确认目标方案（飞书侧同一会话若在本机打开 EvoFlow，也可用输入框发相同词）
+      // 本机聊天：用短指令确认目标方案（飞书侧同一会话若在本机打开 Captain Work，也可用输入框发相同词）
       if (/^(开始|确认|启动目标|开始目标|启动托管|开始托管)$/.test(slash)) {
         const fromPanel = threadPanelState.goalProposal
         const fromRows = !fromPanel ? extractLatestGoalProposalFromRows(rows) : null
@@ -14423,7 +14423,7 @@ useEffect(() => {
       )
       const label =
         (agentRow && String(agentRow.agent_name || '').trim()) ||
-        (code === 'main' ? 'EvoFlow' : code === 'claude-code' ? '代码助手' : code)
+        (code === 'main' ? 'Captain Work' : code === 'claude-code' ? '代码助手' : code)
 
       if (code === 'main') {
         await api.chatUpdateContext(sk, {
@@ -14440,7 +14440,7 @@ useEffect(() => {
           ),
         )
         setRoleUiNonce((n) => n + 1)
-        toast('已切换为 EvoFlow（当前会话）', 'success')
+        toast('已切换为 Captain Work（当前会话）', 'success')
         return
       }
       if (code === 'claude-code') {

@@ -379,7 +379,7 @@ Function PageLeaveReinstall
       Abort
     ${EndIf}
 
-    ; --- EvoFlow: post-uninstall safety net -----------------------------------
+    ; --- Captain Work: post-uninstall safety net -----------------------------------
     ; Light kill before copy in case the old uninstaller left the app running.
     !insertmacro EvpKillRunningAppProcesses
     !insertmacro EvpBriefSettle

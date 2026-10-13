@@ -4,7 +4,7 @@ import { memo, type ReactNode } from 'react'
  * 工具卡片类别注册表：toolKind → 类别（图标 + 主题色）。
  *
  * 与 ZCode 的工具卡体系同构：卡片外壳按 kind 查注册表取元数据，
- * 而不是在每个调用点内联分支。EvoFlow 现有 TOOL_NAME_ZH / TOOL_ICON
+ * 而不是在每个调用点内联分支。Captain Work 现有 TOOL_NAME_ZH / TOOL_ICON
  * 继续负责文案与 emoji 兜底，本表只负责"分类观感"。
  */
 

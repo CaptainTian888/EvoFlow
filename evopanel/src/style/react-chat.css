@@ -564,7 +564,7 @@ html[data-theme='dark'] .react-chat-aside-brand-logo {
 }
 
 /* 激活态：ZCode 用 bg-selected 底色 + 保持 400，不靠加粗区分。
-   EvoFlow 原来 active 提到 500 并加左侧 3px 竖条，和底色并存时显得又重又挤。 */
+   Captain Work 原来 active 提到 500 并加左侧 3px 竖条，和底色并存时显得又重又挤。 */
 .react-chat-aside-nav-item.active {
   background: var(--shell-active-bg, color-mix(in srgb, var(--accent, #635bff) 10%, transparent));
   color: var(--text-primary, #1a1c24);
