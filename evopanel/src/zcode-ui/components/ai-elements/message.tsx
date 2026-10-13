@@ -483,6 +483,28 @@ function fixUrlEncodingLineBreaks(markdown: string): string {
   });
 }
 
+/**
+ * Fix false-positive heading detection in streaming Markdown.
+ * 
+ * In streaming mode, the Markdown parser may prematurely recognize `#` as a heading
+ * even when it's not at the actual start of a line (e.g., `（#tag` or `text #tag`).
+ * 
+ * This function escapes `#` that follows Chinese/English punctuation marks
+ * and precedes non-whitespace, non-`#` characters. This catches cases like:
+ * - `（#ai新星计划` - hashtag inside parentheses (should not be heading)
+ * - `）#抖音精选` - hashtag after closing parenthesis (should not be heading)
+ * 
+ * But preserves real headings like:
+ * - `## 洞察` - proper heading with space after ##
+ * - `# heading` - proper heading
+ */
+function fixStreamingHeadingDetection(markdown: string): string {
+  // Match `#` that:
+  // 1. Is preceded by Chinese/English punctuation (opening parens, comma, semicolon, etc.)
+  // 2. Is NOT followed by whitespace or another `#`
+  return markdown.replace(/(?<=[（,;：!！?？、。()【】《》""''])#(?=[^\s#])/g, "&#35;");
+}
+
 type MarkdownCodeProps = ComponentProps<"code"> & {
   node?: unknown;
   "data-block"?: unknown;
@@ -1363,10 +1385,12 @@ export const MessageResponse = memo(
     );
     const targetMarkdown = useMemo(
       () =>
-        fixUrlEncodingLineBreaks(
-          rewriteMarkdownArtifactImageSources(
-            normalizeMessageSingleDollarMath(
-              normalizeConsecutiveMarkdownImageBlocks(projectedCitationMarkdown),
+        fixStreamingHeadingDetection(
+          fixUrlEncodingLineBreaks(
+            rewriteMarkdownArtifactImageSources(
+              normalizeMessageSingleDollarMath(
+                normalizeConsecutiveMarkdownImageBlocks(projectedCitationMarkdown),
+              ),
             ),
           ),
         ),
