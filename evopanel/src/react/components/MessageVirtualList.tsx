@@ -38,6 +38,12 @@ import {
   isFoldInducedScrollAway,
 } from '../lib/fold-induced-scroll-away.js'
 import { useStreamSnapshotSeq } from '../lib/stream-snapshot-store.js'
+import {
+  streamPerfBeginDelta,
+  streamPerfEndDelta,
+  streamPerfTime,
+  installStreamPerfGlobal,
+} from '../lib/stream-perf-trace.js'
 
 /**
  * AI 回复流式贴底时，在真正底部上方留一点余量，让最新内容「吸附」在底部偏上，
@@ -817,6 +823,13 @@ export const MessageVirtualList = memo(function MessageVirtualList({
    * 这里会收到通知并重算 streamRow，保证每个 delta 都能触发重新渲染。
    */
   const streamSnapshotSeq = useStreamSnapshotSeq(sessionKeyForSend)
+  streamPerfBeginDelta(streamSnapshotSeq)
+  useLayoutEffect(() => {
+    streamPerfEndDelta()
+  })
+  useEffect(() => {
+    installStreamPerfGlobal()
+  }, [])
   if (lastSessionKeyForSendRef.current !== sessionKeyForSend) {
     lastSessionKeyForSendRef.current = sessionKeyForSend
     lastSendScrollTailRef.current = ''
@@ -899,7 +912,7 @@ export const MessageVirtualList = memo(function MessageVirtualList({
       lastStreamRowRef.current = null
       return null
     }
-    const built = buildStreamDisplayRow(
+    const built = streamPerfTime('buildRow', () => buildStreamDisplayRow(
       streamRef.current,
       liveTurnTokenStr,
       suppressStreamFiles,
@@ -912,7 +925,7 @@ export const MessageVirtualList = memo(function MessageVirtualList({
       streamActive,
       streamPriorTurnStrip,
       sessionKeyForSend,
-    )
+    ))
     if (built) {
       const last = continuationTargetRow || rows[rows.length - 1]
       const emptyPlaceholder =
@@ -995,7 +1008,7 @@ export const MessageVirtualList = memo(function MessageVirtualList({
     return displayRows.map((row, i) => ({ kind: 'row' as const, row, i }))
   }, [rows, inlineSubagentTasks])
 
-  const historyItems = useMemo((): HistoryItem[] => {
+  const historyItems = useMemo((): HistoryItem[] => streamPerfTime('historyItems', () => {
     if (!streamContinuesAssistant || !streamRow || continuationTargetIndex < 0) {
       return baseHistoryItems
     }
@@ -1006,7 +1019,7 @@ export const MessageVirtualList = memo(function MessageVirtualList({
       { ...last, row: mergeAssistantRowWithStreamRow(last.row, streamRow) },
       ...baseHistoryItems.slice(continuationTargetIndex + 1),
     ]
-  }, [baseHistoryItems, streamContinuesAssistant, streamRow, continuationTargetIndex])
+  }), [baseHistoryItems, streamContinuesAssistant, streamRow, continuationTargetIndex])
 
   const streamContinuedRowIndex =
     streamContinuesAssistant && streamRow ? continuationTargetIndex : -1
