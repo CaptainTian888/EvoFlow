@@ -27,6 +27,18 @@ _dump_lock = threading.Lock()
 _listen_socket_broken = False
 _listen_socket_broken_at: str | None = None
 
+# Registry of in-flight HTTP requests inside the Gateway ASGI app.
+# Populated by GatewayRequestLoggingMiddleware (see app.gateway.middleware).
+# Used by hang_diagnostics to surface: "during this hang, which REST endpoints
+# were stuck waiting in the event-loop?" — exactly the symptom the user reported
+# ("流式对话期间其他接口全卡死").
+_inflight_requests_lock = threading.Lock()
+_inflight_requests: dict[int, dict[str, Any]] = {}
+
+_SLOW_REQUEST_LOG_THRESHOLD_S = 3.0
+_SLOW_REQUEST_DUMP_THRESHOLD_S = 5.0
+_last_slow_request_log: dict[str, float] = {}  # throttled warn lines
+
 
 def _flag_enabled(name: str, default: str = "1") -> bool:
     value = (os.getenv(name, default) or "").strip().lower()
@@ -45,6 +57,62 @@ def _float_env(name: str, default: float, *, minimum: float) -> float:
 
 def diagnostics_enabled() -> bool:
     return _flag_enabled("EVOFLOW_GATEWAY_HANG_DIAGNOSTICS", "1")
+
+
+def register_inflight_request(*, scope_id: int, method: str, path: str, query: str | None) -> None:
+    """Middleware call when it accepts a new HTTP request; tracked for hang dumps."""
+    with _inflight_requests_lock:
+        _inflight_requests[scope_id] = {
+            "method": method,
+            "path": path,
+            "query": query,
+            "started_mono": time.monotonic(),
+            "started_wall": datetime.now(UTC).isoformat(),
+        }
+
+
+def update_inflight_request(scope_id: int, **fields: Any) -> None:
+    with _inflight_requests_lock:
+        entry = _inflight_requests.get(scope_id)
+        if entry is not None:
+            entry.update(fields)
+
+
+def unregister_inflight_request(scope_id: int) -> dict[str, Any] | None:
+    with _inflight_requests_lock:
+        return _inflight_requests.pop(scope_id, None)
+
+
+def snapshot_inflight_requests() -> dict[str, Any]:
+    """Snapshot of all in-flight requests, oldest first; includes wait time."""
+    now = time.monotonic()
+    with _inflight_requests_lock:
+        items = []
+        for scope_id, entry in _inflight_requests.items():
+            wait = now - entry.get("started_mono", now)
+            items.append({"scope_id": scope_id, **entry, "wait_seconds": round(wait, 3)})
+    items.sort(key=lambda d: d["started_mono"])
+    return {
+        "count": len(items),
+        "long_waiting": [d for d in items if d["wait_seconds"] >= _SLOW_REQUEST_LOG_THRESHOLD_S],
+        "all": items,
+    }
+
+
+def _slow_request_summary_lines() -> list[str]:
+    now = time.monotonic()
+    snap = snapshot_inflight_requests()
+    long_waiting = snap["long_waiting"]
+    if not long_waiting:
+        return []
+    lines = [f"[slow-requests] currently waiting >={_SLOW_REQUEST_LOG_THRESHOLD_S:.1f}s count={len(long_waiting)}"]
+    for d in long_waiting[:8]:
+        lines.append(
+            f"  - {d['method']:6s} {d['path']} wait={d['wait_seconds']:.2f}s started={d['started_wall']}"
+        )
+    if len(long_waiting) > 8:
+        lines.append(f"  ... and {len(long_waiting) - 8} more")
+    return lines
 
 
 def get_event_loop_lag_seconds() -> float:
@@ -232,6 +300,7 @@ def dump_gateway_diagnostics(reason: str, *, lag_seconds: float | None = None) -
             "EVOFLOW_LANGGRAPH_PORT": os.getenv("EVOFLOW_LANGGRAPH_PORT"),
         },
         "active_streams": _active_stream_snapshot(),
+        "inflight_requests": snapshot_inflight_requests(),
         "sqlite": _sqlite_snapshot(),
         "thread_stacks": _thread_stacks(),
         "asyncio_tasks": _asyncio_tasks_snapshot(),
@@ -292,8 +361,8 @@ def _reclaim_stale_streams_after_hang(*, lag_seconds: float | None) -> None:
 
 async def _loop_heartbeat_monitor() -> None:
     global _last_loop_beat
-    interval = _float_env("EVOFLOW_GATEWAY_HANG_HEARTBEAT_SECONDS", 1.0, minimum=0.2)
-    lag_threshold = _float_env("EVOFLOW_GATEWAY_HANG_LAG_SECONDS", 5.0, minimum=0.5)
+    interval = _float_env("EVOFLOW_GATEWAY_HANG_HEARTBEAT_SECONDS", 0.5, minimum=0.2)
+    lag_threshold = _float_env("EVOFLOW_GATEWAY_HANG_LAG_SECONDS", 2.0, minimum=0.5)
     try:
         while True:
             started = time.monotonic()
@@ -303,6 +372,15 @@ async def _loop_heartbeat_monitor() -> None:
             lag = now - started - interval
             if lag >= lag_threshold:
                 dump_gateway_diagnostics("event_loop_lag", lag_seconds=round(lag, 3))
+                # Throttled WARNING line so the user can grep gateway-*.log for
+                # the exact cause without opening the JSON dump (handy when other
+                # REST endpoints stay pending > 3s during a stream).
+                key = "event_loop_lag"
+                last = _last_slow_request_log.get(key, 0.0)
+                if now - last >= 5.0:
+                    _last_slow_request_log[key] = now
+                    for line in _slow_request_summary_lines() or [f"[event-loop-lag] lag={lag:.3f}s"]:
+                        logger.warning(line)
     except asyncio.CancelledError:
         raise
     except Exception:
@@ -310,12 +388,31 @@ async def _loop_heartbeat_monitor() -> None:
 
 
 def _watchdog_loop() -> None:
-    threshold = _float_env("EVOFLOW_GATEWAY_HANG_STALL_SECONDS", 15.0, minimum=2.0)
-    poll = min(2.0, max(0.5, threshold / 3.0))
+    threshold = _float_env("EVOFLOW_GATEWAY_HANG_STALL_SECONDS", 5.0, minimum=2.0)
+    poll = min(1.0, max(0.5, threshold / 5.0))
+    last_slow_log = 0.0
+    last_dump_for_slow = 0.0
     while not _watchdog_stop.wait(poll):
         lag = time.monotonic() - _last_loop_beat
+        now = time.monotonic()
         if lag >= threshold:
             dump_gateway_diagnostics("event_loop_stall", lag_seconds=round(lag, 3))
+        # Slow-request detector: REST endpoints waiting > 5s in the event loop
+        # while a stream is in flight is the exact symptom the user reported.
+        # Throttled so we don't spam logs; one dump per minute at most.
+        slow_snap = snapshot_inflight_requests()
+        long_waiting = slow_snap["long_waiting"]
+        if long_waiting and now - last_slow_log >= 5.0:
+            last_slow_log = now
+            worst = max(d["wait_seconds"] for d in long_waiting)
+            if worst >= _SLOW_REQUEST_DUMP_THRESHOLD_S and now - last_dump_for_slow >= 60.0:
+                last_dump_for_slow = now
+                dump_gateway_diagnostics(
+                    "slow_inflight_requests",
+                    lag_seconds=round(worst, 3),
+                )
+            for line in _slow_request_summary_lines():
+                logger.warning(line)
 
 
 def start_gateway_hang_diagnostics() -> Callable[[], None]:
@@ -333,10 +430,12 @@ def start_gateway_hang_diagnostics() -> Callable[[], None]:
         _watchdog_thread = threading.Thread(target=_watchdog_loop, name="gateway-hang-watchdog", daemon=True)
         _watchdog_thread.start()
     logger.info(
-        "Gateway hang diagnostics enabled heartbeat=%ss lag_threshold=%ss stall_threshold=%ss dir=%s",
-        _float_env("EVOFLOW_GATEWAY_HANG_HEARTBEAT_SECONDS", 1.0, minimum=0.2),
-        _float_env("EVOFLOW_GATEWAY_HANG_LAG_SECONDS", 5.0, minimum=0.5),
-        _float_env("EVOFLOW_GATEWAY_HANG_STALL_SECONDS", 15.0, minimum=2.0),
+        "Gateway hang diagnostics enabled heartbeat=%ss lag_threshold=%ss stall_threshold=%ss slow_request_warn=%ss slow_request_dump=%ss dir=%s",
+        _float_env("EVOFLOW_GATEWAY_HANG_HEARTBEAT_SECONDS", 0.5, minimum=0.2),
+        _float_env("EVOFLOW_GATEWAY_HANG_LAG_SECONDS", 2.0, minimum=0.5),
+        _float_env("EVOFLOW_GATEWAY_HANG_STALL_SECONDS", 5.0, minimum=2.0),
+        _SLOW_REQUEST_LOG_THRESHOLD_S,
+        _SLOW_REQUEST_DUMP_THRESHOLD_S,
         _diagnostics_dir(),
     )
 
@@ -358,5 +457,9 @@ __all__ = [
     "is_event_loop_overloaded",
     "is_listen_socket_broken",
     "listen_socket_broken_detail",
+    "register_inflight_request",
+    "snapshot_inflight_requests",
     "start_gateway_hang_diagnostics",
+    "unregister_inflight_request",
+    "update_inflight_request",
 ]

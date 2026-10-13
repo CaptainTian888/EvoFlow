@@ -22,6 +22,12 @@ from app.gateway.routers.errors import (
     ErrorDetail,
     create_error_response,
 )
+from app.gateway.hang_diagnostics import (
+    register_inflight_request,
+    unregister_inflight_request,
+    update_inflight_request,
+    is_event_loop_overloaded,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +132,15 @@ def _gateway_body_samples_enabled() -> bool:
     return raw in ("1", "true", "yes", "on")
 
 
+def _read_event_loop_lag() -> float:
+    """Safe wrapper used by middlewares (do NOT call get_event_loop_lag_seconds at import time)."""
+    try:
+        from app.gateway.hang_diagnostics import get_event_loop_lag_seconds
+        return get_event_loop_lag_seconds()
+    except Exception:
+        return 0.0
+
+
 from app.gateway.gateway_obs_record import normalize_gateway_obs_path, schedule_gateway_observability_record  # noqa: E402
 
 
@@ -149,11 +164,26 @@ class GatewayRequestLoggingMiddleware:
 
         path = str(scope.get("path") or "")
         method = str(scope.get("method") or "").upper()
+        scope_id = id(scope)
         if method == "POST" and "/tool-approval" in path:
             logger.info("HTTP tool-approval received path=%s", path)
         if _excluded_from_gateway_logging(path):
             await self.app(scope, receive, send)
             return
+
+        # Cross-cuts: register this request with hang_diagnostics so a stuck
+        # event-loop dump reports not just asyncio tasks but also "which REST
+        # endpoints were waiting at the time of the hang".
+        # Stream requests are intentionally excluded — they are expected to be
+        # long-lived and would otherwise drown the registry.
+        is_streaming = _is_streaming_request_path(path)
+        if not is_streaming:
+            register_inflight_request(
+                scope_id=scope_id,
+                method=method,
+                path=path,
+                query=str(URL(scope=scope).query or "") or None,
+            )
 
         started = time.perf_counter()
         request_headers = Headers(scope=scope)
@@ -178,6 +208,19 @@ class GatewayRequestLoggingMiddleware:
             if logged:
                 return
             logged = True
+            duration_s = time.perf_counter() - started
+            # Surface the exact symptom the user reported:
+            # "流式对话期间其他接口全卡死，watch 这个日志就能看到"。
+            # A non-stream request that took > 3s AND the gateway is currently
+            # overloaded → was probably starved by a stream run, not slow itself.
+            if not is_streaming and duration_s >= 3.0:
+                if is_event_loop_overloaded():
+                    logger.warning(
+                        "[STREAM_BLOCK_SUSPECT] %s %s took %.2fs while gateway overloaded "
+                        "(event_loop_lag=%.2fs); a stream run was likely starving the loop",
+                        method, path, duration_s,
+                        _read_event_loop_lag(),
+                    )
             req_sample, req_truncated = _body_sample(bytes(request_body), request_content_type) if sample_request_body else (None, False)
             resp_sample, resp_truncated = _body_sample(bytes(response_body), response_content_type) if sample_response_body else (None, False)
             metadata = {
@@ -186,6 +229,8 @@ class GatewayRequestLoggingMiddleware:
             }
             if stream_status:
                 metadata["stream_status"] = stream_status
+            if not is_streaming:
+                unregister_inflight_request(scope_id)
             schedule_gateway_observability_record(
                 {
                     "occurred_at": _occurred_at(),
@@ -247,10 +292,18 @@ class GatewayRequestLoggingMiddleware:
         except asyncio.CancelledError:
             if response_started:
                 record(stream_status="cancelled" if "text/event-stream" in (response_content_type or "").lower() else None)
+            elif not is_streaming:
+                unregister_inflight_request(scope_id)
             raise
         except Exception as exc:
             record(error_type=exc.__class__.__name__, stream_status="error" if response_started and "text/event-stream" in (response_content_type or "").lower() else None)
             raise
+        finally:
+            # Belt-and-braces: if record() wasn't called for any reason (e.g.
+            # an uncaught BaseException, or a path that early-returned), still
+            # unregister so the hang-diagnostics registry doesn't leak entries.
+            if not logged and not is_streaming:
+                unregister_inflight_request(scope_id)
 
 
 def _content_type_needs_utf8_charset(media_type: str) -> bool:
