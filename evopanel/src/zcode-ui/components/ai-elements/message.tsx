@@ -462,6 +462,27 @@ const simpleMathIdentifierPattern = /^(?:[A-Za-z]|[a-z][A-Za-z0-9]{1,2}|\d+(?:\.
 const compactCurrencyRangePrefixPattern = /^(?:\d[\d,]*(?:\.\d+)?|\.\d+)[+\-*/]$/;
 const compactCurrencyAmountStartPattern = /^(?:\d|\.\d)/;
 
+/**
+ * Fix streaming-induced URL encoding line breaks in Markdown.
+ * 
+ * When delta streams arrive character by character (e.g., `/account/%E5%B0%8F...`),
+ * the Markdown parser may incorrectly split on `|` boundaries, treating URL-encoded
+ * segments as table delimiters. This function escapes URL-encoded sequences to prevent
+ * premature line breaks within URLs.
+ * 
+ * Example: `/account/%E5%B0%8F%A4%A9fotos-969304610 |` stays on one line.
+ */
+function fixUrlEncodingLineBreaks(markdown: string): string {
+  // Escape percent signs within URL-like paths to prevent GFM table parser confusion
+  // when `|` appears after URL-encoded characters. Replace `%` with `&#37;` (HTML entity)
+  // inside URL paths (pattern: starts with /, contains %XX, ends before `|` or whitespace).
+  return markdown.replace(/(\/)([^/\s|]*%[0-9A-Fa-f]{2}[^/\s|]*)\s+\|/g, (match, slash, urlPath) => {
+    // Escape the percent sign to prevent GFM table cell parsing
+    const escaped = urlPath.replace(/%/g, "&#37;");
+    return `${slash}${escaped} |`;
+  });
+}
+
 type MarkdownCodeProps = ComponentProps<"code"> & {
   node?: unknown;
   "data-block"?: unknown;
@@ -1342,9 +1363,11 @@ export const MessageResponse = memo(
     );
     const targetMarkdown = useMemo(
       () =>
-        rewriteMarkdownArtifactImageSources(
-          normalizeMessageSingleDollarMath(
-            normalizeConsecutiveMarkdownImageBlocks(projectedCitationMarkdown),
+        fixUrlEncodingLineBreaks(
+          rewriteMarkdownArtifactImageSources(
+            normalizeMessageSingleDollarMath(
+              normalizeConsecutiveMarkdownImageBlocks(projectedCitationMarkdown),
+            ),
           ),
         ),
       [projectedCitationMarkdown],
