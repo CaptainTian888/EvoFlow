@@ -463,46 +463,36 @@ const compactCurrencyRangePrefixPattern = /^(?:\d[\d,]*(?:\.\d+)?|\.\d+)[+\-*/]$
 const compactCurrencyAmountStartPattern = /^(?:\d|\.\d)/;
 
 /**
- * Fix streaming-induced URL encoding line breaks in Markdown.
+ * Fix fragmented Markdown blocks in streaming mode.
  * 
- * When delta streams arrive character by character (e.g., `/account/%E5%B0%8F...`),
- * the Markdown parser may incorrectly split on `|` boundaries, treating URL-encoded
- * segments as table delimiters. This function escapes URL-encoded sequences to prevent
- * premature line breaks within URLs.
+ * When Markdown arrives as character-by-character deltas, block elements like
+ * `#hashtag` may be interpreted as headings by the parser before the preceding
+ * context (like `（`) arrives.
  * 
- * Example: `/account/%E5%B0%8F%A4%A9fotos-969304610 |` stays on one line.
+ * This function detects and fixes cases where a line starts with `#` followed
+ * by non-space characters, which indicates either:
+ * 1. A hashtag that should NOT be a heading (should be escaped)
+ * 2. A malformed heading that was split across deltas
+ * 
+ * The fix escapes `#` in these cases if it's NOT a proper heading
+ * (proper headings have space after `#` or are multiple `#` like `##`).
  */
-function fixUrlEncodingLineBreaks(markdown: string): string {
-  // Escape percent signs within URL-like paths to prevent GFM table parser confusion
-  // when `|` appears after URL-encoded characters. Replace `%` with `&#37;` (HTML entity)
-  // inside URL paths (pattern: starts with /, contains %XX, ends before `|` or whitespace).
-  return markdown.replace(/(\/)([^/\s|]*%[0-9A-Fa-f]{2}[^/\s|]*)\s+\|/g, (match, slash, urlPath) => {
-    // Escape the percent sign to prevent GFM table cell parsing
-    const escaped = urlPath.replace(/%/g, "&#37;");
-    return `${slash}${escaped} |`;
+function fixStreamingMarkdownFragments(markdown: string): string {
+  // Match lines that start with `#` followed immediately by non-space, non-`#`
+  // character (e.g., `#tag`, `#ai新星计划`). These are likely hashtags in
+  // streaming that were misinterpreted as headings, not real headings.
+  //
+  // Real headings have the form:
+  // - `# heading` (space after single #)
+  // - `## heading` (multiple # or space after)
+  // - `# ` (# followed by space)
+  //
+  // So we escape `#` when followed by a non-space, non-`#` character at line start.
+  return markdown.replace(/^(#+)(?![\s#])/gm, (match) => {
+    // If it's a single `#` followed by non-space, escape it
+    // If it's multiple `##`, it's probably a real heading that's malformed, so escape just the first
+    return match[0] + "&#35;" + match.slice(1);
   });
-}
-
-/**
- * Fix false-positive heading detection in streaming Markdown.
- * 
- * In streaming mode, the Markdown parser may prematurely recognize `#` as a heading
- * even when it's not at the actual start of a line (e.g., `（#tag` or `text #tag`).
- * 
- * This function escapes `#` that follows Chinese/English punctuation marks
- * and precedes non-whitespace, non-`#` characters. This catches cases like:
- * - `（#ai新星计划` - hashtag inside parentheses (should not be heading)
- * - `）#抖音精选` - hashtag after closing parenthesis (should not be heading)
- * 
- * But preserves real headings like:
- * - `## 洞察` - proper heading with space after ##
- * - `# heading` - proper heading
- */
-function fixStreamingHeadingDetection(markdown: string): string {
-  // Match `#` that:
-  // 1. Is preceded by Chinese/English punctuation (opening parens, comma, semicolon, etc.)
-  // 2. Is NOT followed by whitespace or another `#`
-  return markdown.replace(/(?<=[（,;：!！?？、。()【】《》""''])#(?=[^\s#])/g, "&#35;");
 }
 
 type MarkdownCodeProps = ComponentProps<"code"> & {
@@ -1385,12 +1375,10 @@ export const MessageResponse = memo(
     );
     const targetMarkdown = useMemo(
       () =>
-        fixStreamingHeadingDetection(
-          fixUrlEncodingLineBreaks(
-            rewriteMarkdownArtifactImageSources(
-              normalizeMessageSingleDollarMath(
-                normalizeConsecutiveMarkdownImageBlocks(projectedCitationMarkdown),
-              ),
+        fixStreamingMarkdownFragments(
+          rewriteMarkdownArtifactImageSources(
+            normalizeMessageSingleDollarMath(
+              normalizeConsecutiveMarkdownImageBlocks(projectedCitationMarkdown),
             ),
           ),
         ),
