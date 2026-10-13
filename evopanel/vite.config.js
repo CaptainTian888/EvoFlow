@@ -173,7 +173,7 @@ export default defineConfig(({ mode }) => {
           replacement: path.resolve(__dirname, 'src/lib/shims/fastdom-stub.mjs'),
         },
         {
-          find: /^fastdom\/extensions\/fastdom-promised$/,
+          find: 'fastdom/extensions/fastdom-promised',
           replacement: path.resolve(__dirname, 'src/lib/shims/fastdom-promised-stub.mjs'),
         },
         // @mermaid-js/parser has broken package.json exports field.
@@ -198,12 +198,22 @@ export default defineConfig(({ mode }) => {
         'react/jsx-runtime',
         '@tanstack/react-virtual',
         'dayjs',
+        // Include mermaid in pre-bundle so alias rewrites for fastdom-promised take effect
+        'mermaid',
       ],
       // Mermaid brings ESM-only deps (e.g. @mermaid-js/parser) that can break esbuild pre-bundle
-      // in some environments (Tauri beforeDevCommand on Windows). Exclude from optimizeDeps and
-      // let Vite handle native ESM in dev.
-      exclude: ['mermaid', '@mermaid-js/parser', 'dompurify'],
+      // in some environments (Tauri beforeDevCommand on Windows). Now we pre-bundle mermaid itself
+      // and exclude only its parser dep.
+      exclude: ['@mermaid-js/parser', 'dompurify'],
       esbuildOptions: {
+        // esbuild scans Mermaid's static import before Vite's resolve.alias plugins run.
+        // Redirect the UMD-only fastdom extension to our ESM-compatible stub during pre-bundling.
+        alias: {
+          'fastdom/extensions/fastdom-promised.js': path.resolve(
+            __dirname,
+            'src/lib/shims/fastdom-promised-stub.mjs',
+          ),
+        },
         // Avoid writing react-dom.js.map etc. into deps_temp_* (common Windows EACCES).
         sourcemap: false,
       },
