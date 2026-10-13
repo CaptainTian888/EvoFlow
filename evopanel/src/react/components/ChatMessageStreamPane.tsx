@@ -179,12 +179,29 @@ export const ChatMessageStreamPane = memo(function ChatMessageStreamPane(props: 
     isSending,
   ])
 
+  const prevLiveStreamActivityRef = useRef<ResolvedLiveStreamActivity | null>(null)
   const liveStreamActivity = useMemo(() => {
     void streamChromeTick
     void sessionEpoch
     void timingTick
     if (!sk) return null
-    return resolveLiveStreamActivity(sk, true)
+    const next = resolveLiveStreamActivity(sk, true)
+    if (next == null) return null
+    const prev = prevLiveStreamActivityRef.current
+    if (
+      prev != null &&
+      prev.kind === next.kind &&
+      prev.detail === next.detail &&
+      prev.cursorLabel === next.cursorLabel &&
+      prev.dockLabel === next.dockLabel &&
+      prev.runningPreview === next.runningPreview &&
+      prev.runningToolSummary === next.runningToolSummary &&
+      prev.elapsedSec === next.elapsedSec
+    ) {
+      return prev
+    }
+    prevLiveStreamActivityRef.current = next
+    return next
   }, [sk, resolveLiveStreamActivity, streamChromeTick, sessionEpoch, timingTick])
 
   /**
