@@ -1,11 +1,10 @@
 {
-  "version": "1.0.8",
-  "minAppVersion": "1.0.8",
+  "version": "1.0.9",
+  "minAppVersion": "1.0.9",
   "updateKind": "full",
   "assetKind": "installer",
   "hash": "",
-  "url": "https://github.com/EvovexAI/EvoFlow/releases/download/v1.0.8/EvoFlow_1.0.8_x64-setup.exe",
+  "url": "https://github.com/EvovexAI/EvoFlow/releases/download/v1.0.9/EvoFlow_1.0.9_x64-setup.exe",
   "size": 0,
-  "changelog": "EvoFlow 1.0.8 启动性能专项优化：CLI 冷启动移除模块级全量导入（torch/transformers 按需加载），提速约 2.7 秒；桌面端内置后端改为后台线程拉起，窗口创建不再被端口探测阻塞；移除 Google Fonts 外链，WebView 首帧不再等待外部 DNS；构建拆出 vendor-react chunk，二次启动缓存命中率提升。字体大小：869 处硬编码字号迁入 --ef-text-* 令牌，设置中的字体大小滑块现在联动全部界面文字。新增：内嵌浏览器面板（右侧舞台 CDP 控制）、UI 缩放（Ctrl+=/-/0、Ctrl+滚轮、设置面板）、128K/2M 模型预设、知识库角色级自动注入、全局助手可调大小、工具卡片系统 + EF 设计令牌。修复：聊天流式文本丢失/有序列表截断、企业微信图文混合消息、Anthropic 请求超时映射、GLM-5.3 thinking 默认跟随模型、健康探测路径、聊天编辑图片增删同步等。覆盖安装即可。",
-  "releasedAt": "2026-10-04"
+  "changelog": "EvoFlow 1.0.9 三大基础能力合并发布：UI 扩展注册表 API（/api/ui-extensions/*）+ Tauri 端 ui_extensions 命令（兼容 PowerShell 5.1 UTF-8 BOM 与单对象 registry）、evoflow doctor 本机自检（SQLite 锁/WAL 残留、Python 残留进程、技能根目录错位、EVOFLOW_* 环境变量、网关运行时）、技能路由注册后端（按角色挂载 + HTTP 入口）。体验侧：主窗口流式 markdown 统一走 Streamdown（文件 chip/协议白名单/表格放大/代码块分行）、流式结束自动折叠执行过程、桌面端默认优先直连 API、会话列表流式探针、streamperf 多维性能监控默认开启。修复 1.0.8 之后累积回归：聊天长思考合并、折叠态豁免待授权工具、流式尾窗/合并行齿轮熄灭/60s 自愈把 live 视图打回 DB 视图三处根因、RUN_FINISHED 帧 reducer 崩溃（TypeError: state.timeline）、编辑消息图片增删同步；Markdown 把内联 hashtag/全角括号行/表格行误判标题/URL 编码换行/false-positive heading；Windows select() FD 耗尽（loading_extended 重试打爆 socket）、loading_extended 缺 v4 不再卡 503、/runs/stream 回退到 /runs/wait；react-vlist-scroller 滚动不丝滑 + thumb 跳动、fastdom/fastdom-promised 桩与 mermaid 11.17+ ESM 互操作；agent 模式 platform/panel_set 被错误移除恢复；知识库（owned KB）重建索引期间搜索不再断流、staged chunk 分配串行化；企业微信图文混合消息、模型限流过期、Anthropic 超时映射、thinking 跟随模型默认、桌面端 health 探测路径、会话列表漏掉未绑定会话、主动角色未绑定飞书推送误发。覆盖安装即可。",
 }

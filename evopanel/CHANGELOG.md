@@ -6,6 +6,62 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [1.0.9] - 2026-10-14
+
+### Added
+
+- **扩展注册表 API**：新增 `/api/ui-extensions/*` 网关路由，AI / 脚本可像面板一样注册 / 启停 / 卸载 UI 扩展；面板会即时重读 registry，外部写入面板立即生效
+- **Tauri 端 ui_extensions 命令**：与网关对齐 registry / manifest / suite 三层读写，支持 `link`（不复制只登记路径）安装
+- **`evoflow doctor` 命令**：本机环境自检，排查 SQLite 锁与 WAL 残留、Python 残留进程、技能根目录错位、`EVOFLOW_*` 环境变量、网关运行时信息
+- **技能路由注册后端**：网关侧按角色挂载技能，提供可调用的 HTTP 入口
+- **主窗口 Streamdown 样式接管**：流式 markdown 渲染统一走 Streamdown，文件 chip / 协议白名单 / 表格放大 / 代码块分行等交互一致
+- **流式结束自动折叠执行过程**：流结束后只保留最终正文卡片，长任务不再被中间执行细节占据屏幕
+- **`evoflow log files` 命令**：列出当前 profile 全部日志文件路径与会话 ID，方便取日志
+- **桌面端默认优先直连 API**：与开发环境一致，启动即可用本地网关，免去网关反代握手
+- **会话列表流式探针**：诊断面板里能看到每个会话的 SSE 状态 / 缓冲水位
+- **流式多维性能监控（streamperf）**：默认开启，长任务可看到每 delta 各阶段耗时与全面板卡顿监测
+
+### Changed
+
+- 字体大小令牌体系覆盖主窗口后，1.0.9 继续把 `react-vlist-scroller`、Streamdown 接管区与右侧舞台等剩余界面纳入 `--ef-text-*`，设置中的「字体大小」滑块统一联动
+- 工具调用时间线与流式正文卡片化后，正文分段、合并行齿轮、RUN_FINISHED 收尾状态等生命周期进一步收紧，长对话滚动更稳
+- 桌面端与开发环境共享同一组 API 通道配置（直连模式），减少 profile 间行为漂移
+
+### Fixed
+
+- 修复聊天长思考出现两个思考块：连续 reasoning piece 自动合并
+- 修复折叠态把待授权工具藏掉：审批面板始终可见，不再随自动折叠被吞
+- 修复聊天流式尾窗 / 合并行齿轮熄灭 / 60s 自愈把 live 视图打回 DB 视图（用户看不到最新内容）的三处根因
+- 修复 `RUN_FINISHED` 帧上 reducer 崩溃（`state.timeline` 不存在抛 `TypeError`），流式收尾不再闪退
+- 修复聊天编辑用户消息时图片增删不同步
+- 修复主窗口 markdown 把内联 hashtag / 全角括号行 / 表格行误判为标题 / URL 编码换行 / false-positive heading
+- 修复流式过程卡片化后正文分段与多轮新流一闪而过的两处问题
+- 修复 `platform` / `panel_set` 工具在 agent 模式下被错误移除，右侧面板平台 / 产物入口恢复
+- 修复 Windows `select()` FD 耗尽（`loading_extended` 重试打爆 socket）；`loading_extended` 缺 v4 时不再卡 503
+- 修复 `/runs/stream` 传输失败时的回退路径：自动改走 `/runs/wait`，流式不被截断
+- 修复右侧舞台折叠时浏览器面板等 surface 未干净关闭的残留
+- 修复 `react-vlist-scroller` 滚动不丝滑 + 滚动条 thumb 跳动的两处渲染抖动
+- 修复 `fastdom` / `fastdom-promised` 桩与 mermaid 11.17+ 的 ESM 互操作；新增 `extend()` 让 Vite ESM 不再报 stub 缺方法
+- 修复 Vite 旧 dep 缓存导致 `fastdom` 桩回归的冷启动问题（自动清理）
+- 修复 `mergeSoftHistoryFetch` `curLast` 作用域回退导致的运行时 `ReferenceError`
+- 修复视觉镜像 head 行去重 / 行级 `ui-display-visual.log` 流水
+- 修复 `task_tool` 主动任务中把被禁的 mandatory 协作工具塞进 `disallowed_tools`
+- 修复企业微信接收图文混合消息的端到端通路与回退路径未读最新 DB
+- 修复模型限流等瞬时不可用标记不自动过期
+- 修复 Anthropic 原生模型请求超时参数未映射；未指定 `thinking` 时未跟随模型默认
+- 修复桌面端 health 探测应打网关基址而非页面 origin
+- 修复工作区视图的会话列表漏掉未绑定会话
+- 修复内置 lazy langgraph 请求转发时未剥离挂载前缀
+- 修复主动角色未绑定飞书推送时仍被误发的目标路由错误
+- 修复知识库（owned KB）重建索引期间搜索体验断流；`staged chunk` 分配串行化避免竞争
+- 修复 ui_extensions 兼容 PowerShell 5.1 写出的 UTF-8 BOM 与单对象 registry 历史写法（脚本装了不显示的常见坑）
+
+### Notes
+
+- 发版说明与版本线对齐 **1.0.9**
+- 本版主要修复 1.0.8 启动性能专项之后的 4 天窗口内累积的流式 / 渲染 / 通道 / 知识库回归，并把 ui_extensions + skills 路由注册 + doctor 自检这三块基础能力合并发布
+- 升级方式：覆盖安装即可，无数据迁移
+
 ## [1.0.8] - 2026-10-04
 
 ### Added
