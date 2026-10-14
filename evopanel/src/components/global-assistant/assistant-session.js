@@ -18,6 +18,7 @@ import {
   timelineWithOpenAgUiAssistantText,
   timelineWithOpenAgUiReasoning,
 } from '../../react/lib/agui-turn-reducer.js'
+import { formatTurnDurationStr } from '../../react/lib/turn-timing.js'
 import { normalizeAssistantSegmentTimelineOrder } from '../../lib/chat-normalize.js'
 
 const LS_SESSION = 'evopanel_xiaomi_assistant_session_key'
@@ -420,6 +421,10 @@ function appendXiaomiAssistantPiece(piece, runId) {
 }
 
 function finishXiaomiAssistantRun(runId, finalText) {
+  // 收尾先落「已工作 X」时长（DisplayRow.durationStr 是 MessageRow 完成态计时来源）
+  const durStartMs = _runStartedAtMs
+  const durSec = durStartMs ? Math.max(0, Math.round((Date.now() - durStartMs) / 1000)) : 0
+  const turnDurationStr = durSec >= 1 ? formatTurnDurationStr(durSec) : ''
   const messages = [...(getState().messages || [])]
   let last = messages[messages.length - 1]
   const incoming = String(finalText || '').trim()
@@ -433,6 +438,7 @@ function finishXiaomiAssistantRun(runId, finalText) {
     }
     last.pending = false
     last.streaming = false
+    if (turnDurationStr) last.durationStr = turnDurationStr
     syncXiaomiVoiceSpeech(last.text || '', { final: true })
   } else if (incoming) {
     messages.push({
@@ -441,6 +447,7 @@ function finishXiaomiAssistantRun(runId, finalText) {
       text: incoming,
       kind: 'text',
       runId,
+      ...(turnDurationStr ? { durationStr: turnDurationStr } : {}),
     })
     syncXiaomiVoiceSpeech(incoming, { final: true })
   } else {

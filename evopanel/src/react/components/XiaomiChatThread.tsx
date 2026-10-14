@@ -21,6 +21,8 @@ type XiaomiUiMessage = {
   reasoningSegments?: string[]
   systemActivity?: string | null
   runId?: string
+  /** 本轮耗时（finishXiaomiAssistantRun 收尾写入；「已工作 X」折叠头用） */
+  durationStr?: string
   aguiTurn?: DisplayRow['aguiTurn']
 }
 
@@ -82,6 +84,7 @@ function toDisplayRow(m: XiaomiUiMessage): DisplayRow | null {
     systemActivity: m.systemActivity ?? null,
     runId: m.runId ? String(m.runId) : undefined,
     messageId: String(m.id || ''),
+    durationStr: m.durationStr ? String(m.durationStr) : undefined,
     aguiTurn: m.aguiTurn ?? null,
   }
 }
@@ -147,8 +150,18 @@ export function XiaomiChatThread({ sessionKey = '' }: { sessionKey?: string }) {
   const bottomRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
-    const unsub = subscribe(() => setTick((n) => n + 1))
+    // rAF 合帧：AG-UI delta 可能每秒数十个，逐 patch 重渲会让 MarkdownHtml
+    // 全量重解析挤占主线程（CSS 转圈动画卡顿的来源）。对齐主对话的帧级提交节奏。
+    let frame = 0
+    const unsub = subscribe(() => {
+      if (frame) return
+      frame = requestAnimationFrame(() => {
+        frame = 0
+        setTick((n) => n + 1)
+      })
+    })
     return () => {
+      if (frame) cancelAnimationFrame(frame)
       unsub()
     }
   }, [])
