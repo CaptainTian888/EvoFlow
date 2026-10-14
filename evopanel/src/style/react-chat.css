@@ -5834,6 +5834,8 @@ html.evopanel-tauri .react-chat-main-col .msg-tool-markdown-content code {
   position: relative;
   flex: 1;
   overflow-y: auto;
+  /* 滚到边界时不链式滚动到父级，避免边界处滚动不丝滑 */
+  overscroll-behavior: contain;
   /* 禁用 scroll anchoring：流式时思考/Exploring 折叠会骤降高度，浏览器若锚定折叠块会把视口停在折叠上方，
      并触发 scroll 监听误判「用户上滑」从而关掉贴底跟随。贴底与上拉历史均由 MessageVirtualList 手动管理。 */
   overflow-anchor: none;
@@ -5901,20 +5903,10 @@ html.evopanel-tauri .react-chat-main-col .msg-tool-markdown-content code {
 .react-vlist-inner--flat .react-vlist-item {
   position: static;
   transform: none;
-  /* ★ 性能：flat 模式视口外行跳过 layout/paint/render（大消息节点数万时收益显著）；
-   * 仅限 flat（虚拟模式行需真实布局供 measureElement 测高，不可跳渲染） */
-  content-visibility: auto;
-  contain-intrinsic-size: auto 160px;
-}
-
-/*
- * 流式贴底时 scrollHeight/scrollTop 每 tick 变；最大化全屏视口更高，中间行易被
- * content-visibility 反复标成 off-screen → 用 160px 占位再揭开 → 对话面板中间持续闪白。
- * 流式期间强制可见，结束后恢复 auto。
- */
-.react-vlist-scroller--streaming .react-vlist-inner--flat .react-vlist-item {
-  content-visibility: visible;
-  contain-intrinsic-size: none;
+  /* ★ 不使用 content-visibility: auto：flat 模式 ≤15 行，视口外跳过渲染收益有限，
+   *   但它会在行滚入/滚出视口时切换 占位高度↔真实高度 → scrollHeight 反复跳变 →
+   *   滚动条 thumb 跳来跳去（尤其上滑时旧行首次滚入，占位估计偏差最大）。
+   *   需要跳过视口外行渲染的场景由虚拟列表（>15 行）覆盖，无需 content-visibility。 */
 }
 
 /* 虚拟列表行容器（文档流：用户/AI 同列左齐，见下方 --user 覆盖） */

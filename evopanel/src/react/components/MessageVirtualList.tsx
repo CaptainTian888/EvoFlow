@@ -315,8 +315,8 @@ const VirtualHistoryBody = memo(function VirtualHistoryBody(
       }
       return 100
     },
-    // 6->3：降低滚动窗口外常驻行数（配合 markdown LRU 缓存，重挂成本已可控）
-    overscan: 3,
+    // 5->8：快速滚动时给测高/渲染更多缓冲，减少 totalSize 跳变频率 → 缓解 thumb 跳动
+    overscan: 8,
     getItemKey: (index) => getRowKey(index),
   })
 
@@ -1836,6 +1836,30 @@ export const MessageVirtualList = memo(function MessageVirtualList({
     const el = parentRef.current
     if (!el || !hasContent || !viewReady) return
 
+    // ★ 滚动性能：nav active index 计算含 querySelectorAll + getBoundingClientRect 遍历
+    //   （O(visibleRows) 同步布局查询），每次 scroll 都跑会强制 reflow 卡住滚动。
+    //   改为 rAF 批处理（一帧只算一次）+ scrollTop 阈值节流（小幅滚动不重算）。
+    let navActiveRafId = 0
+    let navActiveLastScrollTop = -1
+    const NAV_ACTIVE_RECOMPUTE_THRESHOLD = 48
+    const scheduleNavActiveUpdate = (scrollTop: number) => {
+      const navTurns = turnNavTurnsRef.current
+      if (navTurns.length < 2) return
+      if (navActiveRafId) return
+      if (Math.abs(scrollTop - navActiveLastScrollTop) < NAV_ACTIVE_RECOMPUTE_THRESHOLD) return
+      navActiveRafId = requestAnimationFrame(() => {
+        navActiveRafId = 0
+        navActiveLastScrollTop = el.scrollTop
+        const anchor = findAnchorHistoryIndexInViewport(contentRef.current, el)
+        let navActive = 0
+        for (let i = 0; i < navTurns.length; i += 1) {
+          if (navTurns[i].rowIndex <= anchor.index) navActive = i
+          else break
+        }
+        setActiveNavIndex((prev) => (prev === navActive ? prev : navActive))
+      })
+    }
+
     const onScroll = () => {
       const st = el.scrollTop
       const sh = el.scrollHeight
@@ -1849,17 +1873,8 @@ export const MessageVirtualList = memo(function MessageVirtualList({
       })
       setShowScrollTopBtn((prev) => (prev === showTop ? prev : showTop))
       setShowScrollBottomBtn((prev) => (prev === showBottom ? prev : showBottom))
-      // ZCode 对齐：当前回合刻度 = 视口顶可见行所归属的用户问题
-      const navTurns = turnNavTurnsRef.current
-      if (navTurns.length >= 2) {
-        const anchor = findAnchorHistoryIndexInViewport(contentRef.current, el)
-        let navActive = 0
-        for (let i = 0; i < navTurns.length; i += 1) {
-          if (navTurns[i].rowIndex <= anchor.index) navActive = i
-          else break
-        }
-        setActiveNavIndex((prev) => (prev === navActive ? prev : navActive))
-      }
+      // ZCode 对齐：当前回合刻度 = 视口顶可见行所归属的用户问题（rAF 批处理 + 阈值节流）
+      scheduleNavActiveUpdate(st)
       const inPrefetchZone = shouldPrefetchOlderHistory(el)
       if (!inPrefetchZone) {
         wasInOlderPrefetchZoneRef.current = false
@@ -1973,6 +1988,7 @@ export const MessageVirtualList = memo(function MessageVirtualList({
     return () => {
       el.removeEventListener('scroll', onScroll)
       el.removeEventListener('wheel', onWheel)
+      if (navActiveRafId) cancelAnimationFrame(navActiveRafId)
     }
   }, [sessionKey, hasContent, viewReady, markUserScrollAway])
 
@@ -2039,6 +2055,8 @@ export const MessageVirtualList = memo(function MessageVirtualList({
         return
       }
       if (!autoFollowRef.current) return
+      // ★ 用户手势中不抢 scrollTop（RO 与滚轮/触摸竞速会导致抖动）
+      if (Date.now() - lastUserScrollAtRef.current < 160) return
       syncScrollToBottom()
     })
     ro.observe(content)
