@@ -173,7 +173,8 @@ async def verify_channel_binding(agent_code: str, channel: ChannelType) -> dict[
     
     try:
         if channel == "feishu":
-            from app.channels.service import get_channel_service
+            from evoflow.runtime.ports import get_channel_service
+
             service = get_channel_service()
             if service is None:
                 raise HTTPException(status_code=503, detail="Feishu service not available")
