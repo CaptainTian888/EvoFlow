@@ -173,6 +173,14 @@ EvoFlow 桌面端的左侧边栏是功能总入口。从上到下依次是：
 **Q: 如何备份 EvoFlow 数据？**
 EvoFlow 数据存储在 `~/.evoflow/` 目录下。备份该目录即可保留所有任务配置和本地设置。
 
+**Q: `evoflow` CLI 命令或 venv python 启动极慢甚至卡死？**
+先跑 `evoflow doctor` 自检，重点看两处：
+
+1. **python 残留进程**——历史崩溃/被杀的 python 进程堆积会让 venv python 启动极慢甚至挂起（Windows 任务管理器结束不需要的 `python.exe` 后重试）；
+2. **SQLite sidecar 锁**——`-wal`/`-shm` 被残留进程占用时，DB 操作会失败并给出提示。
+
+CLI 长时间无响应时的替代通道是 gateway HTTP API（地址见 profile 目录下 `backend-runtime.json` 的 `baseUrl`）。AI 侧建议优先走 gateway API 而不是反复重试 CLI。
+
 ---
 
 ## 相关阅读

@@ -264,7 +264,19 @@
 ```
 
 - `link: true`：安装时**不复制**目录，只记录路径。适合 monorepo 场景。
-- `link: false` 或不写：安装时会把整个目录复制到 `~/.evoflow/ui-extensions/<id>/`。
+- `link: false` 或不写：安装时会把整个目录复制到 `<EvoFlow 配置目录>/ui-extensions/<id>/`。
+
+### 安装目录到底在哪
+
+扩展根目录跟随 EvoFlow 配置目录（与技能/数据库同一套隔离规则）：
+
+| 环境 | 注册表与安装目录 |
+|------|----------------|
+| 正式版面板 | `~/.evoflow/ui-extensions/`（注册表 `~/.evoflow/ui-extensions/registry.json`） |
+| debug 构建 / 开发隔离 | `~/.evoflow-dev/ui-extensions/`（注册表 `~/.evoflow-dev/ui-extensions/registry.json`） |
+| 设了 `EVOFLOW_CONFIG_DIR` | `<EVOFLOW_CONFIG_DIR>/ui-extensions/` |
+
+「文档写 `~/.evoflow` 但实测在 `~/.evoflow-dev`」就是因为跑的是 debug 构建。设置页扩展卡片上的「目录」按钮永远打开当前真实目录。
 
 ### 安装方式
 
@@ -433,7 +445,7 @@ iframe 加载后，宿主需要知道你的页面已就绪才能管理 Bridge �
 
 ### origin_allowlist（安全限制）
 
-`bridge.origin_allowlist` 限制了哪些 origin 的页面可以通过 Bridge 通信。不在白名单里的 origin 发来的 `postMessage` 会被宿主演略。
+`bridge.origin_allowlist` 限制了哪些 origin 的页面可以通过 Bridge 通信。不在白名单里的 origin 发来的 `postMessage` 会被宿主忽略。
 
 示例：
 
@@ -504,7 +516,37 @@ iframe 加载后，宿主需要知道你的页面已就绪才能管理 Bridge �
 
 ### Q: 安装后目录被复制到哪了？
 
-默认复制到 `~/.evoflow/ui-extensions/<id>/`。点设置页扩展卡片上的「目录」按钮可以打开文件夹查看。
+复制到当前 EvoFlow 配置目录的 `ui-extensions/<id>/`（正式版 `~/.evoflow/ui-extensions/`，debug/开发隔离 `~/.evoflow-dev/ui-extensions/`，见上文「安装目录到底在哪」）。点设置页扩展卡片上的「目录」按钮可以打开文件夹查看。
+
+### Q: AI / 脚本怎么自动安装扩展？
+
+面板 UI 之外还有一条 **Gateway API 通道**，AI 可以全自动接入（注册表与面板共享，写入后面板列表实时可见）：
+
+```bash
+# 1) 注册本地目录扩展（folder-link：不复制，直接登记路径，适合 monorepo）
+curl -X POST http://127.0.0.1:<port>/api/ui-extensions \
+  -H "Content-Type: application/json" \
+  -d '{"path": "D:/dev/my-project"}'
+
+# 2) 复制安装（默认，等价于面板「选择本地文件夹」且 manifest 无 service.link）
+curl -X POST http://127.0.0.1:<port>/api/ui-extensions \
+  -H "Content-Type: application/json" \
+  -d '{"path": "D:/dist/my-extension", "link": false}'
+
+# 3) 查看已注册扩展与注册表路径
+curl http://127.0.0.1:<port>/api/ui-extensions
+
+# 4) 启用 / 禁用 / 卸载
+curl -X PUT http://127.0.0.1:<port>/api/ui-extensions/my-ops/enabled \
+  -H "Content-Type: application/json" -d '{"enabled": false}'
+curl -X DELETE http://127.0.0.1:<port>/api/ui-extensions/my-ops
+```
+
+说明：
+
+- `POST` 也可直接传 `{"manifest": {...}, "install_path": "..."}` 登记远程入口（等价面板「添加远程入口」）。
+- 写操作需要组织管理员权限；`id` 必须是小写 kebab-case。
+- gateway 的端口见 profile 目录下的 `backend-runtime.json`（`baseUrl` 字段）。
 
 ### Q: 如何卸载？
 

@@ -1226,6 +1226,8 @@ fn ensure_backend_sidecar_inner(app: &tauri::AppHandle) -> Result<(), String> {
     })
         .env("EVOFLOW_PROFILE", super::current_profile_id())
         .env("EVOFLOW_HOME", &work_dir)
+        // gateway 需要同一个共享根来读写 ui-extensions/registry.json（见 mod.rs evoflow_dir）。
+        .env("EVOFLOW_CONFIG_DIR", super::evoflow_dir().to_string_lossy().to_string())
         .env("EVOFLOW_LOGS_DIR", logs_dir())
         .env("EVOFLOW_CONFIG_PATH", &config_yaml)
         .env("EVOFLOW_APP_SERVER_STDIO", "1")

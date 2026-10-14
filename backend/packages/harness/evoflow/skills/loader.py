@@ -3,6 +3,7 @@ import os
 import sys
 import threading
 from pathlib import Path
+from typing import Any
 
 from .parser import parse_skill_file
 from .types import Skill
@@ -156,6 +157,112 @@ def get_skills_root_path() -> Path:
     # 7) Last resort: same parent walk as (4) even if directory missing (caller may create / error).
     backend_dir = Path(__file__).resolve().parent.parent.parent.parent.parent
     return (backend_dir.parent / "skills").resolve()
+
+
+def _count_custom_skills(skills_root: Path) -> int:
+    """Count ``custom/<dir>/SKILL.md`` entries under one skills root (best-effort)."""
+    custom = skills_root / "custom"
+    if not custom.is_dir():
+        return 0
+    try:
+        return sum(1 for d in custom.iterdir() if d.is_dir() and (d / "SKILL.md").is_file())
+    except OSError:
+        return 0
+
+
+def _candidate_profile_roots() -> list[Path]:
+    """``~/.evoflow{,-dev}/profiles/<id>/skills`` for every existing profile."""
+    home = Path.home()
+    out: list[Path] = []
+    for base in (home / ".evoflow", home / ".evoflow-dev"):
+        profiles = base / "profiles"
+        if not profiles.is_dir():
+            continue
+        try:
+            for profile in sorted(profiles.iterdir()):
+                if profile.is_dir():
+                    out.append(profile / "skills")
+        except OSError:
+            continue
+    return out
+
+
+def describe_skills_root_context() -> dict[str, Any]:
+    """Describe which skills root is active and which other candidate roots exist.
+
+    背景：面板拉起的 gateway 经 ``EVOFLOW_HOME`` → ``bootstrap_user_skills_path``
+    把 ``EVOFLOW_SKILLS_PATH`` 指向 ``~/.evoflow[-dev]/profiles/<id>/skills``，而
+    裸跑 CLI 在无环境变量时回退 ``~/.evoflow/skills``。两个根不同时，「把技能复制
+    到另一个 skills/custom」表现为装了但不生效。此处枚举机器上真实存在的候选根，
+    供 ``evoflow doctor`` 与 ``skills list`` 直接给出可行动的告警。
+    """
+    active = get_skills_root_path()
+    env_skills = os.getenv("EVOFLOW_SKILLS_PATH", "").strip()
+    evoflow_home = os.getenv("EVOFLOW_HOME", "").strip()
+    home = Path.home()
+
+    try:
+        active_resolved = active.resolve()
+    except OSError:
+        active_resolved = active
+
+    candidates: dict[str, dict[str, Any]] = {}
+
+    def _add(path: Path, source: str) -> None:
+        try:
+            resolved = path.expanduser().resolve()
+        except OSError:
+            resolved = path
+        key = str(resolved)
+        if key in candidates:
+            candidates[key]["sources"].append(source)
+            return
+        candidates[key] = {
+            "path": key,
+            "sources": [source],
+            "exists": resolved.is_dir(),
+            "custom_skills": _count_custom_skills(resolved),
+            "active": resolved == active_resolved,
+        }
+
+    if env_skills:
+        _add(Path(env_skills), "EVOFLOW_SKILLS_PATH")
+    if evoflow_home:
+        _add(Path(evoflow_home) / "skills", "EVOFLOW_HOME/skills")
+    _add(home / ".evoflow" / "skills", "默认 ~/.evoflow/skills（CLI 裸跑回退）")
+    _add(home / ".evoflow-dev" / "skills", "~/.evoflow-dev/skills（debug 构建 / 开发隔离）")
+    for profile_root in _candidate_profile_roots():
+        _add(profile_root, "profiles/<id>/skills（面板 profile）")
+    src_skills = _skills_root_from_source_tree()
+    if src_skills is not None:
+        _add(src_skills, "仓库 checkout skills/")
+
+    if env_skills:
+        source = "EVOFLOW_SKILLS_PATH"
+    elif evoflow_home:
+        source = "EVOFLOW_HOME"
+    else:
+        source = (
+            "默认回退 ~/.evoflow/skills（未设置 EVOFLOW_SKILLS_PATH / EVOFLOW_HOME；"
+            "面板拉起的 gateway 走 profiles/<id>/skills，两者可能不是同一目录）"
+        )
+
+    warnings: list[str] = []
+    for cand in candidates.values():
+        if cand["active"] or not cand["exists"] or not cand["custom_skills"]:
+            continue
+        warnings.append(
+            f"发现非生效技能根 {cand['path']}（{'/'.join(cand['sources'])}）含 "
+            f"{cand['custom_skills']} 个 custom 技能；当前生效根是 {active_resolved}，"
+            "装在非生效根的技能不会被加载"
+        )
+
+    return {
+        "active": str(active_resolved),
+        "active_source": source,
+        "candidates": list(candidates.values()),
+        "warnings": warnings,
+    }
 
 
 def _dedupe_skills_by_name(skills: list[Skill]) -> list[Skill]:

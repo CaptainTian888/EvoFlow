@@ -37,6 +37,7 @@ _COMMAND_MODULES: dict[str, str] = {
     "workspace": "workspace",
     "eval": "eval_cmd",
     "logs": "logs",
+    "doctor": "doctor",
 }
 
 

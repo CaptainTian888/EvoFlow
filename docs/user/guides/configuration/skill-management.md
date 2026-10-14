@@ -81,6 +81,27 @@ skills/custom/my-skill/
 
 ---
 
+## 技能目录：装在哪才生效
+
+技能只从**当前进程解析出的技能根目录**加载，`skills/custom/` 是自定义技能的唯一落点。根目录按以下优先级解析：
+
+1. `EVOFLOW_SKILLS_PATH`（面板拉起 gateway 时会自动指向 profile 目录）
+2. `EVOFLOW_HOME/skills`（面板按 profile 隔离时，`EVOFLOW_HOME` = `~/.evoflow[-dev]/profiles/<id>/`）
+3. 默认回退 `~/.evoflow/skills`（裸跑 CLI、无上述环境变量时）
+4. 源码 checkout 的 `<repo>/skills`（仅开发态兜底）
+
+> **常见误区**：手动把技能复制到 `~/.evoflow/skills/custom/`，但面板拉起的 gateway 实际读 `~/.evoflow/profiles/default/skills/custom/`（debug 构建则是 `~/.evoflow-dev/...`）——表现为「看起来装了、技能列表里却没有」。
+>
+> 因此**手动安装技能时，请装到面板技能页提示的目录，或用上面三种页面方式安装**；不要凭直觉挑一个 `skills/custom`。
+
+**自检方法**（机器上存在多个技能根时会给告警）：
+
+- CLI：`evoflow doctor` —— 列出全部候选根、生效根与每根的 custom 技能数
+- CLI：`evoflow skills list` —— 返回体含 `skills_root`（生效根）与 `warnings`（非生效根错位告警）
+- API：`GET /api/skills` —— 响应含同样的 `skills_root` / `warnings` 字段
+
+---
+
 ## 给 Agent 配置技能权限
 
 安装≠可用——还要在角色级别勾选：
@@ -143,6 +164,9 @@ skills/custom/my-skill/
 
 **Q：装好的技能在对话里不出现？**
 依次检查：① 「智能体 → 技能」该技能是否已启用；② 「智能体」当前角色是否勾选了该技能；③ 触发关键词是否与 `SKILL.md` 描述匹配。
+
+**Q：手动复制技能目录后，列表里看不到？**
+大概率装到了非生效根（如 `~/.evoflow/skills/custom/`，而 gateway 读 `profiles/<id>/skills/custom/`）。运行 `evoflow doctor` 看候选根告警，把技能移动到生效根，见上文「技能目录：装在哪才生效」。
 
 **Q：能不能跨实例同步技能？**
 公共技能（`skills/public/`）随仓库分发；自定义技能（`skills/custom/`）需手动同步该目录或重新导入。

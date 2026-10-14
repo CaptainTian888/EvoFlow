@@ -49,6 +49,8 @@ allowed-tools: bash, read_file, write_file
 mkdir -p skills/custom/my-skill
 ```
 
+> **注意**：这里的 `skills/custom/` 指**当前生效的技能根目录**。面板运行时 gateway 读的是 `~/.evoflow[-dev]/profiles/<id>/skills/custom/`，手动复制到 `~/.evoflow/skills/custom/` 可能不生效。装错了运行 `evoflow doctor` 可看到候选根告警，详见 [[guides/configuration/skill-management|技能管理]] 的「技能目录：装在哪才生效」。
+
 ### 3. 编写 SKILL.md
 
 在 `skills/custom/my-skill/` 下创建 `SKILL.md`，写入你的技能定义。
