@@ -28,9 +28,16 @@ let _unsubEvent = null
 let _activeRunId = ''
 /** @type {import('../../react/lib/agui-turn-reducer.js').AgUiTurnState | null} */
 let _aguiTurn = null
+/** 当前轮开始时间（ms）；0 = 无运行中的轮。供小V面板流式时长/活动标签展示 */
+let _runStartedAtMs = 0
 /** 语音唤醒发起的一轮：流式正文同步到 TTS */
 let _voiceReplyPending = false
 let _voiceSpeechSyncedPlain = ''
+
+/** 当前轮开始时间（ms）；0 表示没有运行中的轮 */
+export function getXiaomiRunStartedAtMs() {
+  return _runStartedAtMs
+}
 
 /**
  * @param {{ voiceInitiated?: boolean }} [opts]
@@ -267,6 +274,8 @@ export async function ensureXiaomiSession() {
 
 function markXiaomiRunStarted(runId) {
   _activeRunId = runId
+  // 发送占位路径已先记录起点；这里只兜底非 send 发起的 run
+  if (!_runStartedAtMs) _runStartedAtMs = Date.now()
   _aguiTurn = emptyAgUiTurnState(String(runId || ''))
   const messages = [...(getState().messages || [])]
   let last = messages[messages.length - 1]
@@ -439,6 +448,7 @@ function finishXiaomiAssistantRun(runId, finalText) {
   }
   _activeRunId = ''
   _aguiTurn = null
+  _runStartedAtMs = 0
   patchState({ messages: [...messages], streaming: false })
   // 写操作结束后通知左侧模块页实时刷新（员工/工作流/知识库/事项等）
   try {
@@ -475,6 +485,7 @@ function failXiaomiAssistantRun(errText) {
   })
   _activeRunId = ''
   _aguiTurn = null
+  _runStartedAtMs = 0
   patchState({ messages, streaming: false })
 }
 
@@ -601,6 +612,7 @@ export function bindXiaomiStreamListener() {
       }
       _activeRunId = ''
       _aguiTurn = null
+      _runStartedAtMs = 0
       patchState({ messages: [...messages], streaming: false })
     }
   })
@@ -782,6 +794,7 @@ export async function sendXiaomiChat(text, ctx = {}) {
   }
 
   const userMsgId = `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  _runStartedAtMs = Date.now()
   const messages = [
     ...(getState().messages || []),
     {
@@ -818,6 +831,7 @@ export async function sendXiaomiChat(text, ctx = {}) {
     })
   } catch (e) {
     clearXiaomiVoiceReply()
+    _runStartedAtMs = 0
     const err = String(e?.message || e || '发送失败')
     const cur = [...(getState().messages || [])]
     const last = cur[cur.length - 1]
@@ -845,6 +859,7 @@ export async function stopXiaomiChat() {
     }
   }
   _activeRunId = ''
+  _runStartedAtMs = 0
   patchState({ streaming: false })
 }
 
@@ -870,6 +885,7 @@ export async function startXiaomiNewRound() {
     .catch(() => {})
   _activeRunId = ''
   _aguiTurn = null
+  _runStartedAtMs = 0
   clearXiaomiVoiceReply()
   patchState(
     {
@@ -953,6 +969,7 @@ export async function switchXiaomiSession(sessionKey) {
   }
   _activeRunId = ''
   _aguiTurn = null
+  _runStartedAtMs = 0
   clearXiaomiVoiceReply()
   writeStoredSessionKey(key)
   patchState(
@@ -997,6 +1014,7 @@ export async function startXiaomiNewChat() {
   }
   _activeRunId = ''
   _aguiTurn = null
+  _runStartedAtMs = 0
   clearXiaomiVoiceReply()
   const row = await api.chatSessionsCreate(XIAOMI_AGENT, {
     title: XIAOMI_SESSION_TITLE,

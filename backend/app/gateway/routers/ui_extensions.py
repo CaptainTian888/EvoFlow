@@ -1,8 +1,8 @@
 """UI 扩展注册表 Gateway API — 让 AI / 脚本能像面板一样注册扩展。
 
-背景：扩展注册表原本只有两条通道——EvoPanel 面板 UI（Tauri 命令）和手改
-``registry.json``。注册表文件由面板管理（``<evoflow_dir>/ui-extensions/registry.json``），
-gateway 侧以同一格式读写即可互通；面板每次展示都会重新读文件，外部写入即时生效。
+注册表文件由面板与 gateway 共享（``<evoflow_dir>/ui-extensions/registry.json``），
+读写逻辑抽在 :mod:`evoflow.admin.ui_extensions_registry`（资源包安装器/导出器同源复用）；
+面板每次展示都会重读文件，外部写入即时生效。
 
 注册表目录解析优先级（与面板 ``evoflow_dir()`` 对齐）：
 1. ``EVOFLOW_UI_EXTENSIONS_DIR``（显式覆盖）
@@ -13,24 +13,36 @@ gateway 侧以同一格式读写即可互通；面板每次展示都会重新读
 
 from __future__ import annotations
 
-import json
 import logging
-import os
-import shutil
-import threading
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from evoflow.admin.ui_extensions_registry import (
+    ExtensionIOError,
+    ExtensionNotFoundError,
+    ExtensionValidationError,
+    read_manifest_from_dir,
+    read_registry,
+    register_directory,
+    registry_path,
+)
+from evoflow.admin.ui_extensions_registry import (
+    remove_row as registry_remove_row,
+)
+from evoflow.admin.ui_extensions_registry import (
+    set_enabled as registry_set_enabled,
+)
+from evoflow.admin.ui_extensions_registry import (
+    upsert_row as registry_upsert_row,
+)
 from evoflow.authz.http_guard import require_org_admin
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/ui-extensions", tags=["ui-extensions"])
-
-_registry_lock = threading.Lock()
 
 
 class ExtensionRegisterRequest(BaseModel):
@@ -47,111 +59,12 @@ class ExtensionEnabledRequest(BaseModel):
     enabled: bool = Field(..., description="启用/禁用扩展")
 
 
-def _home() -> Path:
-    return Path.home()
-
-
-def _config_dir() -> Path:
-    """与面板 ``evoflow_dir()`` 相同的解析顺序。"""
-    explicit = (os.getenv("EVOFLOW_UI_EXTENSIONS_DIR") or os.getenv("EVOFLOW_CONFIG_DIR") or "").strip()
-    if explicit:
-        return Path(explicit).expanduser()
-    home_env = os.getenv("EVOFLOW_HOME", "").strip()
-    if home_env:
-        profile = Path(home_env).expanduser().resolve()
-        # EVOFLOW_HOME = <evoflow_dir>/profiles/<id> 时上溯两级即共享根。
-        if profile.parent.name == "profiles":
-            root = profile.parent.parent
-            if root.name in (".evoflow", ".evoflow-dev") and root.parent == _home():
-                return root
-    return _home() / ".evoflow"
-
-
-def _ui_ext_root() -> Path:
-    return _config_dir() / "ui-extensions"
-
-
-def _registry_path() -> Path:
-    return _ui_ext_root() / "registry.json"
-
-
-def _read_registry() -> list[dict[str, Any]]:
-    path = _registry_path()
-    if not path.is_file():
-        return []
-    try:
-        # utf-8-sig：兼容 PowerShell 5.1 `Set-Content -Encoding UTF8` 写出的 BOM。
-        value = json.loads(path.read_text(encoding="utf-8-sig"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise HTTPException(status_code=500, detail=f"读取扩展注册表失败: {exc}") from exc
-    if isinstance(value, dict):
-        return [value]  # 历史写法：单对象当注册表（PS 管道拆包单元素数组）
-    if not isinstance(value, list):
-        return []
-    return [row for row in value if isinstance(row, dict)]
-
-
-def _write_registry(rows: list[dict[str, Any]]) -> None:
-    root = _ui_ext_root()
-    try:
-        root.mkdir(parents=True, exist_ok=True)
-        path = _registry_path()
-        text = json.dumps(rows, ensure_ascii=False, indent=2)
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(text, encoding="utf-8")
-        os.replace(tmp, path)
-    except OSError as exc:
-        raise HTTPException(status_code=500, detail=f"写入扩展注册表失败: {exc}") from exc
-
-
-def _validate_extension_id(manifest: dict[str, Any]) -> str:
-    raw = str(manifest.get("id") or "").strip()
-    if not raw:
-        raise HTTPException(status_code=400, detail="manifest.id 缺失")
-    if len(raw) > 64 or raw[0] not in "abcdefghijklmnopqrstuvwxyz" or not all(
-        c.isascii() and (c.islower() or c.isdigit() or c == "-") for c in raw[1:]
-    ):
-        raise HTTPException(status_code=400, detail=f"manifest.id 非法: {raw!r}（须为小写 kebab-case）")
-    return raw
-
-
-def _upsert_row(manifest: dict[str, Any], install_path: str, source: str) -> dict[str, Any]:
-    ext_id = _validate_extension_id(manifest)
-    with _registry_lock:
-        rows = _read_registry()
-        rows = [row for row in rows if row.get("id") != ext_id]
-        rows.append(
-            {
-                "id": ext_id,
-                "enabled": True,
-                "source": source,
-                "install_path": install_path,
-                "installed_at": _utc_now_rfc3339(),
-                "manifest": manifest,
-            }
-        )
-        _write_registry(rows)
-    return {"id": ext_id, "install_path": install_path, "source": source}
-
-
-def _utc_now_rfc3339() -> str:
-    from datetime import UTC, datetime
-
-    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
-
-
-def _read_manifest_from_dir(src: Path) -> dict[str, Any]:
-    manifest_file = src / "evoflow.extension.json"
-    if not manifest_file.is_file():
-        raise HTTPException(status_code=400, detail=f"目录内未找到 evoflow.extension.json: {src}")
-    try:
-        # utf-8-sig：manifest 也可能由 PowerShell 工具链写出（带 BOM）。
-        manifest = json.loads(manifest_file.read_text(encoding="utf-8-sig"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise HTTPException(status_code=400, detail=f"Manifest JSON 无效: {exc}") from exc
-    if not isinstance(manifest, dict):
-        raise HTTPException(status_code=400, detail="Manifest JSON 须为对象")
-    return manifest
+def _http_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, ExtensionValidationError):
+        return HTTPException(status_code=400, detail=str(exc))
+    if isinstance(exc, ExtensionNotFoundError):
+        return HTTPException(status_code=404, detail=str(exc))
+    return HTTPException(status_code=500, detail=str(exc))
 
 
 @router.get(
@@ -160,7 +73,10 @@ def _read_manifest_from_dir(src: Path) -> dict[str, Any]:
     description="列出已注册的 UI 扩展（读面板共享的 registry.json）。",
 )
 async def list_extensions() -> dict[str, Any]:
-    return {"extensions": _read_registry(), "registry_path": str(_registry_path())}
+    try:
+        return {"extensions": read_registry(), "registry_path": str(registry_path())}
+    except ExtensionIOError as exc:
+        raise _http_error(exc) from exc
 
 
 @router.post(
@@ -175,33 +91,25 @@ async def list_extensions() -> dict[str, Any]:
 )
 async def register_extension(http_request: Request, req: ExtensionRegisterRequest) -> dict[str, Any]:
     require_org_admin(http_request)
-    if req.manifest is not None:
-        manifest = req.manifest
-        install_path = str(req.install_path or "").strip()
-        if not install_path:
-            raise HTTPException(status_code=400, detail="直接登记 manifest 时必须提供 install_path")
-        return _upsert_row(manifest, install_path, req.source or "api")
-
-    raw_path = str(req.path or "").strip()
-    if not raw_path:
-        raise HTTPException(status_code=400, detail="必须提供 path（扩展目录）或 manifest")
-    src = Path(raw_path).expanduser()
-    if not src.is_dir():
-        raise HTTPException(status_code=400, detail=f"扩展目录不存在: {src}")
-    manifest = _read_manifest_from_dir(src)
-    link = req.link if req.link is not None else bool(
-        (manifest.get("service") or {}).get("link", False)
-    )
-    if link:
-        return _upsert_row(manifest, str(src), req.source or "api:folder-link")
-    dest = _ui_ext_root() / _validate_extension_id(manifest)
     try:
-        if dest.exists():
-            shutil.rmtree(dest)
-        shutil.copytree(src, dest)
-    except OSError as exc:
-        raise HTTPException(status_code=500, detail=f"复制扩展目录失败: {exc}") from exc
-    return _upsert_row(manifest, str(dest), req.source or "api:folder")
+        if req.manifest is not None:
+            install_path = str(req.install_path or "").strip()
+            if not install_path:
+                raise ExtensionValidationError("直接登记 manifest 时必须提供 install_path")
+            return registry_upsert_row(req.manifest, install_path, req.source or "api")
+
+        raw_path = str(req.path or "").strip()
+        if not raw_path:
+            raise ExtensionValidationError("必须提供 path（扩展目录）或 manifest")
+        src = Path(raw_path).expanduser()
+        manifest = read_manifest_from_dir(src)  # 提前校验，顺便决定默认 source 标记
+        link = req.link if req.link is not None else bool(
+            (manifest.get("service") or {}).get("link", False)
+        )
+        source = req.source or ("api:folder-link" if link else "api:folder")
+        return register_directory(src, link=link, source=source)
+    except (ExtensionValidationError, ExtensionNotFoundError, ExtensionIOError) as exc:
+        raise _http_error(exc) from exc
 
 
 @router.put(
@@ -211,14 +119,10 @@ async def register_extension(http_request: Request, req: ExtensionRegisterReques
 )
 async def set_enabled(http_request: Request, ext_id: str, req: ExtensionEnabledRequest) -> dict[str, Any]:
     require_org_admin(http_request)
-    with _registry_lock:
-        rows = _read_registry()
-        row = next((r for r in rows if r.get("id") == ext_id), None)
-        if row is None:
-            raise HTTPException(status_code=404, detail=f"扩展不存在: {ext_id}")
-        row["enabled"] = req.enabled
-        _write_registry(rows)
-    return {"id": ext_id, "enabled": req.enabled}
+    try:
+        return registry_set_enabled(ext_id, enabled=req.enabled)
+    except (ExtensionValidationError, ExtensionNotFoundError, ExtensionIOError) as exc:
+        raise _http_error(exc) from exc
 
 
 @router.delete(
@@ -228,20 +132,8 @@ async def set_enabled(http_request: Request, ext_id: str, req: ExtensionEnabledR
 )
 async def uninstall_extension(http_request: Request, ext_id: str) -> dict[str, Any]:
     require_org_admin(http_request)
-    root = _ui_ext_root().resolve()
-    with _registry_lock:
-        rows = _read_registry()
-        row = next((r for r in rows if r.get("id") == ext_id), None)
-        if row is None:
-            raise HTTPException(status_code=404, detail=f"扩展不存在: {ext_id}")
-        rows = [r for r in rows if r.get("id") != ext_id]
-        _write_registry(rows)
-    install_path = str(row.get("install_path") or "")
-    if install_path:
-        try:
-            dest = Path(install_path).resolve()
-            if dest.is_dir() and dest.parent == root:
-                shutil.rmtree(dest, ignore_errors=True)
-        except OSError:
-            logger.debug("ui-extensions: cleanup install_path failed", exc_info=True)
+    try:
+        registry_remove_row(ext_id)
+    except (ExtensionValidationError, ExtensionNotFoundError, ExtensionIOError) as exc:
+        raise _http_error(exc) from exc
     return {"id": ext_id, "uninstalled": True}

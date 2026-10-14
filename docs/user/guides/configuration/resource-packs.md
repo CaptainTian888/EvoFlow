@@ -25,13 +25,94 @@
 
 | | 资源包（本文） | 资产中心 `.evoflow-pack` |
 |--|----------------|---------------------------|
-| **装什么** | 员工、工作流、技能、扩展、编排关系 | 画像 / 记忆 / 专长等 Markdown 资产 |
+| **装什么** | 员工、工作流、技能、扩展、知识库、编排关系 | 画像 / 记忆 / 专长等 Markdown 资产 |
 | **入口** | 设置 → 资源中心（市场 / 已装） | 设置 → 资源中心 → 我的 → 资产，或 `#/assets` 导出 |
 | **用途** | 给别人一整套可跑的场景 | 备份或迁移「关于你/员工」的笔记本 |
 
 两者都可「打包带走」，但 **不是同一种包**。
 
 「我的」是选货打包台：勾选本机资源后在右侧导出；员工/工作流等仍存在各自模块，不另建总表。
+
+---
+
+## 原语参考（primitives）
+
+`evoflow.organization.json` 的 `primitives` 里每个条目**独立安装、独立降级**（某项失败只记 warning，不阻塞其他项）；安装顺序由安装器决定（知识库 → 技能 → Agent → 员工 → 应用 → 扩展）。
+
+### knowledge（知识库）
+
+```json
+{
+  "ref": "reports",
+  "name": "视频拆解报告库",
+  "description": "可选",
+  "import_folder": "./data/reports",
+  "upsert": true,
+  "prune_missing": false,
+  "folder_prefix": ""
+}
+```
+
+- 按 `name` 幂等：已存在同名库则复用，不重复建。
+- `import_folder` 支持包内相对路径（便携，推荐）或绝对路径（仅本机自用）。
+- 文档导入为同步拷贝 + 异步索引，重复导入按内容哈希去重（unchanged 不重索引）。
+
+### skills（技能）
+
+```json
+[{ "path": "./skills/my-skill" }]
+```
+
+`slug` 形态（从技能市场装）暂未支持（Phase 2）。
+
+### agents / 员工 / 应用
+
+- `agents[]`: `{from: "./agents/xxx.yaml"}`（YAML，`system_prompt_file` 支持包内相对路径）
+- `team.employees[]`: `{from: "./employees/xxx.json"}`
+- `pipelines.apps[]`: `{from: "./apps/xxx.json"}`
+
+### extensions（UI 扩展）
+
+```json
+[
+  { "from": "./extensions/my-ext" },
+  { "path": "D:/dev/my-project", "link": true },
+  { "manifest": { "…": "…" }, "install_path": "https://example.com" }
+]
+```
+
+- `from`：包内目录（含 `evoflow.extension.json`）→ 复制安装，**便携**；
+- `path`：本机目录 → 默认 folder-link 只登记路径（**非便携**，适合本机自用 / monorepo）；
+- `manifest` + `install_path`：远程入口直登；
+- 老格式 `{id: "…"}` 仅记录不安装（旧版导出兼容）。
+
+### 占位符：把员工绑到包内知识库
+
+知识库 id 是安装时生成的，员工 JSON 里用 `${KB_REF:ref}` 逻辑引用，安装器会替换成真实 kb id：
+
+```json
+{ "config": { "knowledge_vault_ids": ["${KB_REF:reports}"] } }
+```
+
+其他占位符：`${ORG_WORKSPACE}`（工作区）、`${ORG_ROOT}`（包根）、`${EVOFLOW_HOME}`。导出器会把员工绑定的、且已包含在导出范围内的知识库 id 自动改写成 `${KB_REF:ref}`。
+
+### 组合示例（知识库 + 员工 + 技能 + 扩展）
+
+```json
+{
+  "schema": 1, "kind": "team", "id": "my-scenario", "name": "我的场景包", "version": "1.0.0",
+  "workspace": { "path": "${ORG_ROOT}/workspace", "create_if_missing": true },
+  "primitives": {
+    "knowledge": [{ "ref": "reports", "name": "报告库", "import_folder": "./data/reports" }],
+    "skills": [{ "path": "./skills/my-skill" }],
+    "agents": [{ "from": "./agents/analyst.yaml" }],
+    "extensions": [{ "from": "./extensions/my-ext" }]
+  },
+  "team": { "employees": [{ "from": "./employees/analyst.json" }] }
+}
+```
+
+安装入口：**设置 → 资源中心 → 市场 → 导入本地**（选 zip 或文件夹），或 CLI `evoflow org install`。
 
 ---
 
