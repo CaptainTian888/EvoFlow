@@ -16,6 +16,10 @@ if (Test-Path -LiteralPath $repoBackend) {
     }
 }
 
+# 启动前检测 shim 是否比 Vite 依赖缓存新,是则清 .vite-cache(防 fastdom stub 陈旧报错)。
+. (Join-Path $PSScriptRoot '..\scripts\windows\backend-common.ps1')
+Reset-EvoFlowViteDepCache -EvoPanelDir $PSScriptRoot
+
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) { Write-Host '[ERR] Node.js not found' -ForegroundColor Red; exit 1 }
 if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) { Write-Host '[ERR] Rust not found' -ForegroundColor Red; exit 1 }
 if (-not (Test-Path 'node_modules')) { Write-Host '[*] Installing deps...' -ForegroundColor Yellow; npm install }

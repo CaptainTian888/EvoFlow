@@ -749,3 +749,43 @@ function Stop-EvoFlowEvoPanelWeb {
     }
     Write-Host "    Done. (若 Vite 落在 1422+，请用任务管理器结束 node 或再执行一次带 -ExtraPorts)" -ForegroundColor DarkGray
 }
+
+# Vite 预打包 mermaid 时会把 src/lib/shims/*.mjs 内联进 .vite-cache/deps，但其缓存失效
+# 判定只覆盖 lockfile + vite.config —— 改 shim 不会触发重建，旧预打包产物会以
+# "fastdom_stub_default.extend is not a function" 复现。因此启动前检测：任一 shim 比
+# 上次优化时间戳（deps/_metadata.json 的 mtime）新，就清掉 .vite-cache 让 Vite 重建。
+function Reset-EvoFlowViteDepCache {
+    param(
+        [string] $EvoPanelDir,
+        [switch] $Force,
+        [switch] $Skip
+    )
+    if ($Skip) { return }
+    $viteCache = Join-Path $EvoPanelDir ".vite-cache"
+    if (-not (Test-Path -LiteralPath $viteCache)) { return }
+    $reason = $null
+    if ($Force) {
+        $reason = "-CleanViteCache"
+    } else {
+        $meta = Join-Path $viteCache "deps\_metadata.json"
+        if (-not (Test-Path -LiteralPath $meta)) {
+            $reason = "deps/_metadata.json missing"
+        } else {
+            $cacheStamp = (Get-Item -LiteralPath $meta).LastWriteTime
+            $staleShim = Get-ChildItem -LiteralPath (Join-Path $EvoPanelDir "src\lib\shims") -Filter "*.mjs" -ErrorAction SilentlyContinue |
+                Where-Object { $_.LastWriteTime -gt $cacheStamp } |
+                Select-Object -First 1
+            if ($staleShim) {
+                $reason = "shim '$($staleShim.Name)' is newer than dep cache"
+            }
+        }
+    }
+    if ($reason) {
+        Write-Host "    Clearing Vite dep cache ($reason)" -ForegroundColor Yellow
+        try {
+            Remove-Item -LiteralPath $viteCache -Recurse -Force
+        } catch {
+            Write-Host "    WARN: could not fully clear $viteCache — stop running Vite dev servers, then delete it manually." -ForegroundColor Yellow
+        }
+    }
+}

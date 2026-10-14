@@ -1,10 +1,12 @@
 /**
  * Promise-based fastdom extension used by Mermaid.
  */
+function extend(extension = {}) {
+  return Object.assign(Object.create(fastdomPromised), extension)
+}
+
 const fastdomPromised = {
-  extend(extension = {}) {
-    return Object.assign(Object.create(this), extension)
-  },
+  extend,
   read(fn) {
     return Promise.resolve().then(() => fn?.())
   },
