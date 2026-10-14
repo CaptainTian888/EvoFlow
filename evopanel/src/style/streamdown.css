@@ -223,6 +223,21 @@ body :is(.msg-ai .msg-bubble, .msg-turn-assistant-content, .msg-text, .markdown-
   color: inherit !important;
 }
 
+/* Streamdown 把代码按行拆进 <code> 的直接子 span，靠 Tailwind 的 display:block
+ * 分行；主窗口没有 Tailwind，行 span 回落 inline，整段 JSON/代码会挤成一行只能
+ * 横向滚动。这里补回分行。行内容不含换行符，空行是独立的 "\n" span —— block +
+ * pre 语义下正好各占一行，无需特殊处理。 */
+[data-streamdown='code-block'] pre code > span {
+  display: block !important;
+  white-space: pre !important;
+}
+
+/* 放大弹层里的克隆代码块同样按行 span 结构，一并补分行 */
+.msg-md-code-modal-pre code > span {
+  display: block !important;
+  white-space: pre !important;
+}
+
 /* === 行内代码 === */
 
 [data-streamdown='inline-code'] {
@@ -235,3 +250,399 @@ body :is(.msg-ai .msg-bubble, .msg-turn-assistant-content, .msg-text, .markdown-
   font-size: 12.5px !important;
   font-family: "JetBrains Mono", Consolas, Monaco, monospace !important;
 }
+
+/* === StreamdownRenderer 自渲染外壳（表格 / 代码块的工具栏与放大弹层） ===
+ *
+ * 自渲染组件透传 [data-streamdown="..."] 属性到内层元素；这里只负责外壳布局
+ * （按钮、浮层），内部单元格/代码块观感由前面的接管规则控制。
+ */
+
+.msg-md-table {
+  position: relative;
+  margin: 12px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.msg-md-table-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  align-self: flex-end;
+  padding: 2px;
+  border-radius: 8px;
+  background: var(--bg-secondary, #f4f5f8);
+  border: 1px solid var(--border-primary, #e6e8ec);
+}
+
+.msg-md-table-action {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 24px;
+  padding: 0 8px;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--text-secondary, #4a5160);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+  user-select: none;
+}
+
+.msg-md-table-action:hover {
+  background: var(--bg-hover, #e9ebf0);
+  color: var(--text-primary, #202124);
+}
+
+.msg-md-table-frame {
+  border-radius: 10px;
+  overflow: auto;
+  max-height: 480px;
+  border: 1px solid var(--border-primary, #e6e8ec);
+}
+
+/* === 表格放大 Dialog === */
+
+.msg-md-table-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 17, 24, 0.55);
+  backdrop-filter: blur(2px);
+}
+
+.msg-md-table-modal-panel {
+  display: flex;
+  flex-direction: column;
+  width: min(90vw, 1100px);
+  max-height: 88vh;
+  background: var(--bg-primary, #ffffff);
+  color: var(--text-primary, #202124);
+  border: 1px solid var(--border-primary, #e6e8ec);
+  border-radius: 14px;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+}
+
+.msg-md-table-modal-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-primary, #e6e8ec);
+  background: var(--bg-secondary, #f7f8fa);
+  font-size: 12.5px;
+}
+
+.msg-md-table-modal-toolbar button {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 26px;
+  padding: 0 8px;
+  font-size: 12.5px;
+  color: var(--text-primary, #202124);
+  background: var(--bg-primary, #ffffff);
+  border: 1px solid var(--border-primary, #e6e8ec);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.msg-md-table-modal-toolbar button:hover {
+  background: var(--bg-hover, #eef0f4);
+}
+
+.msg-md-table-modal-zoom {
+  min-width: 44px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.msg-md-table-modal-spacer {
+  flex: 1;
+}
+
+.msg-md-table-modal-canvas {
+  flex: 1;
+  overflow: auto;
+  padding: 18px 22px;
+  background: var(--bg-primary, #ffffff);
+}
+
+.msg-md-table-modal-stage {
+  display: inline-block;
+  min-width: 100%;
+}
+
+.msg-md-table-modal-table {
+  border-collapse: collapse !important;
+  width: max-content !important;
+  table-layout: auto !important;
+}
+
+.msg-md-table-modal-table :is(th, td) {
+  padding: 8px 12px !important;
+  border: 1px solid var(--border-primary, #e6e8ec) !important;
+  font-size: 13px !important;
+  white-space: nowrap !important;
+}
+
+.msg-md-table-modal-table th {
+  background: var(--bg-tertiary, #ebeef2) !important;
+  font-weight: 600 !important;
+}
+
+.msg-md-table-modal-empty {
+  padding: 24px;
+  text-align: center;
+  color: var(--text-secondary, #6b7280);
+}
+
+/* === 代码块外壳 + 放大 === */
+
+.msg-md-code {
+  position: relative;
+  margin: 14px 0;
+}
+
+.msg-md-code-actions {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 5;
+  display: flex;
+  gap: 4px;
+  padding: 2px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.18);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.msg-md-code:hover .msg-md-code-actions,
+.msg-md-code:focus-within .msg-md-code-actions {
+  opacity: 1;
+}
+
+.msg-md-code-action {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  font-size: 12px;
+  color: #e2e8f0;
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.msg-md-code-action:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.msg-md-code-pre {
+  margin: 0 !important;
+  background: transparent !important;
+}
+
+.msg-md-code-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 17, 24, 0.55);
+  backdrop-filter: blur(2px);
+}
+
+.msg-md-code-modal-panel {
+  display: flex;
+  flex-direction: column;
+  width: min(90vw, 1100px);
+  max-height: 88vh;
+  background: #1e1e2e;
+  color: #e2e8f0;
+  border: 1px solid #313244;
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.msg-md-code-modal-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  font-size: 12.5px;
+  color: #8f95a8;
+  border-bottom: 1px solid #313244;
+}
+
+.msg-md-code-modal-lang {
+  font-family: "JetBrains Mono", Consolas, Monaco, monospace;
+  text-transform: lowercase;
+}
+
+.msg-md-code-modal-spacer {
+  flex: 1;
+}
+
+.msg-md-code-modal-toolbar button {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 24px;
+  padding: 0 8px;
+  font-size: 12.5px;
+  color: #e2e8f0;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.msg-md-code-modal-toolbar button:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.msg-md-code-modal-canvas {
+  flex: 1;
+  overflow: auto;
+  padding: 18px 22px;
+  background: #1e1e2e;
+}
+
+.msg-md-code-modal-pre {
+  margin: 0 !important;
+  padding: 0 !important;
+  font-family: "JetBrains Mono", Consolas, Monaco, monospace !important;
+  font-size: 13px !important;
+  line-height: 1.65 !important;
+  color: #e2e8f0 !important;
+  white-space: pre !important;
+  display: inline-block;
+  min-width: 100%;
+}
+
+.msg-md-code-modal-pre code {
+  font-family: inherit !important;
+  font-size: inherit !important;
+  color: inherit !important;
+  background: transparent !important;
+  padding: 0 !important;
+}
+
+/* === Mermaid 放大 === */
+
+.msg-md-mermaid-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 17, 24, 0.55);
+  backdrop-filter: blur(2px);
+}
+
+.msg-md-mermaid-modal-panel {
+  display: flex;
+  flex-direction: column;
+  width: min(92vw, 1200px);
+  max-height: 90vh;
+  background: var(--bg-primary, #ffffff);
+  border: 1px solid var(--border-primary, #e6e8ec);
+  border-radius: 14px;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+}
+
+.msg-md-mermaid-modal-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  font-size: 12.5px;
+  border-bottom: 1px solid var(--border-primary, #e6e8ec);
+  background: var(--bg-secondary, #f7f8fa);
+}
+
+.msg-md-mermaid-modal-toolbar button {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 26px;
+  padding: 0 8px;
+  font-size: 12.5px;
+  color: var(--text-primary, #202124);
+  background: var(--bg-primary, #ffffff);
+  border: 1px solid var(--border-primary, #e6e8ec);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.msg-md-mermaid-modal-spacer {
+  flex: 1;
+}
+
+.msg-md-mermaid-modal-canvas {
+  flex: 1;
+  overflow: auto;
+  padding: 24px;
+  background: var(--bg-primary, #ffffff);
+}
+
+.msg-md-mermaid-modal-stage {
+  display: inline-block;
+  min-width: 100%;
+}
+
+.msg-md-mermaid-modal-stage svg {
+  max-width: none !important;
+}
+
+/* === 文件链接 / 图片链接按钮 === */
+
+.msg-md-file-link,
+.msg-md-image-link {
+  background: none;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  color: var(--text-link, #2563eb);
+  /* 交付物/文件 chip 不带下划线（hover 用变色反馈） */
+  text-decoration: none;
+  cursor: pointer;
+  font: inherit;
+}
+
+.msg-md-file-link:hover,
+.msg-md-image-link:hover {
+  color: var(--text-link-hover, #1d4ed8);
+  text-decoration: none;
+}
+
+/* === 顶部 action 通用 tooltip 容器（title 属性兜底，避免外加库） === */
+
+.msg-md-action {
+  display: inline-flex;
+}
+
