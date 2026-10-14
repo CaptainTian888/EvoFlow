@@ -80,9 +80,12 @@ def _read_registry() -> list[dict[str, Any]]:
     if not path.is_file():
         return []
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
+        # utf-8-sig：兼容 PowerShell 5.1 `Set-Content -Encoding UTF8` 写出的 BOM。
+        value = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError) as exc:
         raise HTTPException(status_code=500, detail=f"读取扩展注册表失败: {exc}") from exc
+    if isinstance(value, dict):
+        return [value]  # 历史写法：单对象当注册表（PS 管道拆包单元素数组）
     if not isinstance(value, list):
         return []
     return [row for row in value if isinstance(row, dict)]
@@ -142,7 +145,8 @@ def _read_manifest_from_dir(src: Path) -> dict[str, Any]:
     if not manifest_file.is_file():
         raise HTTPException(status_code=400, detail=f"目录内未找到 evoflow.extension.json: {src}")
     try:
-        manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
+        # utf-8-sig：manifest 也可能由 PowerShell 工具链写出（带 BOM）。
+        manifest = json.loads(manifest_file.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError) as exc:
         raise HTTPException(status_code=400, detail=f"Manifest JSON 无效: {exc}") from exc
     if not isinstance(manifest, dict):
