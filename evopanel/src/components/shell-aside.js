@@ -7,12 +7,6 @@ import { SHOW_KNOWLEDGE_OWNED_NAV } from '../lib/nav-visibility.js'
 import { installSessionListDebugGlobal } from '../lib/session-list-debug.js'
 import { mountSessionNotify } from '../lib/mount-session-notify.js'
 import { mountShellAccount } from './shell-account.js'
-import {
-  ServiceHealthState,
-  startServiceHealthPoll,
-  stopServiceHealthPoll,
-  onServiceHealthChange,
-} from '../lib/service-health.js'
 import { version as APP_VERSION } from '../../package.json'
 
 /**
@@ -456,7 +450,6 @@ export function initShellAside(el) {
         <span class="react-chat-aside-toolbar-title">EvoFlow</span>
         <span class="react-chat-aside-version">v${APP_VERSION}</span>
       </div>
-      <span id="shell-aside-init-status" class="react-chat-aside-init-status" title="服务初始化状态" aria-live="polite" style="display:none;margin-left:6px;font-size:11px;opacity:0.75;white-space:nowrap;"></span>
       <button type="button" class="react-chat-aside-icon-btn shell-aside-collapse-btn" id="shell-aside-collapse" title="折叠侧栏" aria-label="折叠侧栏">
         ${_lucide('chevronLeft', 14, 1.5)}
       </button>
@@ -547,58 +540,6 @@ export function initShellAside(el) {
     void wsClient.hydrateGlobalWorkspaceHistoryOnce()
   })
   _startAsideTitleShimmer(el)
-
-  // 健康状态提示（顶部 toolbar，初始化中 / 服务异常时显示）
-  // 首次探针失败不立刻报"服务异常"——后端可能还在启动，先显示"初始化中…"更友好
-  // 只有连续失败（或已成功过一次后再次失败）才升级为"服务异常"
-  const initStatusEl = el.querySelector('#shell-aside-init-status')
-  let _everSucceeded = false // 探针是否曾经成功过
-  let _firstFailureShown = false // 首次失败是否已展示"初始化中…"
-  if (initStatusEl) {
-    const _applyHealth = (snap) => {
-      const state = snap.state
-      if (state === ServiceHealthState.UNKNOWN) {
-        // 探针尚未执行，保持隐藏
-        initStatusEl.style.display = 'none'
-        return
-      }
-      if (state === ServiceHealthState.HEALTHY) {
-        _everSucceeded = true
-        _firstFailureShown = false
-        initStatusEl.style.display = 'none'
-        return
-      }
-      if (state === ServiceHealthState.DEGRADED) {
-        _everSucceeded = true
-        _firstFailureShown = false
-        initStatusEl.style.display = 'inline'
-        initStatusEl.textContent = '初始化中…'
-        initStatusEl.style.color = 'var(--warning, #f59e0b)'
-        initStatusEl.title = snap.lastError || '服务正在初始化'
-        return
-      }
-      if (state === ServiceHealthState.UNAVAILABLE) {
-        // 曾经成功过 → 真正异常了
-        // 从未成功过（后端还在启动中）→ 显示"初始化中…"而非"服务异常"
-        if (_everSucceeded) {
-          initStatusEl.style.display = 'inline'
-          initStatusEl.textContent = '服务异常'
-          initStatusEl.style.color = 'var(--error, #ef4444)'
-          initStatusEl.title = snap.lastError || '服务不可用'
-        } else {
-          _firstFailureShown = true
-          initStatusEl.style.display = 'inline'
-          initStatusEl.textContent = '初始化中…'
-          initStatusEl.style.color = 'var(--warning, #f59e0b)'
-          initStatusEl.title = snap.lastError || '服务正在初始化'
-        }
-      }
-    }
-    void import('../lib/service-health.js').then((mod) => {
-      mod.startServiceHealthPoll()
-      mod.onServiceHealthChange(_applyHealth)
-    })
-  }
 }
 
 /** Kept for callers after activate; premium menus stay always visible. */

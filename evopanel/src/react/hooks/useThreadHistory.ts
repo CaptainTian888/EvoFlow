@@ -538,8 +538,9 @@ export function useThreadHistory(sessionKey: string | null, liveOpts: ThreadHist
           isGatewayWarming()
         ) {
           if (Date.now() >= coldStartDeadline) {
-            // Gateway never came up in time — stop the endless spinner and surface an error.
-            setError(toUserFacingError('加载对话超时，请稍后重试', '加载对话失败，请刷新后重试'))
+            // Gateway never came up in time — keep silent (no 「加载对话超时」 toast)
+            // and let the ready listener / next reload pick it up.
+            setError(null)
             setLoading(false)
             return { transcriptAnchor: null }
           }
@@ -590,8 +591,9 @@ export function useThreadHistory(sessionKey: string | null, liveOpts: ThreadHist
           if (stillCold) {
             // Warm latch / ready race — stay quiet for a bounded window; ready listener will reload.
             if (Date.now() >= coldStartDeadline) {
-              // Gateway never came up in time: stop the endless spinner and surface an error.
-              setError(toUserFacingError('加载对话超时，请稍后重试', '加载对话失败，请刷新后重试'))
+              // Gateway never came up in time: stay silent (no 「加载对话超时」 toast);
+              // ready listener / next reload will recover.
+              setError(null)
               setLoading(false)
               return { transcriptAnchor: null }
             }
@@ -602,7 +604,9 @@ export function useThreadHistory(sessionKey: string | null, liveOpts: ThreadHist
             }
             return { transcriptAnchor: null }
           }
-          setError(toUserFacingError('加载对话超时，请稍后重试', '加载对话失败，请刷新后重试'))
+          // Post-liveness /messages timed out: keep silent — no 「加载对话超时」 toast.
+          // The ready listener / next reload will pick the conversation up.
+          setError(null)
           return { transcriptAnchor: null }
         }
         // Hover may have painted idle cache while this request was in flight.
