@@ -1,0 +1,237 @@
+/**
+ * Streamdown 默认组件的主窗口样式接管。
+ *
+ * 背景：主窗口（index.html → boot/0-styles.js）没有编译任何 Tailwind 产物，
+ * 但 Streamdown 默认组件（表格 wrapper、代码块 header/actions/body）输出的是
+ * Tailwind 工具类 + shadcn 主题 token（border-border / bg-sidebar / bg-muted 等）。
+ * 结果是这些类要么完全不存在（元素裸渲染），要么在懒加载过带默认主题的
+ * Tailwind 构建（asset-center.css）后以无 token 状态命中——边框色回落到
+ * currentColor 形成黑框、背景全透明、按钮没有任何布局。
+ * 叠加 chat-redesign.css / sci-fi-theme.css 对裸 pre/code 的旧 ！important 规则
+ * （为旧渲染器单层 <pre> 设计），代码块会被套成无头黑块。
+ *
+ * 这里用 [data-streamdown=...] 属性选择器对 Streamdown 渲染块做最终接管：
+ * - 全部 ！important：同时压过旧 ！important 规则与懒加载进来的无 token 工具类；
+ * - 单元格/代码块观感对齐 chat-redesign.css 的既有设计，聊天内零视觉回归；
+ * - 代码块 token 期间强制单色（--sdm-c/--shiki-dark 双主题变量在主窗口没有
+ *   对应工具类，shiki github-light 的深色 token 会落在深底上不可读）；
+ * - sci-fi 主题对裸 pre/code 的主题化不受影响（只接管 Streamdown 结构内部）。
+ */
+
+/* === 表格 === */
+
+/* 带 controls 的变体有 data-streamdown="table-wrapper"；带内联 max-height 的变体
+ * 只是一个裸 div（类名全是 Tailwind 工具类），只能用 :has() 从表格元素反选。
+ * wrapper 只做圆角滚动容器，不加边框——单元格网格自带外沿，加了就是双重框。 */
+[data-streamdown='table-wrapper'],
+div:has(> [data-streamdown='table']):not([data-streamdown='table-fullscreen'] *) {
+  margin: 12px 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 10px !important;
+  background: transparent !important;
+  /* 默认组件在长表格时会给 wrapper 写内联 max-height:300px，这里只兜底变体 */
+  max-height: 480px;
+  overflow: auto !important;
+}
+
+/* 全屏预览弹层里的 wrapper 是布局容器，不套圆角滚动 */
+[data-streamdown='table-fullscreen'] [data-streamdown='table-wrapper'] {
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  overflow: visible !important;
+  max-height: none !important;
+}
+
+/* 单元格样式值对齐 chat-redesign.css 的 body .msg-ai .msg-bubble th/td（聊天表格
+ * 的现行观感），但用更高特异性统一覆盖，让 .markdown-body（会话面板/右侧行文流）
+ * 等没有旧规则的容器拿到同样外观。变量随主题自动翻转，无需 dark 变体。 */
+body :is(.msg-ai .msg-bubble, .msg-turn-assistant-content, .msg-text, .markdown-body) [data-streamdown='table'],
+[data-streamdown='table'] {
+  width: 100% !important;
+  margin: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  background: transparent !important;
+  border-collapse: collapse !important;
+  table-layout: fixed !important;
+}
+
+/* divide-y 等 Tailwind 行分隔类在主窗口会以 currentColor 落成黑线，统一交给 td/th */
+body :is(.msg-ai .msg-bubble, .msg-turn-assistant-content, .msg-text, .markdown-body) [data-streamdown='table'] :is(thead, tbody, tr),
+[data-streamdown='table'] :is(thead, tbody, tr) {
+  border: 0 !important;
+  background: transparent !important;
+}
+
+body :is(.msg-ai .msg-bubble, .msg-turn-assistant-content, .msg-text, .markdown-body) [data-streamdown='table-header-cell'],
+[data-streamdown='table-header-cell'] {
+  padding: 8px 12px !important;
+  background: var(--bg-tertiary, #ebeef2) !important;
+  color: var(--text-primary, #202124) !important;
+  font-weight: 600 !important;
+  font-size: 13px !important;
+  text-align: left !important;
+  white-space: normal !important;
+  border: 1px solid var(--border-primary, #e6e8ec) !important;
+}
+
+body :is(.msg-ai .msg-bubble, .msg-turn-assistant-content, .msg-text, .markdown-body) [data-streamdown='table-cell'],
+[data-streamdown='table-cell'] {
+  padding: 8px 12px !important;
+  background: transparent !important;
+  color: var(--text-primary, #202124) !important;
+  font-size: 13px !important;
+  text-align: left !important;
+  vertical-align: top !important;
+  line-height: 1.55 !important;
+  word-break: break-word !important;
+  overflow-wrap: break-word !important;
+  white-space: normal !important;
+  border: 1px solid var(--border-primary, #e6e8ec) !important;
+}
+
+/* === 代码块 === */
+
+[data-streamdown='code-block'] {
+  position: relative !important;
+  display: block !important;
+  width: auto !important;
+  margin: 14px 0 !important;
+  padding: 0 !important;
+  border: 1px solid #313244 !important;
+  border-radius: 12px !important;
+  background: #1e1e2e !important;
+  overflow: hidden !important;
+}
+
+[data-streamdown='code-block-header'] {
+  display: flex !important;
+  align-items: center !important;
+  min-height: 34px !important;
+  padding: 4px 92px 0 14px !important;
+  color: #8f95a8 !important;
+  font-size: 12px !important;
+}
+
+/* 语言为空时隐藏整条 header，避免空占一行 */
+[data-streamdown='code-block-header']:has(> span:empty) {
+  display: none !important;
+}
+
+[data-streamdown='code-block-header'] > span {
+  margin: 0 !important;
+  color: #8f95a8 !important;
+  font-family: "JetBrains Mono", Consolas, Monaco, monospace !important;
+  font-size: 11.5px !important;
+  text-transform: lowercase !important;
+}
+
+/* 右上角操作按钮：绝对定位是组件行为，主窗口没有工具类，这里补齐布局与观感 */
+[data-streamdown='code-block-actions'] {
+  position: absolute !important;
+  top: 8px !important;
+  right: 8px !important;
+  z-index: 20 !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  backdrop-filter: none !important;
+  pointer-events: auto !important;
+}
+
+[data-streamdown='code-block-actions'] button {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 26px !important;
+  height: 26px !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  border-radius: 6px !important;
+  background: rgba(255, 255, 255, 0.05) !important;
+  color: #9aa3b5 !important;
+  cursor: pointer !important;
+  opacity: 1 !important;
+  transition: background-color 0.15s ease, color 0.15s ease !important;
+}
+
+[data-streamdown='code-block-actions'] button:hover {
+  color: #e2e8f0 !important;
+  background: rgba(255, 255, 255, 0.14) !important;
+}
+
+[data-streamdown='code-block-actions'] button:disabled {
+  opacity: 0.4 !important;
+  cursor: default !important;
+}
+
+[data-streamdown='code-block-actions'] svg {
+  width: 14px !important;
+  height: 14px !important;
+}
+
+[data-streamdown='code-block-body'] {
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  overflow: auto !important;
+}
+
+/* 需要压过 chat-redesign.css 的 body .msg-ai .msg-bubble pre / .msg-turn-assistant-content pre
+ * 与 sci-fi-theme.css 的同名 ！important 规则（均为裸 <pre> 时代的设计） */
+body :is(.msg-ai .msg-bubble, .msg-turn-assistant-content, .msg-text, .markdown-body) [data-streamdown='code-block'] pre,
+[data-streamdown='code-block'] pre {
+  margin: 0 !important;
+  padding: 14px 16px !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  color: #e2e8f0 !important;
+  overflow: visible !important;
+  font-size: 13px !important;
+  line-height: 1.65 !important;
+  font-family: "JetBrains Mono", Consolas, Monaco, monospace !important;
+}
+
+body :is(.msg-ai .msg-bubble, .msg-turn-assistant-content, .msg-text, .markdown-body) [data-streamdown='code-block'] pre code,
+[data-streamdown='code-block'] pre code {
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  color: inherit !important;
+  font-size: inherit !important;
+  font-family: inherit !important;
+}
+
+/* shiki token 带 --sdm-c（github-light）与 --shiki-dark 双主题变量，但主窗口
+ * 没有消费这些变量的工具类：深色 token 会直接落在深底上不可读。在接好主题前
+ * 统一继承 pre 的单色。 */
+[data-streamdown='code-block'] pre code span {
+  background: transparent !important;
+  color: inherit !important;
+}
+
+/* === 行内代码 === */
+
+[data-streamdown='inline-code'] {
+  margin: 0 !important;
+  padding: 2px 6px !important;
+  border: 0 !important;
+  border-radius: 6px !important;
+  background: var(--chat-code-inline-bg, #eceef2) !important;
+  color: var(--chat-code-inline-fg, #3d4450) !important;
+  font-size: 12.5px !important;
+  font-family: "JetBrains Mono", Consolas, Monaco, monospace !important;
+}

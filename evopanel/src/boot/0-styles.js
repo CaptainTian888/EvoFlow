@@ -50,3 +50,6 @@ import '../style/theme-readability.css'
 import '../style/ef-module-head.css'
 import '../style/ef-panel-head.css'
 import '../style/chat-summary-panel.css'
+// Streamdown 默认组件（表格/代码块）的主窗口接管，必须排在 chat-redesign.css /
+// sci-fi-theme.css 之后才能在同级 ！important 规则里按顺序胜出
+import '../style/streamdown.css'
