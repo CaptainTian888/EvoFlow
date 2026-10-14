@@ -1,5 +1,28 @@
 import { Fragment, memo, type ReactNode } from 'react'
 import type { ActivityPiece } from '../lib/exploring-activity-group.js'
+
+function mergeConsecutiveReasoningPieces(pieces: ActivityPiece[]): ActivityPiece[] {
+  const result: ActivityPiece[] = []
+  let buf: ActivityPiece[] = []
+  const flush = () => {
+    if (buf.length === 0) return
+    if (buf.length === 1) { result.push(buf[0]); buf = []; return }
+    const last = buf[buf.length - 1]
+    const first = buf[0]
+    result.push({
+      ...last,
+      text: buf.map(p => p.text).filter(t => String(t || '').trim()).join('\n\n'),
+      startedAtMs: first.startedAtMs,
+    })
+    buf = []
+  }
+  for (const piece of pieces) {
+    if (piece.kind === 'reasoning') buf.push(piece)
+    else { flush(); result.push(piece) }
+  }
+  flush()
+  return result
+}
 import {
   toolsForActivityPieces,
   reasoningPiecesInActivity,
@@ -236,7 +259,7 @@ function ExploringActivityChunkInner({
           // 对话结束后折叠，只显示最终正文（plain-body/live-tail slot）。
           // ExploringActivityChunk 内所有 piece（text/tools/reasoning）标为 history，
           // 折叠时由 CSS display:none 隐藏；展开时全部可见。
-          return pieces.map((piece, pi) => {
+          return mergeConsecutiveReasoningPieces(pieces).map((piece, pi) => {
             const role: 'latest' | 'history' = 'history'
             const inner = renderPiece(piece, pi)
             if (inner == null) return null
