@@ -12958,13 +12958,23 @@ useEffect(() => {
   async function applyMoreMenuSessionApprovalPolicy(presetId: string): Promise<void> {
     const sk = (await ensureChatSessionKey()) || sessionRef.current || selectedSessionKey
     if (!sk) return
-    const [{ patchSessionPermissionPreset }, { wsClient }] = await Promise.all([
+    const [{ patchSessionPermissionPreset }, { wsClient: wsClientMod }] = await Promise.all([
       import('../lib/tool-approval-settings.js'),
       import('../lib/ws-client.js'),
     ])
-    const result = await patchSessionPermissionPreset(sk, presetId)
+    let result
+    try {
+      result = await patchSessionPermissionPreset(sk, presetId)
+    } catch (err) {
+      // 静默失败会让用户以为已保存（刷新后回跳旧档位）——必须可见。
+      toast(
+        `权限档位保存失败：${toUserFacingError((err as Error)?.message || err)}`,
+        'error',
+      )
+      throw err
+    }
     // Force local context so session-list refresh cannot fall back to global grant_all.
-    wsClient.applySessionToolApprovalPolicy(sk, {
+    wsClientMod.applySessionToolApprovalPolicy(sk, {
       ...result,
       permission_preset: result.permission_preset || presetId,
       effective_permission_preset: result.effective_permission_preset || presetId,
@@ -12992,13 +13002,33 @@ useEffect(() => {
     toast(permissionPresetToast(presetId), 'success')
   }
 
-  // 当前 session 的有效权限档位（来自 sessions 列表里 row.context）
+  // 当前 session 的有效权限档位（sessions 行 context + wsClient 会话映射）。
+  // PATCH 成功后 wsClient 映射即时同步，而 sessions 行可能被 in-flight 的旧列表
+  // 响应覆盖回旧值（stale ctx）——wsClient 值优先，避免档位显示回跳。
   const currentPermissionPresetId = useMemo(() => {
+    void toolApprovalPolicyTick
     const row = selectedSessionKey
       ? sessions.find((s) => String(s.sessionKey || '') === selectedSessionKey) ?? null
       : null
-    const ctx = (row?.context && typeof row.context === 'object') ? row.context : {}
-    return resolvePermissionPreset(ctx)
+    const base: Record<string, unknown> =
+      row?.context && typeof row.context === 'object' ? { ...row.context } : {}
+    try {
+      const wsCtx = wsClient.getSessionContext(selectedSessionKey) as
+        | Record<string, unknown>
+        | null
+      for (const k of [
+        'effective_permission_preset',
+        'permission_preset',
+        'effective_tool_approval_policy',
+        'tool_approval_policy',
+      ]) {
+        const v = wsCtx ? wsCtx[k] : undefined
+        if (v != null && String(v).trim()) base[k] = v
+      }
+    } catch {
+      /* ignore */
+    }
+    return resolvePermissionPreset(base)
   }, [selectedSessionKey, sessions, toolApprovalPolicyTick])
 
   const currentPermissionPillLabel = useMemo(() => {
