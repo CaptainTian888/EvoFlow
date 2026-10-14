@@ -549,6 +549,8 @@ curl -X DELETE http://127.0.0.1:<port>/api/ui-extensions/my-ops
 - gateway 的端口见 profile 目录下的 `backend-runtime.json`（`baseUrl` 字段）。
 
 > **手写 / 脚本写 registry.json 的格式要求**：UTF-8 **无 BOM** 的 JSON **数组**（单条也写成 `[ { … } ]`）。PowerShell 5.1 的 `Set-Content -Encoding UTF8` 会带 BOM，且管道会把单元素数组拆成裸对象——两者都会让旧版面板静默不显示扩展（新版面板/网关已兼容读取，但落盘仍应规范：`[IO.File]::WriteAllText($f, $json, [Text.UTF8Encoding]::new($false))`，数组用 `ConvertTo-Json -InputObject`）。
+>
+> **更推荐的整包方式**：如果扩展要和技能/员工/知识库一起分发，打成资源包（`evoflow.organization.json` 的 `extensions` 原语），导入一次全装好——见 [[guides/configuration/resource-packs|资源包与资源市场]]。
 
 ### Q: 如何卸载？
 

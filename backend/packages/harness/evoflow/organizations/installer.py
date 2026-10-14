@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import shutil
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -30,7 +31,8 @@ class OrganizationInstallError(RuntimeError):
 
 
 def _now_stamp() -> str:
-    return datetime.now(UTC).strftime("%Y%m%d%H%M%S")
+    # 毫秒精度：同一秒内重复安装同一 pack 不会再撞 org_instance_id 唯一键
+    return datetime.now(UTC).strftime("%Y%m%d%H%M%S%f")[:-3]
 
 
 def _id_prefix(options: dict[str, Any] | None) -> str:
@@ -59,6 +61,7 @@ def _plan_will_install(pack: LoadedPack, *, prefix: str) -> dict[str, list[str]]
         "employees": [],
         "apps": [],
         "skills": [],
+        "knowledge": [],
         "mcp": [],
         "vaults": [],
         "extensions": [],
@@ -95,9 +98,14 @@ def _plan_will_install(pack: LoadedPack, *, prefix: str) -> dict[str, list[str]]
         elif ref.get("slug"):
             will["skills"].append(str(ref["slug"]))
 
+    for ref in list(prim.get("knowledge") or []):
+        if isinstance(ref, dict) and str(ref.get("name") or "").strip():
+            will["knowledge"].append(str(ref["name"]))
+
     for ref in list(prim.get("extensions") or []):
-        if isinstance(ref, dict) and (ref.get("ref") or ref.get("path")):
-            will["extensions"].append(str(ref.get("ref") or ref.get("path")))
+        if isinstance(ref, dict):
+            label = str(ref.get("from") or ref.get("ref") or ref.get("path") or ref.get("id") or "?")
+            will["extensions"].append(label)
 
     for ref in list(prim.get("mcp") or []):
         if isinstance(ref, dict) and ref.get("from"):
@@ -197,8 +205,6 @@ def preflight_organization(
             missing_deps.append(f"platform range declared: {deps['platform']} (not enforced in Phase 1)")
 
         warnings: list[str] = []
-        if will.get("extensions"):
-            warnings.append("extensions install skipped in Phase 1 (no Tauri from Gateway)")
         if will.get("mcp"):
             warnings.append("mcp registration skipped in Phase 1")
         if will.get("vaults"):
@@ -240,6 +246,112 @@ def preflight_organization(
 
 def _undo_stack() -> list[tuple[str, Callable[[], None]]]:
     return []
+
+
+_KB_REF_RE = re.compile(r"\$\{KB_REF:([^}]+)\}")
+
+
+def _apply_kb_refs(obj: Any, kb_refs: dict[str, str]) -> tuple[Any, list[str]]:
+    """递归把 ``${KB_REF:ref}`` 替换为安装期解析出的真实 kb_id。
+
+    返回 ``(新对象, 未命中的 ref 列表)``；未命中的保留原文，由员工 hire 的
+    kb 校验按冲突策略兜底。
+    """
+    unknown: list[str] = []
+
+    def _walk(o: Any) -> Any:
+        if isinstance(o, str):
+            if "${KB_REF:" not in o:
+                return o
+
+            def _repl(m: re.Match[str]) -> str:
+                ref = m.group(1).strip()
+                kb_id = kb_refs.get(ref)
+                if not kb_id:
+                    if ref not in unknown:
+                        unknown.append(ref)
+                    return m.group(0)
+                return kb_id
+
+            return _KB_REF_RE.sub(_repl, o)
+        if isinstance(o, list):
+            return [_walk(x) for x in o]
+        if isinstance(o, dict):
+            return {k: _walk(v) for k, v in o.items()}
+        return o
+
+    return _walk(obj), unknown
+
+
+def _ensure_knowledge_base(pack: LoadedPack, ref: dict[str, Any]) -> tuple[str, bool]:
+    """按 name 幂等 get-or-create owned 知识库；可选从目录导入文档。
+
+    ``import_folder`` 支持包内相对路径（便携，推荐）与绝对路径（本机数据）。
+    返回 ``(kb_id, created)``；文档导入为同步拷贝 + 异步索引，重复导入按
+    content_hash 去重（unchanged 不重索引）。
+    """
+    from evoflow.knowledge.owned import service as owned_service
+
+    name = str(ref.get("name") or "").strip()
+    bases = owned_service.list_bases()
+    existing = next((b for b in bases if str(b.get("name") or "").strip() == name), None)
+    created = existing is None
+    if existing is not None:
+        kb_id = str(existing.get("id") or "")
+    else:
+        payload: dict[str, Any] = {"name": name}
+        if ref.get("description"):
+            payload["description"] = str(ref["description"])
+        created_base = owned_service.create_base(payload)
+        kb_id = str(created_base.get("id") or "")
+    if not kb_id:
+        raise OrganizationInstallError(f"knowledge base '{name}' could not be resolved")
+
+    rel = str(ref.get("import_folder") or "").strip()
+    if rel:
+        p = Path(rel).expanduser()
+        root = p if p.is_absolute() else resolve_pack_rel(pack, rel)
+        if not root.is_dir():
+            raise OrganizationInstallError(f"knowledge import_folder not found: {root}")
+        stats = owned_service.import_local_folder(
+            kb_id,
+            str(root),
+            upsert=bool(ref.get("upsert", True)),
+            prune_missing=bool(ref.get("prune_missing", False)),
+            folder_prefix=str(ref.get("folder_prefix") or ""),
+        )
+        logger.info(
+            "org pack knowledge import kb=%s created=%s updated=%s unchanged=%s skipped=%s",
+            kb_id,
+            stats.get("created"),
+            stats.get("updated"),
+            stats.get("unchanged"),
+            stats.get("skipped"),
+        )
+    return kb_id, created
+
+
+def _install_extension_ref(pack: LoadedPack, ref: dict[str, Any], *, source: str) -> dict[str, Any] | None:
+    """安装一个 extensions 原语条目；legacy ``{id}`` 形态返回 None（调用方记 warning）。"""
+    from evoflow.admin.ui_extensions_registry import (
+        ExtensionValidationError,
+        register_directory,
+        upsert_row,
+    )
+
+    if ref.get("from"):
+        src = resolve_pack_rel(pack, str(ref["from"]))
+        return register_directory(src, link=ref.get("link"), source=source)
+    if ref.get("path"):
+        p = Path(str(ref["path"])).expanduser()
+        return register_directory(p, link=bool(ref.get("link", True)), source=source)
+    if ref.get("manifest") is not None:
+        install_path = str(ref.get("install_path") or "").strip()
+        if not install_path:
+            raise ExtensionValidationError("extension entry with manifest requires install_path")
+        manifest = ref["manifest"]
+        return upsert_row(manifest if isinstance(manifest, dict) else {}, install_path, source)
+    return None
 
 
 def install_organization(
@@ -299,6 +411,7 @@ def install_organization(
             "employees": [],
             "apps": [],
             "skills": [],
+            "knowledge": [],
             "extensions": [],
             "vaults": [],
             "mcp": [],
@@ -307,6 +420,39 @@ def install_organization(
 
         try:
             prim = pack.manifest.get("primitives") if isinstance(pack.manifest.get("primitives"), dict) else {}
+
+            # 0) knowledge（必须在 employees 前：hire 会校验 kb id 已存在）
+            kb_refs: dict[str, str] = {}
+            for ref in list(prim.get("knowledge") or []):
+                if not isinstance(ref, dict):
+                    continue
+                name = str(ref.get("name") or "").strip()
+                if not name:
+                    warnings.append("knowledge entry missing name, skipped")
+                    continue
+                try:
+                    kb_id, created = _ensure_knowledge_base(pack, ref)
+                except Exception as e:
+                    if policy == "fail":
+                        raise OrganizationInstallError(f"knowledge install failed: {e}") from e
+                    warnings.append(f"knowledge skipped: {e}")
+                    continue
+                ref_key = str(ref.get("ref") or "").strip() or name
+                kb_refs[ref_key] = kb_id
+                kb_refs[name] = kb_id
+                artifacts["knowledge"].append(kb_id)
+                if created:
+
+                    def _undo_kb(k: str = kb_id) -> None:
+                        try:
+                            from evoflow.knowledge.owned import service as owned_service
+
+                            owned_service.delete_base(k)
+                        except Exception:
+                            logger.debug("rollback knowledge base failed kb=%s", k, exc_info=True)
+
+                    undo.append(("knowledge", _undo_kb))
+                warnings.append(f"knowledge base '{name}' ready ({'created' if created else 'reused'})")
 
             # 1) skills
             for ref in list(prim.get("skills") or []):
@@ -400,9 +546,14 @@ def install_organization(
                     continue
                 emp = load_json_ref(pack, from_path)
                 emp = deep_apply_placeholders(emp, org_workspace=org_ws, org_root=org_root)
+                emp, kb_unknown = _apply_kb_refs(emp, kb_refs)
                 code = _prefixed(str(emp.get("agent_code") or "").strip(), prefix)
                 if not code:
                     continue
+                for u in kb_unknown:
+                    warnings.append(
+                        f"employee {code}: KB_REF '{u}' 未命中（manifest 未声明同名 knowledge 原语），保留原文"
+                    )
                 cfg = emp.get("config") if isinstance(emp.get("config"), dict) else {}
                 hire_data: dict[str, Any] = {
                     "agent_code": code,
@@ -449,7 +600,32 @@ def install_organization(
                 except ConflictError as e:
                     if policy == "fail":
                         raise OrganizationInstallError(str(e)) from e
-                    warnings.append(f"employee exists, skipped: {code}")
+                    if policy == "skip":
+                        warnings.append(f"employee exists, skipped: {code}")
+                    else:
+                        # replace：删旧岗重建（复用 hire 全套校验/默认值，kb 绑定等随之更新）；
+                        # 重建失败时用快照还原，避免把已有员工删没。
+                        from evoflow.proactive.repositories import ProactiveRepository as _PR
+
+                        snapshot = _PR.get_role(code)
+                        try:
+                            _PR.delete_role(code)
+                        except Exception as del_e:
+                            warnings.append(f"employee replace skipped (delete failed): {del_e}")
+                            continue
+                        try:
+                            employees_admin.hire(hire_data)
+                            artifacts["employees"].append(code)
+                            warnings.append(f"employee replaced: {code}")
+                        except Exception as re_e:
+                            if snapshot is not None:
+                                try:
+                                    _PR.save_role(snapshot)
+                                    warnings.append(f"employee replace failed (restored original): {re_e}")
+                                except Exception:
+                                    warnings.append(f"employee replace failed (restore also failed): {re_e}")
+                            else:
+                                warnings.append(f"employee replace failed: {re_e}")
                 except Exception as e:
                     msg = str(e).lower()
                     if "already" in msg or "exist" in msg:
@@ -469,6 +645,9 @@ def install_organization(
                     continue
                 app_doc = load_json_ref(pack, from_path)
                 app_doc = deep_apply_placeholders(app_doc, org_workspace=org_ws, org_root=org_root)
+                app_doc, kb_unknown = _apply_kb_refs(app_doc, kb_refs)
+                for u in kb_unknown:
+                    warnings.append(f"app '{app_doc.get('name', from_path)}': KB_REF '{u}' 未命中，保留原文")
                 steps = list(app_doc.get("steps") or [])
                 for step in steps:
                     if isinstance(step, dict) and step.get("assigned_agent"):
@@ -502,8 +681,38 @@ def install_organization(
 
                     undo.append(("app", _undo_app))
 
-            if prim.get("extensions"):
-                warnings.append("extensions not installed (Phase 1)")
+            # 5) extensions（注册表与面板共享：evoflow.admin.ui_extensions_registry）
+            ext_source = f"org_pack:{pack.pack_id}"
+            for ref in list(prim.get("extensions") or []):
+                if not isinstance(ref, dict):
+                    continue
+                try:
+                    row = _install_extension_ref(pack, ref, source=ext_source)
+                except Exception as e:
+                    if policy == "fail":
+                        raise OrganizationInstallError(f"extension install failed: {e}") from e
+                    warnings.append(f"extension skipped: {e}")
+                    continue
+                if row is None:
+                    warnings.append(f"extension id-only entry recorded only (legacy): {ref.get('id')}")
+                    continue
+                ext_id = str(row.get("id") or "")
+                if not ext_id:
+                    continue
+                artifacts["extensions"].append(ext_id)
+                if str(row.get("source") or "").endswith("folder-link"):
+                    warnings.append(f"extension '{ext_id}' 为 folder-link（登记本机路径，包不可便携）")
+
+                def _undo_ext(eid: str = ext_id) -> None:
+                    try:
+                        from evoflow.admin.ui_extensions_registry import remove_row
+
+                        remove_row(eid)
+                    except Exception:
+                        logger.debug("rollback extension failed id=%s", eid, exc_info=True)
+
+                undo.append(("extension", _undo_ext))
+
             if prim.get("mcp"):
                 warnings.append("mcp not registered (Phase 1)")
             if prim.get("vaults"):
@@ -544,8 +753,8 @@ def uninstall_organization(
     opts = options or {}
     keep_primitives = bool(opts.get("keep_primitives", False))
     keep_workspace = bool(opts.get("keep_workspace", True))
-    keep_vault_data = bool(opts.get("keep_vault_data", True))
-    del keep_vault_data  # Phase 1: vaults not installed
+    # keep_vault_data 为历史别名；知识库默认保留（数据安全），显式 delete_knowledge 才删
+    keep_knowledge = bool(opts.get("keep_knowledge", bool(opts.get("keep_vault_data", True))))
 
     inst = org_registry.get_org_instance(org_instance_id)
     if not inst:
@@ -557,17 +766,19 @@ def uninstall_organization(
     removed: dict[str, list[str]] = {
         "employees": [],
         "apps": [],
+        "knowledge": [],
         "extensions": [],
         "agents": [],
         "skills": [],
         "mcp": [],
         "vaults": [],
     }
-    kept: dict[str, Any] = {"agents": [], "skills": [], "workspace_path": None, "vaults": []}
+    kept: dict[str, Any] = {"agents": [], "skills": [], "workspace_path": None, "knowledge": []}
 
     from evoflow.admin import agents as agents_admin
     from evoflow.admin import apps as apps_admin
     from evoflow.admin import skills as skills_admin
+    from evoflow.admin.ui_extensions_registry import remove_row as ext_remove_row
     from evoflow.proactive.repositories import ProactiveRepository
 
     for code in list(arts.get("employees") or []):
@@ -583,6 +794,26 @@ def uninstall_organization(
             removed["apps"].append(aid)
         except Exception as e:
             logger.warning("uninstall app failed id=%s err=%s", aid, e)
+
+    for eid in list(arts.get("extensions") or []):
+        try:
+            ext_remove_row(eid)
+            removed["extensions"].append(eid)
+        except Exception as e:
+            logger.warning("uninstall extension failed id=%s err=%s", eid, e)
+
+    kb_ids = list(arts.get("knowledge") or [])
+    if not keep_knowledge:
+        from evoflow.knowledge.owned import service as owned_service
+
+        for kb_id in kb_ids:
+            try:
+                owned_service.delete_base(kb_id)
+                removed["knowledge"].append(kb_id)
+            except Exception as e:
+                logger.warning("uninstall knowledge base failed kb=%s err=%s", kb_id, e)
+    else:
+        kept["knowledge"] = kb_ids
 
     if not keep_primitives:
         for code in list(arts.get("agents") or []):
