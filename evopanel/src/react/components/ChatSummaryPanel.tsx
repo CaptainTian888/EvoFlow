@@ -404,6 +404,26 @@ function ChatSummaryPanelInner({
     setPolicyOpen(false)
   }, [])
 
+  // 实时跳转：平台条目 / 产物发布时（ChatApp 侧 publishPlatformEntries /
+  // publishArtifacts 会更新 focus id），面板自动切到对应 tab 并撑开。
+  const prevPlatformFocusRef = useRef('')
+  useEffect(() => {
+    const focus = String(platformFocusEntryId || '').trim()
+    if (!focus || focus === prevPlatformFocusRef.current) return
+    prevPlatformFocusRef.current = focus
+    setPanelTab('platform')
+    if (displayMode === 'capsule') onDisplayModeChange('panel')
+  }, [platformFocusEntryId, displayMode, onDisplayModeChange])
+
+  const prevArtifactFocusRef = useRef('')
+  useEffect(() => {
+    const focus = String(artifactFocusId || '').trim()
+    if (!focus || focus === prevArtifactFocusRef.current) return
+    prevArtifactFocusRef.current = focus
+    setPanelTab('artifacts')
+    if (displayMode === 'capsule') onDisplayModeChange('panel')
+  }, [artifactFocusId, displayMode, onDisplayModeChange])
+
   // 展开策略：胶囊态 + 有进程在跑时自动撑成面板
   const effectiveMode = useMemo<ChatSummaryDisplayMode>(() => {
     if (displayMode === 'hidden') return 'hidden'

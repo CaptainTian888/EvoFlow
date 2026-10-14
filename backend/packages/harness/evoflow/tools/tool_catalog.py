@@ -101,10 +101,12 @@ _OPTIONAL_TOOL_NAMES: frozenset[str] = frozenset(
     }
 )
 
-# Agent 模式默认 deferred tools（由 ``agent_config.tools`` 白名单决定是否挂载）。
-# tasks / platform / panel_set 不再强制绑定 — 它们在 _agent_mode_deferred_tool_names 里
-# 跟随角色勾选，角色不勾就不挂。
-AGENT_MODE_SYSTEM_TOOL_NAMES: frozenset[str] = frozenset()
+# Agent 模式系统必带：``platform``（平台行政：知识库/员工/设置等写操作）+
+# ``panel_set``（右侧面板驱动：产物面板 / 写入流 / 实时跳转）。
+# 1.0.7 曾改为角色白名单选挂，但存量角色没有任何勾选记录 → 平台/产物两个面板
+# 全线失效（evoflow_artifacts 近乎停止写入）。这里恢复为系统必带（eager 语义；
+# 角色不可通过白名单摘掉，仍可经 disallowed_tools 显式禁用）。
+AGENT_MODE_SYSTEM_TOOL_NAMES: frozenset[str] = frozenset({"platform", "panel_set"})
 
 AGENT_OPTIONAL_DEFERRED_TOOL_NAMES: tuple[str, ...] = tuple(sorted(_OPTIONAL_TOOL_NAMES))
 

@@ -1435,20 +1435,19 @@ def make_lead_agent(config: RunnableConfig, runtime: ServerRuntime | None = None
     )
     _setup_phase("resolve_available_tools_ms", _t_tools)
 
-    # Drop legacy "agent-mode system tools" (currently empty) for subagents / custom agents
-    # unless ``kb_injection.mount_platform_tools=True`` is set. tasks / platform / panel_set
-    # are no longer in AGENT_MODE_SYSTEM_TOOL_NAMES — they live in the agent-mode deferred
-    # catalog and are bound only when the role whitelist lists them.
+    # ``platform`` / ``panel_set`` are agent-mode system tools (right-side panel +
+    # platform admin): main lead and channel/custom employees keep them (通道员工的
+    # 平台操作与产物面板依赖)，只有纯 subagent 默认不带 — opt-in 仍走
+    # ``kb_injection.mount_platform_tools=true``。
     try:
         from evoflow.config.agents_config import get_agent_kb_injection_config
         from evoflow.tools.tool_aliases import canonical_tool_name
         from evoflow.tools.tool_catalog import AGENT_MODE_SYSTEM_TOOL_NAMES
 
         agent_type_str = str((agent_config.agent_type if agent_config else "") or "")
-        is_subagent_or_custom = agent_type_str in {"subagent", "custom"}
-        is_main_lead = str(agent_name or "").strip().lower() in {"", "main"}
+        is_subagent = agent_type_str == "subagent"
         kb_cfg = get_agent_kb_injection_config(agent_name)
-        if is_subagent_or_custom and not is_main_lead and not kb_cfg.mount_platform_tools:
+        if is_subagent and not kb_cfg.mount_platform_tools:
             drop = {canonical_tool_name(n) for n in AGENT_MODE_SYSTEM_TOOL_NAMES}
             if drop:
                 before = len(tools)
