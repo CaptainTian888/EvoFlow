@@ -499,3 +499,27 @@ skills/**/hyperframes-animation/examples/
 
 # Tauri build-generated schemas
 evopanel/src-tauri/gen/
+
+# ============================================================
+# One-off root-level design / plan / fix / test docs
+# These were historically committed at the repo root as scratch
+# process artifacts. Do NOT re-track them; old entries are kept
+# in history and will be removed in a later sweep.
+# All patterns are anchored to the repo root (`/`) on purpose.
+# ============================================================
+# Fix / plan / analysis / summary docs
+/ARCHITECTURE_ISSUE_PROACTIVE_PUSH.md
+/AUTO_TASK_WRAP_UP_ANALYSIS.md
+/FEISHU_PUSH_DIAGNOSTICS_FRAMEWORK.md
+/FEISHU_PUSH_QUERY_TEMPLATES.md
+/FINAL_SUMMARY.md
+/FIXES_COMPLETED.md
+/HOW_TO_DIAGNOSE_AND_FIX.md
+/OPTIMIZATION_COMPLETE_P0_P1.md
+/P0_PUSH_FIX_PLAN.md
+/P1_PUSH_ARCHITECTURE_REFACTOR.md
+/PROACTIVE_PUSH_FIX_SUMMARY.md
+/TASK_CREATION_AND_TIMING_ISSUES.md
+# One-off root-level test scripts
+/test_dataset_diag.py
+/test_dataset_inline.js
