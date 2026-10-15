@@ -4,6 +4,7 @@ import {
   useEffect,
   useId,
   useMemo,
+  useRef,
   useState,
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
@@ -295,8 +296,18 @@ function ToolApprovalInline({
 }) {
   const toolName = String(approval.tool_name || '').trim()
   const summary = String(approval.summary || '').trim()
+  // 多工具同时待审批：点击后面板立即切换为决策态（已批准/已拒绝），
+  // 否则用户无法分辨第一次点击是否生效。请求落定后若面板仍在（API 失败或
+  // 状态未回灌），撤回乐观决策态恢复可重试；成功时状态回灌会让面板直接卸载。
+  const [pendingChoice, setPendingChoice] = useState<ToolApprovalChoice | null>(null)
+  const wasBusyRef = useRef(false)
+  useEffect(() => {
+    if (wasBusyRef.current && !busy) setPendingChoice(null)
+    wasBusyRef.current = !!busy
+  }, [busy])
   const onConfirm = (choice: ToolApprovalChoice) => {
     const hint = toolApprovalHintFromMeta(approval, tool)
+    setPendingChoice(choice)
     if (choice === 'deny') {
       void onToolApproval('deny', toolCallId)
       return
@@ -307,6 +318,8 @@ function ToolApprovalInline({
     }
     void onToolApproval('approve', toolCallId, hint)
   }
+  const decided =
+    pendingChoice == null ? null : pendingChoice === 'deny' ? 'denied' : 'approved'
   return (
     <div className="msg-tool-approval-inline">
       <ToolApprovalPanel
@@ -314,6 +327,7 @@ function ToolApprovalInline({
         summary={summary}
         detailExtra={detailExtra}
         busy={busy}
+        decided={decided}
         onConfirm={onConfirm}
       />
     </div>

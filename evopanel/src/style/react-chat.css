@@ -14329,6 +14329,20 @@ html.dark .msg-ai-ask-inline-label,
   cursor: default;
 }
 
+/* 点击后的乐观决策态（多工具审批的点击回执）：面板收起为「已批准/已拒绝」结果条 */
+.tool-approval-panel--decided {
+  border-style: dashed;
+  color: #64748b;
+}
+.tool-approval-panel__decision {
+  font-size: 13px;
+  font-weight: 600;
+  color: #15803d;
+}
+.tool-approval-panel__decision--denied {
+  color: #b91c1c;
+}
+
 :root[data-theme='dark'] .tool-approval-panel,
 html.theme-dark .tool-approval-panel,
 body.theme-dark .tool-approval-panel {
@@ -14372,6 +14386,22 @@ html.theme-dark .tool-approval-panel__confirm,
 body.theme-dark .tool-approval-panel__confirm {
   background: #f8fafc;
   color: #0f172a;
+}
+:root[data-theme='dark'] .tool-approval-panel--decided,
+html.theme-dark .tool-approval-panel--decided,
+body.theme-dark .tool-approval-panel--decided {
+  border-color: rgba(148, 163, 184, 0.28);
+  color: #94a3b8;
+}
+:root[data-theme='dark'] .tool-approval-panel__decision,
+html.theme-dark .tool-approval-panel__decision,
+body.theme-dark .tool-approval-panel__decision {
+  color: #4ade80;
+}
+:root[data-theme='dark'] .tool-approval-panel__decision--denied,
+html.theme-dark .tool-approval-panel__decision--denied,
+body.theme-dark .tool-approval-panel__decision--denied {
+  color: #f87171;
 }
 
 .tool-approval-modal-overlay {
@@ -18574,9 +18604,14 @@ html.dark .msg-tool-activity-fold-steps {
   /* 默认（外层未包折叠）：照常显示，避免无折叠场景被误藏 */
   display: block;
 }
+/* 豁免：piece 内含待授权工具 / 内联审批面板时保持可见。collapseTurnToSingleExploringChunk
+   会把 tools-standalone（待审批工具的独立块）重新合并回 activity piece，全部 piece 都标
+   history —— 祖先 display:none 会让外层 .msg-tool 上的 :has() 豁免失效，审批面板照样被藏。 */
 .msg-turn-history-fold[data-history-open="false"]
   .msg-flat-activity-chunk
-  .msg-tool-activity-piece[data-piece-role="history"] {
+  .msg-tool-activity-piece[data-piece-role="history"]:not(:has(.msg-tool-entry--awaiting-approval)):not(
+    :has(.msg-tool-approval-inline)
+  ) {
   display: none;
 }
 

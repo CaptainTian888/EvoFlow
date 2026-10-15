@@ -535,4 +535,49 @@ describe('TurnHistoryFold v5.2（外层状态条 = 唯一折叠入口，工作�
     expect(trigger?.getAttribute('aria-expanded')).toBe('true')
     expect(screen.queryByText(/echo hi/)).toBeTruthy()
   })
+
+  it('授权暂停（本行为审批宿主）：折叠头显示「等待授权」且默认展开，审批面板可见', () => {
+    const now = Date.now()
+    const pendingTool = {
+      id: 't1',
+      name: 'terminal',
+      input: { command: 'rm -rf tmp' },
+      status: 'pending_approval',
+      output: JSON.stringify({
+        approval: { tool_call_id: 't1', tool_name: 'terminal', summary: 'rm -rf tmp' },
+      }),
+      time: now - 10_000,
+    }
+    const input = buildInput({
+      isStreaming: false,
+      interactiveToolApproval: true,
+      displaySegments: [{ kind: 'tools', ids: ['t1'], seq: 1 }],
+      tools: [pendingTool],
+      durationLabel: '40s',
+    })
+    const plan = buildAssistantBubbleDisplayPlan(input as never)
+    render(
+      <AssistantBubbleSlotView
+        plan={plan}
+        displaySegments={input.displaySegments as never}
+        tools={input.tools as never}
+        rawText=""
+        reasoningPreview=""
+        isStreaming={false}
+        askInline={null}
+        suppressPlanExecPromptNoise={false}
+        interactiveToolApproval
+        onToolApproval={() => {}}
+        durationLabel="40s"
+        messageId="msg_appr_1"
+      />,
+    )
+    const trigger = screen.queryByTestId('chat-assistant-history-trigger-msg_appr_1')
+    // 折叠头不再误导为「已工作」——回合并未结束，正在等待授权
+    expect(trigger?.textContent).toContain('等待授权')
+    // 授权暂停时保持展开，审批入口可见
+    expect(trigger?.getAttribute('aria-expanded')).toBe('true')
+    expect(screen.getByText('需要权限')).toBeTruthy()
+    expect(screen.getByRole('button', { name: '确认' })).toBeTruthy()
+  })
 })

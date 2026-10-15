@@ -275,6 +275,9 @@ function AssistantBubbleSlotViewInner({
   const workedLabel = (() => {
     if (plan.flatTimeline === false || suppressExploringFold) return ''
     if (isStreaming) return workedText ? `工作中 ${workedText}` : '工作中'
+    // 授权暂停（流已停、本行挂着待审批工具）：回合并未结束，折叠头不能显示
+    // 「已工作」并自动收起——那会把唯一可操作的审批面板一起藏掉。
+    if (interactiveToolApproval) return '等待授权'
     if (turnInterrupted) return '⏹ 已停止'
     if (workedText) return `已工作 ${workedText}`
     return '已工作'
@@ -427,7 +430,9 @@ function AssistantBubbleSlotViewInner({
           // v5.10：折叠展开跟随齿轮同源条件（isStreaming || threadBusy）——
           // sealing 窗口（RUN_FINISHED 后 final 落库前）isStreaming 已翻 false，
           // threadBusy 仍亮，保持展开与齿轮直到线程真正空闲。
-          defaultOpen={isStreaming || threadBusy}
+          // 授权暂停时 interactiveToolApproval=true（本行是审批宿主），同样保持
+          // 展开，否则自动折叠会把审批面板藏进 history piece。
+          defaultOpen={isStreaming || threadBusy || interactiveToolApproval}
           // v5.3：已工作默认折叠时，最新一轮 piece 仍要外露。
           // body 永远渲染，由 children 自身用 CSS 决定哪些 piece 可见。
           bodyAlwaysRendered={!isStreaming && !threadBusy}
