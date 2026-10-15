@@ -801,6 +801,8 @@ export default function KnowledgeOwnedPage() {
   const [hits, setHits] = useState([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [retryingDocs, setRetryingDocs] = useState(() => new Set());
+  const [reindexingAll, setReindexingAll] = useState(false);
   const [toast, setToast] = useState("");
   const [listFilter, setListFilter] = useState("");
   const [docFilter, setDocFilter] = useState("");
@@ -820,7 +822,6 @@ export default function KnowledgeOwnedPage() {
   const [kbTags, setKbTags] = useState([]);
   const [jobStats, setJobStats] = useState(null);
   const [syncPopupDismissed, setSyncPopupDismissed] = useState(false);
-  const [indexErrorsOpen, setIndexErrorsOpen] = useState(false);
   const [docCounts, setDocCounts] = useState({});
   const [selectedDocId, setSelectedDocId] = useState("");
   const [expandedFolders, setExpandedFolders] = useState(() => new Set());
@@ -2164,54 +2165,206 @@ export default function KnowledgeOwnedPage() {
           !syncPopupDismissed &&
           (jobStats.active > 0 || jobStats.pendingDocs > 0 || jobStats.error > 0) ? (
             <div
-              className={`ko-sync-popup${jobStats.active > 0 || jobStats.pendingDocs > 0 ? " is-active" : " is-idle"}`}
+              className={`ko-sync-popup ko-sync-popup--modal${
+                jobStats.active > 0 || jobStats.pendingDocs > 0 ? " is-active" : " is-idle"
+              }`}
               data-testid="ko-sync-banner"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="ko-sync-banner-title"
+              style={{
+                // Inline-style fallback: the centered modal is invisibly
+                // clamped to ``max-width: 320px`` by the base
+                // ``.ko-sync-popup`` class — and that class wins on
+                // specificity because ``.ko-sync-popup--modal`` never
+                // re-declared ``max-width``. Force the override here so
+                // the modal works in both Vite dev AND in the bundled
+                // Tauri build, where the CSS file may be cached or
+                // reloaded out-of-band.
+                position: "fixed",
+                top: "50%",
+                left: "50%",
+                right: "auto",
+                bottom: "auto",
+                transform: "translate(-50%, -50%)",
+                width: "min(900px, calc(100vw - 80px))",
+                maxWidth: "none",
+                maxHeight: "min(72vh, 560px)",
+              }}
             >
+              <div className="ko-sync-popup__head">
+                <h3 id="ko-sync-banner-title">
+                  {jobStats.active > 0 || jobStats.pendingDocs > 0 ? "索引进行中" : "索引状态"}
+                </h3>
+                <button
+                  aria-label="关闭"
+                  className="ko-sync-popup__close"
+                  onClick={() => setSyncPopupDismissed(true)}
+                  type="button"
+                >
+                  ×
+                </button>
+              </div>
               <div className="ko-sync-popup__body">
                 <strong>
-                  {jobStats.active > 0 || jobStats.pendingDocs > 0 ? "索引中" : "索引状态"}
+                  {jobStats.active > 0 || jobStats.pendingDocs > 0
+                    ? "解析/嵌入进度"
+                    : "任务汇总"}
                 </strong>
                 <span>
                   {jobStats.active > 0 || jobStats.pendingDocs > 0
                     ? `排队 ${jobStats.queued || 0} · 进行 ${jobStats.running || 0} · 待解析 ${jobStats.pendingDocs || 0}`
-                    : null}
+                    : `共 ${jobStats.error} 项任务失败，详情见下方列表`}
                   {jobStats.error
                     ? `${jobStats.active > 0 || jobStats.pendingDocs > 0 ? " · " : ""}失败 ${jobStats.error}`
                     : null}
                 </span>
+                {jobStats.error ? (
+                  <div className="ko-sync-popup__actions">
+                    <button
+                      className="ko-btn"
+                      disabled={reindexingAll}
+                      onClick={async () => {
+                        if (!window.confirm(
+                          "将对当前知识库全部文档重新触发 parse_index，可能耗时较长，确定继续？",
+                        )) return;
+                        setReindexingAll(true);
+                        try {
+                          const res = await api.reindexOwnedKnowledgeBase(selectedId, { force: true });
+                          notify(
+                            res?.reindexQueued
+                              ? `已重新解析整个知识库（${res.reindexQueued} 篇入队）`
+                              : "已触发整库重新解析",
+                          );
+                          await loadDocs(selectedId);
+                        } catch (e) {
+                          notify(e?.message || "整库重新解析失败");
+                        } finally {
+                          setReindexingAll(false);
+                        }
+                      }}
+                      type="button"
+                      title="对当前知识库全部文档重新触发 parse_index"
+                    >
+                      {reindexingAll ? "整库重试中…" : "重新解析整个 KB"}
+                    </button>
+                    <button
+                      className="ko-btn"
+                      onClick={async () => {
+                        try {
+                          const res = await api.purgeOrphanOwnedJobs(selectedId);
+                          const purged = Number(res?.purged ?? 0);
+                          notify(
+                            purged > 0
+                              ? `已清理 ${purged} 个失效任务`
+                              : "没有发现失效任务",
+                          );
+                          await loadDocs(selectedId);
+                        } catch (e) {
+                          notify(e?.message || "清理失效任务失败");
+                        }
+                      }}
+                      type="button"
+                    >
+                      一键清理失效任务
+                    </button>
+                  </div>
+                ) : null}
               </div>
-              {jobStats.error ? (
-                <button
-                  className="ko-sync-popup__details"
-                  onClick={() => setIndexErrorsOpen((value) => !value)}
-                  type="button"
-                >
-                  {indexErrorsOpen ? "收起原因" : "查看原因"}
-                </button>
-              ) : null}
-              <button
-                aria-label="关闭"
-                className="ko-sync-popup__close"
-                onClick={() => setSyncPopupDismissed(true)}
-                type="button"
-              >
-                ×
-              </button>
-              {indexErrorsOpen && jobStats.errors?.length ? (
+              {jobStats.error && jobStats.errors?.length ? (
                 <div className="ko-sync-popup__errors">
-                  {jobStats.errors.map((item) => (
-                    <div className="ko-sync-error" key={item.id}>
-                      <div className="ko-sync-error__head">
-                        <strong>{item.type || "索引任务"}</strong>
-                        <span>{item.docId || "未关联文档"}</span>
+                  {jobStats.errors.map((item) => {
+                    const raw = String(item.error_message || "任务失败，但服务端没有返回详细原因。");
+                    // Backend packs ``<message>\n[traceback] <last_frame>`` so the
+                    // user sees the cause + the line that raised it without us
+                    // having to fetch the full traceback separately.
+                    const split = raw.split("\n[traceback] ");
+                    const headline = split[0] || raw;
+                    const tail = split[1];
+                    const docId = String(item.docId || "").trim();
+                    const rowRetrying = docId && retryingDocs.has(docId);
+                    return (
+                      <div
+                        className="ko-sync-error"
+                        key={item.id}
+                        style={{
+                          // Inline grid fallback so each error row keeps
+                          // its multi-column layout even if the bundled
+                          // CSS is cached. Grid areas match the CSS file
+                          // (``knowledge-owned.css``).
+                          display: "grid",
+                          gridTemplateColumns: "minmax(110px, 140px) minmax(0, 1fr) auto",
+                          gridTemplateAreas:
+                            '"type head meta" "body body body" "trace trace trace" "retry retry retry"',
+                          alignItems: "center",
+                          columnGap: 12,
+                          rowGap: 4,
+                          padding: "9px 12px",
+                          border: "1px solid color-mix(in srgb, var(--kb-error) 24%, var(--ko-line))",
+                          borderRadius: 7,
+                          background: "color-mix(in srgb, var(--kb-error) 6%, transparent)",
+                        }}
+                      >
+                        <div className="ko-sync-error__head">
+                          <strong>{item.type || "索引任务"}</strong>
+                          <span>{docId || "未关联文档"}</span>
+                        </div>
+                        <p>{headline}</p>
+                        {tail ? (
+                          <details>
+                            <summary>查看 traceback</summary>
+                            <pre className="ko-sync-error__trace">{tail}</pre>
+                          </details>
+                        ) : null}
+                        <small>
+                          重试 {item.attempts || 0}/{item.max_attempts || 0} ·{" "}
+                          {item.finished_at || item.updated_at || ""}
+                        </small>
+                        {docId ? (
+                          <button
+                            className="ko-btn ghost ko-sync-error__retry"
+                            disabled={rowRetrying}
+                            onClick={async () => {
+                              setRetryingDocs((prev) => {
+                                const next = new Set(prev);
+                                next.add(docId);
+                                return next;
+                              });
+                              try {
+                                await api.retryOwnedDocument(selectedId, docId);
+                                notify(`已重新加入队列: ${docId.slice(0, 12)}…`);
+                                // Refresh banner stats so the row leaves the
+                                // failure list once the new job completes.
+                                await loadDocs(selectedId);
+                              } catch (e) {
+                                notify(e?.message || "重试失败");
+                              } finally {
+                                setRetryingDocs((prev) => {
+                                  const next = new Set(prev);
+                                  next.delete(docId);
+                                  return next;
+                                });
+                              }
+                            }}
+                            type="button"
+                            title="对该文档重新触发 parse_index 任务"
+                          >
+                            {rowRetrying ? "重试中…" : "重试"}
+                          </button>
+                        ) : null}
                       </div>
-                      <p>{item.error_message || "任务失败，但服务端没有返回详细原因。"}</p>
-                      <small>重试 {item.attempts || 0}/{item.max_attempts || 0} · {item.finished_at || item.updated_at || ""}</small>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               ) : null}
             </div>
+          ) : null}
+          {jobStats && !syncPopupDismissed && (jobStats.error > 0) ? (
+            <div
+              className="ko-sync-overlay"
+              onClick={() => setSyncPopupDismissed(true)}
+              aria-hidden="true"
+            />
           ) : null}
 
           {!selected && !loading ? (

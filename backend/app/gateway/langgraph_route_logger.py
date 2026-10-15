@@ -55,6 +55,15 @@ class LangGraphRouteLoggerMiddleware:
                     lg_run_id = parts[i + 1]
                     break
 
+        # Set the stream-trace contextvar early so the chat-model layer
+        # (vendor_roundtrip) can find the thread id even when its async
+        # stack does not carry langgraph's runnable config.
+        try:
+            from evoflow.debug.stream_trace import set_current_thread_id as _st_set_tid
+            _st_set_tid(lg_thread_id)
+        except Exception:
+            pass
+
         # Extract user_input_ts_ms from POST body (evf_user_input_ts_ms in runContext).
         # Must eagerly drain the body BEFORE Step 1 fires, then replay to LangGraph.
         user_input_ts_ms: int | None = None
@@ -457,6 +466,15 @@ class LangGraphRouteLoggerMiddleware:
                         enqueue_wire_chunk_sync(lg_thread_id, raw_body, run_id=lg_run_id)
                     except Exception:
                         pass
+                # Stream trace: log gateway SSE chunk
+                if is_stream_response and lg_thread_id and raw_body:
+                    try:
+                        from evoflow.debug.stream_trace import stream_trace as _get_stream_trace
+                        _st = _get_stream_trace(str(lg_thread_id))
+                        if _st.is_enabled:
+                            _st.log_gateway_chunk(raw_body)
+                    except Exception as _e:
+                        print(f"[STREAM_TRACE_DEBUG] gateway chunk log failed: {_e!r}", file=sys.stderr, flush=True)
                 if not body_logged:
                     body_logged = True
                     chunk_preview = ""
@@ -493,6 +511,15 @@ class LangGraphRouteLoggerMiddleware:
                             pass
                 elif not more and lg_thread_id:
                     # --- Step 6: gateway_stream_end (SSE stream finished) ---
+                    # Stream trace: log gateway stream end
+                    try:
+                        from evoflow.debug.stream_trace import stream_trace as _get_stream_trace
+                        _st = _get_stream_trace(str(lg_thread_id))
+                        if _st.is_enabled:
+                            _st.log_stream_end({"duration_ms": int((_lg_time.monotonic() - t0) * 1000)})
+                    except Exception:
+                        pass
+
                     try:
                         from evoflow.observability.run_latency_trace import write_run_latency_event as _rl_write
 

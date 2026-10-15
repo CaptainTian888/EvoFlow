@@ -2449,7 +2449,8 @@ function renderStatusPrimaryActions(t) {
   if (u === 'failed') {
     return `
       <button type="button" class="btn btn-sm btn-secondary" data-action="view-reason" data-id="${id}">查看原因</button>
-      <button type="button" class="btn btn-sm btn-primary" data-action="retry" data-id="${id}">重试</button>`
+      <button type="button" class="btn btn-sm btn-primary" data-action="retry-failed" data-id="${id}">重试失败步骤</button>
+      <button type="button" class="btn btn-sm btn-secondary" data-action="restart" data-id="${id}">重新执行</button>`
   }
   // completed：查看产出统一靠点击任务行/卡片进入详情
   if (u === 'completed') {
@@ -2738,7 +2739,8 @@ function attachTaskEvents(page, state) {
       action === 'view-progress' ||
       action === 'open-work-process' ||
       action === 'view-reason' ||
-      action === 'retry'
+      action === 'retry-failed' ||
+      action === 'restart'
     ) {
       e.stopPropagation()
       await handleTaskPrimaryAction(page, state, action, id)
@@ -3180,7 +3182,18 @@ async function handleTaskPrimaryAction(page, state, action, taskId) {
     openTaskDetail(id, state, page)
     return
   }
-  if (action === 'retry') {
+  if (action === 'retry-failed') {
+    try {
+      await api.retryTask(id, { retryAllFailed: true })
+      toast('失败步骤已重新排队', 'success')
+      invalidate('tasks_list')
+      await loadTasks(page, state)
+      openTaskDetail(id, state, page)
+    } catch (e) {
+      toast('重试失败步骤出错：' + e, 'error')
+    }
+  }
+  if (action === 'restart') {
     try {
       await api.restartTask(id)
       toast('已重新排队执行', 'success')
@@ -3188,7 +3201,7 @@ async function handleTaskPrimaryAction(page, state, action, taskId) {
       await loadTasks(page, state)
       openTaskDetail(id, state, page)
     } catch (e) {
-      toast('重试失败：' + e, 'error')
+      toast('重新执行失败：' + e, 'error')
     }
   }
 }

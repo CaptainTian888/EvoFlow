@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use serde::Serialize;
 use serde_json::Value;
-use tauri::{Manager, State, WebviewWindow};
+use tauri::{Emitter, Manager, State, WebviewWindow};
 #[cfg(target_os = "windows")]
 use tauri::{LogicalPosition, LogicalSize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -655,7 +655,7 @@ async fn start_broker(app: tauri::AppHandle) -> Result<String, String> {
 #[cfg(target_os = "windows")]
 fn create_embed_window(
     app: &tauri::AppHandle,
-    parent: &WebviewWindow,
+    _parent: &WebviewWindow,
     label: &str,
     target_url: &url::Url,
     x: f64,
@@ -663,189 +663,302 @@ fn create_embed_window(
     width: f64,
     height: f64,
 ) -> Result<(), String> {
-    eprintln!(
+    browser_cdp_server::log_line(&format!(
         "[browser-embed] create_embed_window: label={} url={} pos=({},{}) size={}x{}",
         label, target_url, x, y, width, height
-    );
-    eprintln!("[browser-embed] create_embed_window: calling WebviewWindow::build()...");
-    WebviewWindow::builder(app, label, WebviewUrl::External(target_url.clone()))
-        .parent(parent)
+    ));
+    // Tauri docs (Windows): `WebviewWindow::build` deadlocks when run *inside*
+    // `run_on_main_thread` / sync commands — WebView2 init needs the pump that
+    // a blocked main thread cannot run. Build on the caller thread (async
+    // command worker or HTTP ensure path) instead; then wait_webview2_ready
+    // hops onto main with an explicit PeekMessage pump.
+    if let Some(win) = app.get_webview_window(label) {
+        let _ = win.show();
+        let _ = win.unminimize();
+        return Ok(());
+    }
+    let parent = app
+        .get_webview_window("main")
+        .ok_or_else(|| "main window not found".to_string())?;
+    let popup_app = app.clone();
+    let popup_label = label.to_string();
+    let boot_url = target_url.clone();
+    let width = width.max(120.0);
+    let height = height.max(80.0);
+    eprintln!("[browser-embed] create_embed_window: calling WebviewWindow::build() off main thread...");
+    let win = WebviewWindow::builder(app, label, WebviewUrl::External(boot_url))
+        .parent(&parent)
         .map_err(|e| format!("attach embedded browser parent failed: {e}"))?
+        // tauri-agent style guest: listen for browser-embed://cdp and answer via invoke.
+        .initialization_script(super::browser_embed_bridge::embed_guest_init_script())
+        .on_new_window(move |url, _features| {
+            let url = url.clone();
+            let app = popup_app.clone();
+            let label = popup_label.clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                if let Some(win) = app.get_webview_window(&label) {
+                    if let Err(e) = win.navigate(url) {
+                        eprintln!("[browser-embed] popup takeover navigate failed: {e}");
+                    }
+                }
+            });
+            tauri::webview::NewWindowResponse::Deny
+        })
         .title("EvoFlow Browser")
         .decorations(false)
         .resizable(false)
         .shadow(false)
         .skip_taskbar(true)
         .visible(true)
-        // Never steal focus: the user is typing in the chat composer, and the
-        // embed must not pull the caret out from under them when it appears.
         .focused(false)
         .position(x, y)
-        .inner_size(width.max(120.0), height.max(80.0))
+        .inner_size(width, height)
         .devtools(false)
         .build()
-        .map_err(|e| format!("create embedded browser failed: {e}"))
-        .map(|win| {
-            // The builder already asked for `.visible(true)`, but a brand-new
-            // WebView2 can still land hidden on first layout. Verify instead of
-            // assuming, and re-assert if it did.
-            log_window_state(&win, "create built");
-            if !win.is_visible().unwrap_or(false) {
-                eprintln!(
-                    "[browser-embed] create: window reported hidden right after build, re-asserting show()"
-                );
-                let _ = win.show();
-                let _ = win.unminimize();
-                log_window_state(&win, "create after re-assert");
-            }
-            // Poll until the WebView2 COM controller is actually reachable.
-            // On a freshly created window, `win.eval()` returns
-            // "failed to receive message from webview" until the WebView2
-            // runtime has finished initialising.  Spin here so callers that
-            // immediately do `window.location.assign` are guaranteed a live
-            // webview and not a silent no-op.
-            wait_webview2_ready(&win, label);
-        })
+        .map_err(|e| format!("create embedded browser failed: {e}"))?;
+    log_window_state(&win, "create built off main thread");
+    if !win.is_visible().unwrap_or(false) {
+        let _ = win.show();
+        let _ = win.unminimize();
+        log_window_state(&win, "create after re-assert");
+    }
+    // Skip wait_webview2_ready (with_webview). Page.navigate uses
+    // WebviewWindow::navigate; COM readiness is not required to show a URL.
+    Ok(())
 }
 
-/// Auto-create a hidden WebView2 child window for a thread that has none yet.
+/// Probe whether a webview's UI thread still dispatches `with_webview` closures.
+///
+/// A half-torn-down / permanently-hidden HWND can linger after `close()` and
+/// still be returned by `get_webview_window`, while every CDP call times out
+/// waiting for the UI thread. Detect that in a few seconds so the ensure path
+/// can destroy and recreate instead of returning a false "ok".
+///
+/// Must run the wait on the Tauri main thread with a Win32 message pump — the
+/// same pattern as `browser_cdp::native_execute_script`. Sleeping on a worker
+/// while tao is paused never delivers the PostMessage, so every probe looked
+/// like a dead HWND even for healthy windows.
+/// Public probe used by `browser_cdp_command` to detect zombie HWNDs before
+/// skipping `ensure_webview_for_cdp`.
+#[cfg(target_os = "windows")]
+pub fn probe_webview_dispatch_pub(
+    app: &tauri::AppHandle,
+    win: &WebviewWindow,
+    label: &str,
+    budget_ms: u64,
+) -> bool {
+    probe_webview_dispatch(app, win, label, budget_ms)
+}
+
+#[cfg(target_os = "windows")]
+fn probe_webview_dispatch(
+    app: &tauri::AppHandle,
+    win: &WebviewWindow,
+    label: &str,
+    budget_ms: u64,
+) -> bool {
+    let (tx, rx) = std::sync::mpsc::channel::<bool>();
+    let window = win.clone();
+    let label_owned = label.to_string();
+    if app
+        .run_on_main_thread(move || {
+            let cell: Arc<Mutex<Option<()>>> = Arc::new(Mutex::new(None));
+            let cell_inner = cell.clone();
+            if window
+                .with_webview(move |_platform| {
+                    if let Ok(mut guard) = cell_inner.lock() {
+                        *guard = Some(());
+                    }
+                })
+                .is_err()
+            {
+                eprintln!("[browser-embed] probe_webview_dispatch {label_owned}: enqueue failed");
+                let _ = tx.send(false);
+                return;
+            }
+            let deadline = std::time::Instant::now() + Duration::from_millis(budget_ms);
+            while std::time::Instant::now() < deadline {
+                if cell.lock().ok().and_then(|mut g| g.take()).is_some() {
+                    let _ = tx.send(true);
+                    return;
+                }
+                browser_cdp::pump_win32_messages_once();
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            eprintln!(
+                "[browser-embed] probe_webview_dispatch {label_owned}: no dispatch in {budget_ms}ms"
+            );
+            let _ = tx.send(false);
+        })
+        .is_err()
+    {
+        eprintln!("[browser-embed] probe_webview_dispatch {label}: run_on_main_thread failed");
+        return false;
+    }
+    rx.recv_timeout(Duration::from_millis(budget_ms.saturating_add(2000)))
+        .unwrap_or(false)
+}
+
+/// Destroy a stuck embed webview so the next ensure can create a live one.
+///
+/// Close runs on the Tauri main thread (same constraint as create).
+/// `WebviewWindow::close()` is async on Windows — poll until the label is gone.
+#[cfg(target_os = "windows")]
+pub fn destroy_webview_for_thread(app: &tauri::AppHandle, thread_id: &str) {
+    let label = webview_label_for_thread(thread_id);
+    let key = sanitize_thread_key(thread_id);
+    if let Ok(mut map) = app.state::<BrowserEmbedState>().entries.lock() {
+        map.remove(&key);
+    }
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    let app_for_main = app.clone();
+    let label_for_main = label.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Some(win) = app_for_main.get_webview_window(&label_for_main) {
+            eprintln!("[browser-embed] destroying stuck webview label={label_for_main}");
+            let _ = win.hide();
+            let _ = win.close();
+        }
+        let _ = tx.send(());
+    });
+    let _ = rx.recv_timeout(Duration::from_secs(5));
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while app.get_webview_window(&label).is_some() {
+        if std::time::Instant::now() >= deadline {
+            eprintln!(
+                "[browser-embed] destroy_webview_for_thread {label}: label still present after 2s"
+            );
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Auto-create a WebView2 child window for a thread that has none yet.
 ///
 /// ZCode parity: in ZCode the Electron main process owns a `webContents` per
 /// thread from app start; the renderer simply `show()`s it when the user
 /// opens the panel.  EvoFlow has a separate Python gateway, but the same
 /// property — "the host process owns the webview, the user just sees it when
-/// they open the panel" — can be mirrored by spawning a hidden child window
-/// the moment the agent first drives the thread.
+/// they open the panel" — can be mirrored by spawning a child window the
+/// moment the agent first drives the thread.
 ///
-/// The window starts off-screen at 1280x800 and is invisible.  When the user
-/// later opens the panel, `browser_embed_upsert` finds the existing HWND via
-/// `get_webview_window(label)`, calls `show()` and resizes it to the panel
-/// slot — no remount, no double browser, the agent's first page becomes the
-/// page the user sees.
+/// Important: the window must be *visible* (even if parked off-screen). A
+/// `.visible(false)` WebView2 often never pumps `with_webview` / CDP closures,
+/// which surfaces as "timed out waiting for the webview UI thread". The panel
+/// later repositions the same HWND into the side-panel slot.
+/// Serialize auto-create so concurrent Page.navigate / evaluate storms cannot
+/// each `create_embed_window` + `destroy` the same label (that left
+/// readyState=none and 60s channel timeouts).
+#[cfg(target_os = "windows")]
+static ENSURE_WEBVIEW_LOCK: Mutex<()> = Mutex::new(());
+
 #[cfg(target_os = "windows")]
 pub fn ensure_webview_for_cdp(
     app: &tauri::AppHandle,
     thread_id: &str,
     url: &str,
 ) -> Result<(), String> {
+    let _ensure_guard = ENSURE_WEBVIEW_LOCK
+        .lock()
+        .map_err(|_| "ensure_webview lock poisoned".to_string())?;
     let label = webview_label_for_thread(thread_id);
-    if app.get_webview_window(&label).is_some() {
-        return Ok(());
+    // tauri-agent pattern: emit to the instrumented main shell and wait for
+    // the guest (main.js → browser_embed_upsert) to create the window label.
+    // Do NOT probe/destroy via with_webview — that COM path hangs on child
+    // embeds and races the panel upsert.
+    browser_cdp_server::log_line(&format!(
+        "[browser-embed] emit browser-panel-request thread={thread_id} url={url}"
+    ));
+    let _ = app.emit(
+        "browser-panel-request",
+        serde_json::json!({
+            "threadId": thread_id,
+            "url": url,
+            "source": "ensure_webview_for_cdp",
+        }),
+    );
+    {
+        let wait_deadline = std::time::Instant::now() + Duration::from_secs(25);
+        let mut last_nudge = std::time::Instant::now();
+        let key = sanitize_thread_key(thread_id);
+        while std::time::Instant::now() < wait_deadline {
+            if let Some(existing) = app.get_webview_window(&label) {
+                let _ = existing.show();
+                let _ = existing.unminimize();
+                let registered = app
+                    .state::<BrowserEmbedState>()
+                    .entries
+                    .lock()
+                    .ok()
+                    .map(|m| m.contains_key(&key))
+                    .unwrap_or(false);
+                browser_cdp_server::log_line(&format!(
+                    "[browser-embed] ensure_webview panel ok label={label} registered={registered}"
+                ));
+                return Ok(());
+            }
+            if last_nudge.elapsed() >= Duration::from_secs(3) {
+                let _ = app.emit(
+                    "browser-panel-request",
+                    serde_json::json!({
+                        "threadId": thread_id,
+                        "url": url,
+                        "source": "ensure_webview_for_cdp_retry",
+                    }),
+                );
+                last_nudge = std::time::Instant::now();
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
     }
-    let parent = app
-        .get_webview_window("main")
-        .ok_or_else(|| "main window not found")?;
+    // Last resort: create with the *same* helper the panel uses
+    // (`create_embed_window`), parked over the right half of the main window
+    // so WebView2 gets a real visible HWND. Off-screen / invisible creates
+    // never finish COM init. When React later upserts, it repositions this
+    // same label into the side-panel slot.
     let target = normalize_target_url(url)?;
     let boot_url = if target.scheme() == "about" {
-        "https://example.com/".parse::<url::Url>().map_err(|e| e.to_string())?
+        "https://example.com/"
+            .parse::<url::Url>()
+            .map_err(|e| e.to_string())?
     } else {
         target.clone()
     };
-    // Hidden off-screen until the panel mounts.  The user never sees this
-    // size because the panel will `set_size`/`set_position` to the panel-slot
-    // rect on first upsert, which simply re-targets the existing HWND.
-    let win = WebviewWindow::builder(
-        app,
-        &label,
-        WebviewUrl::External(boot_url.clone()),
-    )
-    .parent(&parent)
-    .map_err(|e| format!("attach embedded browser parent failed: {e}"))?
-    .title("EvoFlow Browser")
-    .decorations(false)
-    .resizable(false)
-    .shadow(false)
-    .skip_taskbar(true)
-    .visible(false)
-    .focused(false)
-    .position(0.0, 0.0)
-    .inner_size(1280.0, 800.0)
-    .devtools(false)
-    .build()
-    .map_err(|e| format!("create hidden embedded browser failed: {e}"))?;
-    log_window_state(&win, "ensure_webview built (hidden)");
-
-    // The WebView2 COM controller is initialised asynchronously after the
-    // HWND is up. Every IPC into the webview (`eval`, `with_webview`,
-    // `CallDevToolsProtocolMethod`) returns "failed to receive message from
-    // webview" until the controller is reachable. Block here so the caller
-    // (Python agent or first CDP command) does not race the initialisation.
-    // Without this, `call_cdp` ends up polling its 25s budget for a closure
-    // that is never dispatched, which the trace log shows happens in
-    // production whenever a Python `Page.navigate` lands on a fresh thread.
-    wait_webview2_ready(&win, &label);
-
-    // Re-point to the real target URL if we booted on a placeholder.  The
-    // `eval` on a hidden window is a no-op visually but it pre-loads the URL
-    // so the first CDP `Page.navigate` after this lands on the right origin.
-    if boot_url != target {
-        let escaped = target.as_str().replace('\\', "\\\\").replace('\'', "\\'");
-        let js = format!("window.location.assign('{escaped}');");
-        // Same rationale as the upsert path: dispatch via `with_webview`
-        // (HWND pump) so the eval does not depend on the tao main loop.
-        // The window is hidden (this is the pre-mount path) but the HWND
-        // is still alive and the message pump wry started at creation
-        // time is still running.
-        match win.with_webview(move |platform| {
-            let controller = platform.controller();
-            match unsafe { controller.CoreWebView2() } {
-                Ok(webview) => {
-                    use webview2_com::ExecuteScriptCompletedHandler;
-                    let hstr = windows::core::HSTRING::from(js.as_str());
-                    let res = unsafe {
-                        webview.ExecuteScript(
-                            &hstr,
-                            &ExecuteScriptCompletedHandler::create(Box::new(|_, _| Ok(()))),
-                        )
-                    };
-                    if let Err(e) = res {
-                        eprintln!("[browser-embed] ensure_webview ExecuteScript COM error: {e}");
-                    }
-                }
-                Err(e) => eprintln!("[browser-embed] ensure_webview CoreWebView2 COM error: {e}"),
-            }
-        }) {
-            Ok(()) => eprintln!(
-                "[browser-embed] ensure_webview navigate dispatched label={label} -> {escaped}"
-            ),
-            Err(e) => eprintln!(
-                "[browser-embed] ensure_webview navigate FAILED label={label} -> {escaped}: {e} \
-                 (the boot_url is still a real origin, so subsequent CDP Page.navigate will work)"
-            ),
+    let parent = app
+        .get_webview_window("main")
+        .ok_or_else(|| "main window not found".to_string())?;
+    let (px, py, pw, ph) = match (parent.outer_position(), parent.outer_size()) {
+        (Ok(pos), Ok(size)) => {
+            let scale = parent.scale_factor().unwrap_or(1.0);
+            let x = (pos.x as f64) / scale;
+            let y = (pos.y as f64) / scale;
+            let w = (size.width as f64) / scale;
+            let h = (size.height as f64) / scale;
+            (x + w * 0.5, y + 72.0, (w * 0.48).max(480.0), (h - 96.0).max(360.0))
         }
-    }
-
-    // Register the embed entry so `browser_embed_upsert` from the panel UI
-    // finds the cached `cdp_ws_url` instead of computing a fresh one.
-    //
-    // We deliberately do NOT call `subscribe_events()` here. Event
-    // registration requires a running UI thread message pump, which the
-    // wry/WebView2 backend starts once the window is associated with a
-    // visible HWND. For a brand-new window (just built) the message pump is
-    // up — `with_webview` works fine after `wait_webview2_ready` — but
-    // opening 70+ event receivers here is wasteful: the panel UI will
-    // re-subscribe on its own first `browser_embed_upsert`. We keep this
-    // path minimal so the first CDP call lands in 100ms, not 1.5s.
+        _ => (120.0, 120.0, 960.0, 720.0),
+    };
+    browser_cdp_server::log_line(&format!(
+        "[browser-embed] ensure_webview agent fallback create_embed_window \
+         label={label} bounds=({px:.0},{py:.0} {pw:.0}x{ph:.0})"
+    ));
+    create_embed_window(app, &parent, &label, &boot_url, px, py, pw, ph)?;
     let http_port = browser_cdp_server::current_http_port();
     if http_port > 0 {
-        let _ = app
-            .state::<BrowserEmbedState>()
-            .entries
-            .lock()
-            .map(|mut m| {
-                m.insert(
-                    sanitize_thread_key(thread_id),
-                    EmbedEntry {
-                        cdp_ws_url: format!("ws://127.0.0.1:{http_port}{CDP_WS_PATH}"),
-                    },
-                )
-            });
+        let _ = app.state::<BrowserEmbedState>().entries.lock().map(|mut m| {
+            m.insert(
+                sanitize_thread_key(thread_id),
+                EmbedEntry {
+                    cdp_ws_url: format!("ws://127.0.0.1:{http_port}{CDP_WS_PATH}"),
+                },
+            )
+        });
     }
-
-    eprintln!(
-        "[browser-embed] auto-created hidden webview label={label} url={} (panel will show() on first upsert)",
-        target
-    );
+    browser_cdp_server::log_line(&format!(
+        "[browser-embed] ensure_webview agent-create ok label={label} url={target}"
+    ));
     Ok(())
 }
 
@@ -897,10 +1010,10 @@ pub async fn browser_embed_upsert(
     {
     let key = sanitize_thread_key(&thread_id);
     let label = webview_label_for_thread(&thread_id);
-    eprintln!(
+    browser_cdp_server::log_line(&format!(
         "[browser-embed] upsert: thread={thread_id} label={label} url={:?} bounds={x}x{y} {width}x{height}",
         url.as_deref()
-    );
+    ));
     let target_url = normalize_target_url(url.as_deref().unwrap_or("about:blank"))?;
     eprintln!(
         "[browser-embed] upsert: normalized target_url={} scheme={}",
@@ -951,71 +1064,21 @@ pub async fn browser_embed_upsert(
         // invisible: `show()` above can fail silently, and `set_size` is a
         // no-op on a dying HWND, so without this the operator only sees "ready".
         log_window_state(&existing, "upsert/reuse after place+resize");
-        // The WebView2 COM controller is *not* guaranteed to be ready just
-        // because a HWND exists. After a previous `browser_embed_close` the
-        // HWND can linger in a half-torn-down state, and the very first
-        // `existing.eval(...)` (or `with_webview`) call will fail with
-        // "failed to receive message from webview".  Wait for the controller
-        // to come up before issuing any IPC, otherwise the navigation below
-        // silently does nothing — the original "stage is blank" symptom.
-        wait_webview2_ready(&existing, &label);
+        // tauri-agent / native_navigate path: use WebviewWindow::navigate —
+        // never with_webview ExecuteScript (hangs on child embeds).
         if let Some(raw_url) = url.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-            let escaped = raw_url.replace('\\', "\\\\").replace('\'', "\\'");
-            let js = format!("window.location.assign('{escaped}');");
-            // Use `with_webview` (the same primitive CDP uses) instead of
-            // `win.eval`. The two are not equivalent: `eval` posts a message
-            // to the **tao** event loop for processing on the webview's UI
-            // thread, and the loop can briefly refuse user messages while
-            // the webview controller is mid-init, surfacing as
-            // "failed to receive message from webview". `with_webview` posts
-            // a `Wry::ExecMsg` to the **HWND's** message queue via
-            // `PostMessageW`, which is serviced by the window thread pump
-            // that wry's `wait_with_pump` already started when it created
-            // the webview. Once `wait_webview2_ready` returns Ok, that pump
-            // is running, so `with_webview` will run the closure without
-            // depending on the main event loop.
-            let dispatch_result: Result<(), String> = existing
-                .with_webview(move |platform| {
-                    // The closure runs on the webview's UI thread with a
-                    // live `ICoreWebView2` handle. We invoke
-                    // `ICoreWebView2::ExecuteScript` directly here, which
-                    // is the same call wry's `InnerWebView::eval` makes —
-                    // it does not round-trip through the tao event loop,
-                    // so it succeeds even if tao's main loop is busy. We
-                    // also do not bother with a callback: `location.assign`
-                    // is fire-and-forget and any error is reported
-                    // synchronously via the `HRESULT`.
-                    let controller = platform.controller();
-                    let env_result = unsafe { controller.CoreWebView2() };
-                    match env_result {
-                        Ok(webview) => {
-                            use webview2_com::ExecuteScriptCompletedHandler;
-                            let hstr = windows::core::HSTRING::from(js.as_str());
-                            let res = unsafe {
-                                webview.ExecuteScript(
-                                    &hstr,
-                                    &ExecuteScriptCompletedHandler::create(Box::new(|_, _| Ok(()))),
-                                )
-                            };
-                            if let Err(e) = res {
-                                eprintln!(
-                                    "[browser-embed] reuse ExecuteScript COM error: {e}"
-                                );
-                            }
-                        }
-                        Err(e) => eprintln!(
-                            "[browser-embed] reuse CoreWebView2 COM error: {e}"
-                        ),
-                    }
-                })
-                .map_err(|e| format!("with_webview enqueue failed: {e}"));
-            match dispatch_result {
-                Ok(()) => eprintln!(
-                    "[browser-embed] reuse navigate dispatched label={label} -> {escaped}"
-                ),
-                Err(e) => eprintln!(
-                    "[browser-embed] reuse navigate FAILED label={label} -> {escaped}: {e}"
-                ),
+            match normalize_target_url(raw_url) {
+                Ok(parsed) => match existing.navigate(parsed.clone()) {
+                    Ok(()) => browser_cdp_server::log_line(&format!(
+                        "[browser-embed] reuse navigate ok label={label} -> {parsed}"
+                    )),
+                    Err(e) => browser_cdp_server::log_line(&format!(
+                        "[browser-embed] reuse navigate FAILED label={label} -> {parsed}: {e}"
+                    )),
+                },
+                Err(e) => browser_cdp_server::log_line(&format!(
+                    "[browser-embed] reuse navigate bad url {raw_url:?}: {e}"
+                )),
             }
         }
         if let Some(cached) = state
@@ -1044,57 +1107,29 @@ pub async fn browser_embed_upsert(
     // The window booted on a real origin; point it at the requested page now
     // that it exists. A failure here used to be discarded with `let _ =`, leaving
     // an on-screen but permanently blank window with no explanation anywhere.
-    eprintln!(
-        "[browser-embed] navigate check: boot_url={} target_url={} same={}",
-        boot_url, target_url, boot_url == target_url
-    );
+    browser_cdp_server::log_line(&format!(
+        "[browser-embed] navigate check: boot_url={boot_url} target_url={target_url} same={}",
+        boot_url == target_url
+    ));
     if boot_url != target_url {
-        let escaped = target_url.as_str().replace('\\', "\\\\").replace('\'', "\\'");
-        let js = format!("window.location.assign('{escaped}');");
-        eprintln!("[browser-embed] navigate: dispatch window.location.assign('{escaped}')");
-        // Same rationale as the reuse path: dispatch via `with_webview`
-        // (HWND pump) so the eval does not depend on the tao main loop
-        // being free. `create_embed_window` already ran `wait_webview2_ready`
-        // so the controller is up; this just puts the JS in front of it
-        // without a teao event-loop round-trip.
         match app.get_webview_window(&label) {
-            Some(win) => match win.with_webview(move |platform| {
-                let controller = platform.controller();
-                match unsafe { controller.CoreWebView2() } {
-                    Ok(webview) => {
-                        use webview2_com::ExecuteScriptCompletedHandler;
-                        let hstr = windows::core::HSTRING::from(js.as_str());
-                        let res = unsafe {
-                            webview.ExecuteScript(
-                                &hstr,
-                                &ExecuteScriptCompletedHandler::create(Box::new(|_, _| Ok(()))),
-                            )
-                        };
-                        if let Err(e) = res {
-                            eprintln!("[browser-embed] navigate ExecuteScript COM error: {e}");
-                        }
-                    }
-                    Err(e) => eprintln!("[browser-embed] navigate CoreWebView2 COM error: {e}"),
-                }
-            }) {
+            Some(win) => match win.navigate(target_url.clone()) {
                 Ok(()) => {
-                    eprintln!("[browser-embed] navigated {label} -> {escaped} OK");
+                    browser_cdp_server::log_line(&format!(
+                        "[browser-embed] navigated {label} -> {target_url} OK"
+                    ));
                     log_window_state(&win, "after navigate");
                 }
-                Err(e) => eprintln!("[browser-embed] navigate FAILED {label} -> {escaped}: {e}"),
+                Err(e) => browser_cdp_server::log_line(&format!(
+                    "[browser-embed] navigate FAILED {label} -> {target_url}: {e}"
+                )),
             },
-            None => eprintln!("[browser-embed] navigate SKIPPED: window {label} vanished"),
+            None => browser_cdp_server::log_line(&format!(
+                "[browser-embed] navigate SKIPPED: window {label} vanished"
+            )),
         }
-    } else {
-        eprintln!(
-            "[browser-embed] navigate: boot_url == target_url ({}), skipping eval — WebView2 is already on target URL",
-            target_url
-        );
-        // Booted directly on the target — still worth confirming it is on screen,
-        // since this is the path a first `open` with a real URL takes.
-        if let Some(win) = app.get_webview_window(&label) {
-            log_window_state(&win, "boot on target");
-        }
+    } else if let Some(win) = app.get_webview_window(&label) {
+        log_window_state(&win, "boot on target");
     }
 
     // Give WebView2 a moment to finish creating its COM controller before the
@@ -1103,10 +1138,16 @@ pub async fn browser_embed_upsert(
 
     let cdp_state = app.state::<Arc<CdpBrokerState>>().inner().clone();
     match browser_cdp::subscribe_events(&app, &label, cdp_state) {
-        Ok(()) => eprintln!("[browser-embed] subscribe_events ok label={label}"),
+        Ok(()) => browser_cdp_server::log_line(&format!(
+            "[browser-embed] subscribe_events ok label={label}"
+        )),
         Err(e) => {
-            eprintln!("[browser-embed] subscribe_events FAILED label={label}: {e}");
-            return Err(format!("subscribe embedded browser events failed: {e}"));
+            // Soft-fail: subscribe uses with_webview and can hang/fail on a
+            // fresh child HWND. Upsert must still return so the panel shows
+            // and Page.navigate can use window.navigate.
+            browser_cdp_server::log_line(&format!(
+                "[browser-embed] subscribe_events soft-fail label={label}: {e}"
+            ));
         }
     }
 
@@ -1224,90 +1265,113 @@ pub async fn browser_embed_set_bounds(
 /// Poll `WebviewWindow::with_webview` until its closure runs, indicating the
 /// WebView2 COM controller is actually initialised.
 ///
-/// The previous version polled `win.eval()`, but that IPC is exactly the
-/// one that returns "failed to receive message from webview" while the
-/// controller is still booting — so the probe could only report failure
-/// even after the controller was ready, and looked identical to a real hang.
-/// `with_webview` is the same primitive the CDP path uses, so the probe and
-/// the eventual `CallDevToolsProtocolMethod` call now share one readiness
-/// signal.
+/// Must hop onto the Tauri main thread and pump Win32 messages — same pattern
+/// as `browser_cdp::native_execute_script`. Sleeping on a worker while tao is
+/// paused never delivers the PostMessage, so the old probe falsely timed out
+/// every time and `ensure_webview_for_cdp` destroyed healthy HWNDs / fell back
+/// to Edge (which the node-repl bridge then rejects).
 ///
-/// On a fresh window this typically takes 1–5 s; on a busy system (first
-/// WebView2 ever created in the process, antivirus in the loop) it has
-/// been observed at 10–15 s. 60 s is the upper bound before we give up.
+/// On a fresh window this typically takes 1–5 s; 60 s is the upper bound.
+///
+/// Returns `Err` on timeout — callers must not treat a silent give-up as ready.
 #[cfg(target_os = "windows")]
-fn wait_webview2_ready(win: &WebviewWindow, label: &str) {
+fn wait_webview2_ready(
+    app: &tauri::AppHandle,
+    win: &WebviewWindow,
+    label: &str,
+) -> Result<(), String> {
     let deadline = std::time::Instant::now() + Duration::from_secs(60);
     let mut last_progress = std::time::Instant::now();
     let mut attempts: u32 = 0;
     loop {
         attempts += 1;
-        // Re-use the same shared-cell pattern as `call_cdp`. `with_webview`
-        // returning `Ok(())` only proves the closure was *enqueued*; the cell
-        // is set from the UI thread once the closure actually runs and the
-        // `CoreWebView2` COM call has returned a non-null handle.
-        let cell: Arc<Mutex<Option<Result<(), String>>>> = Arc::new(Mutex::new(None));
-        let cell_inner = cell.clone();
-        let enqueue_result = win.with_webview(move |_platform| {
-            if let Ok(mut guard) = cell_inner.lock() {
-                *guard = Some(Ok(()));
-            }
-        });
-        // If the wrapper itself rejects the enqueue (e.g. unknown label),
-        // there's no point polling — the window is gone.
-        if let Err(e) = enqueue_result {
-            eprintln!(
-                "[browser-embed] wait_webview2_ready {label} with_webview enqueue failed: {e}"
-            );
-            // The wrapper error is normally transient; keep retrying until
-            // the deadline in case the window is mid-teardown and a new one
-            // is on the way.
-            if std::time::Instant::now() >= deadline {
-                eprintln!(
-                    "[browser-embed] wait_webview2_ready {label} giving up after 60s: {e}"
-                );
+        let (tx, rx) = std::sync::mpsc::channel::<Result<(), String>>();
+        let window = win.clone();
+        let label_owned = label.to_string();
+        let attempt_n = attempts;
+        if let Err(e) = app.run_on_main_thread(move || {
+            let cell: Arc<Mutex<Option<Result<(), String>>>> = Arc::new(Mutex::new(None));
+            let cell_inner = cell.clone();
+            let entered = Arc::new(AtomicBool::new(false));
+            let entered_flag = entered.clone();
+            if let Err(e) = window.with_webview(move |_platform| {
+                entered_flag.store(true, Ordering::SeqCst);
+                if let Ok(mut guard) = cell_inner.lock() {
+                    *guard = Some(Ok(()));
+                }
+            }) {
+                let _ = tx.send(Err(format!(
+                    "wait_webview2_ready {label_owned} with_webview enqueue failed: {e}"
+                )));
                 return;
             }
-            std::thread::sleep(Duration::from_millis(500));
-            continue;
-        }
-        // Poll the cell on this thread.
-        let cell_deadline = std::time::Instant::now() + Duration::from_secs(2);
-        let mut resolved = false;
-        while std::time::Instant::now() < cell_deadline {
-            if let Some(outcome) = cell.lock().ok().and_then(|mut g| g.take()) {
-                match outcome {
-                    Ok(()) => {
+            let cell_deadline = std::time::Instant::now() + Duration::from_secs(2);
+            loop {
+                if let Some(outcome) = cell.lock().ok().and_then(|mut g| g.take()) {
+                    if outcome.is_ok() {
                         eprintln!(
-                            "[browser-embed] wait_webview2_ready {label} OK after {attempts} attempt(s)"
+                            "[browser-embed] wait_webview2_ready {label_owned} OK after {attempt_n} attempt(s)"
                         );
-                        return;
                     }
-                    Err(e) => {
-                        eprintln!("[browser-embed] wait_webview2_ready {label} ERR: {e}");
-                    }
+                    let _ = tx.send(outcome);
+                    return;
                 }
-                resolved = true;
-                break;
+                if std::time::Instant::now() >= cell_deadline {
+                    let entered_ok = entered.load(Ordering::SeqCst);
+                    let _ = tx.send(Err(if entered_ok {
+                        format!(
+                            "wait_webview2_ready {label_owned} entered but cell empty"
+                        )
+                    } else {
+                        format!(
+                            "wait_webview2_ready {label_owned} no dispatch yet (attempt {attempt_n})"
+                        )
+                    }));
+                    return;
+                }
+                browser_cdp::pump_win32_messages_once();
+                std::thread::sleep(Duration::from_millis(2));
             }
-            std::thread::sleep(Duration::from_millis(25));
-        }
-        if resolved {
+        }) {
+            if std::time::Instant::now() >= deadline {
+                let msg = format!(
+                    "wait_webview2_ready {label} run_on_main_thread failed after 60s: {e}"
+                );
+                eprintln!("[browser-embed] {msg}");
+                return Err(msg);
+            }
+            std::thread::sleep(Duration::from_millis(200));
             continue;
         }
-        if std::time::Instant::now() >= deadline {
-            eprintln!(
-                "[browser-embed] wait_webview2_ready {label} TIMED OUT after 60s, {attempts} attempt(s)"
-            );
-            return;
+        match rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(Ok(())) => return Ok(()),
+            Ok(Err(e)) => {
+                if std::time::Instant::now() >= deadline {
+                    let msg = format!(
+                        "wait_webview2_ready {label} TIMED OUT after 60s, {attempts} attempt(s): {e}"
+                    );
+                    eprintln!("[browser-embed] {msg}");
+                    return Err(msg);
+                }
+                if last_progress.elapsed() >= Duration::from_secs(5) {
+                    eprintln!(
+                        "[browser-embed] wait_webview2_ready {label} still waiting ({attempts} attempt(s)): {e}"
+                    );
+                    last_progress = std::time::Instant::now();
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(_) => {
+                if std::time::Instant::now() >= deadline {
+                    let msg = format!(
+                        "wait_webview2_ready {label} TIMED OUT after 60s, {attempts} attempt(s) (channel)"
+                    );
+                    eprintln!("[browser-embed] {msg}");
+                    return Err(msg);
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
         }
-        if last_progress.elapsed() >= Duration::from_secs(5) {
-            eprintln!(
-                "[browser-embed] wait_webview2_ready {label} still waiting ({attempts} attempt(s) so far)"
-            );
-            last_progress = std::time::Instant::now();
-        }
-        std::thread::sleep(Duration::from_millis(100));
     }
 }
 

@@ -30,6 +30,10 @@ export const NAV_ICONS = {
     '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>',
   about:
     '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>',
+  'mcp-server-management':
+    '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M4 12h16M4 17h10"/><circle cx="18" cy="17" r="2"/></svg>',
+  'plugin-management':
+    '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v4M12 3l2 2h-4l2-2zM7 11a2 2 0 00-2 2v1h14v-1a2 2 0 00-2-2M9 11V9h6v2M5 14v5a2 2 0 002 2h10a2 2 0 002-2v-5"/></svg>',
 }
 
 /** 左侧导航短标题（右侧标题区仍用 TAB_META.title） */
@@ -48,6 +52,8 @@ export const NAV_LABELS = {
   'code-index': '代码索引',
   license: '授权',
   about: '关于',
+  'mcp-server-management': 'MCP 服务',
+  'plugin-management': '插件市场',
 }
 
 export const TAB_META = {
@@ -69,13 +75,21 @@ export const TAB_META = {
   'code-index': { title: '代码索引图谱', desc: '工作空间导入关系、引用链与类型继承图谱。' },
   license: { title: '授权', desc: '粘贴激活码解锁任务中心、工作流、智能体员工。' },
   about: { title: '关于', desc: '版本信息与更新检查。' },
+  'mcp-server-management': {
+    title: 'MCP 服务器管理',
+    desc: '已装、可装、配置与运行状态 — 来自 ZCode MCP 设置组件。',
+  },
+  'plugin-management': {
+    title: '插件市场',
+    desc: 'ZCode 插件体系：市场源、安装、启停与组件详情 — 来自 ZCode 原版插件设置组件。',
+  },
 }
 
 /** 左栏分组（仅展示可见 Tab） */
 export const NAV_GROUPS = [
   { id: 'basic', title: '基础设置', tabs: ['general', 'models', 'search', 'shortcuts'] },
   { id: 'capability', title: '能力与集成', tabs: ['im', 'security', 'api', 'sso', 'users'] },
-  { id: 'data', title: '数据与资源', tabs: ['usage', 'resources', 'code-index'] },
+  { id: 'data', title: '数据与资源', tabs: ['usage', 'resources', 'code-index', 'plugin-management'] },
   { id: 'about', title: '关于', tabs: ['about', 'license'] },
 ]
 

@@ -90,6 +90,14 @@ def requeue_owned_orphans(kb_id: str | None = None, *, limit: int = 200) -> dict
     return owned_service.requeue_orphan_parse_docs(kid, limit=limit)
 
 
+def purge_owned_orphan_jobs(*, limit: int = 500) -> dict[str, Any]:
+    """Cancel failed jobs whose owning KB or document is gone."""
+    from evoflow.knowledge.owned import jobs as owned_jobs
+
+    purged = owned_jobs.purge_failed_orphan_jobs(limit=int(limit or 500))
+    return {"purged": int(purged or 0)}
+
+
 def _owned_target_ids(vault_id: str | None = None) -> list[str]:
     """Resolve which owned KB ids to operate on (explicit kb_… or all)."""
     from evoflow.knowledge.owned import service as owned_service

@@ -2,17 +2,21 @@
 
 from __future__ import annotations
 
+import logging
+
 from evoflow.execution_security.permission_preset import (
     PRESET_SPECS,
     normalize_preset_id,
     preset_from_legacy_tool_policy,
     preset_spec,
 )
-from evoflow.persistence.db import get_db
+from evoflow.persistence.db import get_db, run_db_transaction
 from evoflow.persistence.tool_approval_policy import (
     get_global_default_policy,
     get_session_policy_raw,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def get_session_preset_raw(session_key: str) -> str | None:
@@ -36,42 +40,71 @@ def get_session_preset_raw(session_key: str) -> str | None:
 
 
 def set_session_preset(session_key: str, preset_id: str | None) -> str | None:
-    """Persist preset and sync legacy ``tool_approval_policy`` column."""
+    """Persist ``permission_preset`` and the matching legacy ``tool_approval_policy`` atomically.
+
+    Both columns must move together so a refresh between two non-atomic writes
+    cannot leave the session with a stale preset (e.g. user picks Full Access,
+    UI shows Default because the second UPDATE was lost on commit). Also keeps
+    ``permission_preset`` and ``tool_approval_policy`` consistent with the same
+    PRESET_SPECS mapping.
+    """
     sk = str(session_key or "").strip()
     if not sk:
         return None
-    from evoflow.persistence.session_repositories import upsert_session_row
 
     if preset_id is None or not str(preset_id).strip():
-        conn = get_db()
-        conn.execute(
+        target_pid: str | None = None
+        target_policy: str | None = None
+    else:
+        target_pid = normalize_preset_id(preset_id)
+        target_policy = PRESET_SPECS[target_pid].tool_approval_policy
+
+    def _do(db) -> int:
+        # Single atomic UPDATE: clears or sets both columns together. This
+        # protects against the previous two-step upsert+UPDATE path which
+        # left the row visible mid-write with mismatched preset/policy
+        # values and could lose the permission_preset on commit failure
+        # between the two statements.
+        cur = db.execute(
             """
             UPDATE evoflow_chat_sessions
-            SET permission_preset = NULL
+            SET permission_preset = ?,
+                tool_approval_policy = ?
             WHERE session_key = ? AND is_deleted = 0
             """,
-            (sk,),
+            (target_pid, target_policy, sk),
         )
-        conn.commit()
-        return None
+        return cur.rowcount or 0
 
-    pid = normalize_preset_id(preset_id)
-    spec = PRESET_SPECS[pid]
-    upsert_session_row(
-        sk,
-        tool_approval_policy=spec.tool_approval_policy,
-    )
-    conn = get_db()
-    conn.execute(
-        """
-        UPDATE evoflow_chat_sessions
-        SET permission_preset = ?
-        WHERE session_key = ? AND is_deleted = 0
-        """,
-        (pid, sk),
-    )
-    conn.commit()
-    return pid
+    try:
+        updated = run_db_transaction(_do)
+    except Exception:
+        logger.exception("set_session_preset failed session_key=%s", sk)
+        raise
+
+    if updated == 0:
+        # Session row doesn't exist yet. Seed it via the canonical upsert path
+        # so the row is created with the right preset + policy in one shot, then
+        # double-check the columns stuck.
+        from evoflow.persistence.session_repositories import upsert_session_row
+
+        upsert_session_row(
+            sk,
+            tool_approval_policy=target_policy,
+        )
+        def _seed(db) -> int:
+            cur = db.execute(
+                """
+                UPDATE evoflow_chat_sessions
+                SET permission_preset = ?
+                WHERE session_key = ? AND is_deleted = 0
+                """,
+                (target_pid, sk),
+            )
+            return cur.rowcount or 0
+        run_db_transaction(_seed)
+
+    return target_pid
 
 
 def effective_preset(session_key: str) -> str:

@@ -3,12 +3,23 @@
 Converts source files (PDF, DOCX, PPTX, XLSX, TXT, MD) to plain text using
 ``markitdown`` (already a dependency in ``pyproject.toml``). For ``.txt`` /
 ``.md`` files, content is read directly without conversion.
+
+.. note::
+    Some ``markitdown`` converter sub-modules (e.g. PDF/DOCX readers) reference
+    ``os`` at module level without importing it themselves.  Because converters
+    are loaded *inside* the ``markitdown`` package namespace, the bare name
+    lookup falls through to the *importing* module's globals.  Importing ``os``
+    here ensures it is available in that scope and prevents the
+    ``name 'os' is not defined`` ``NameError``.
 """
 
 from __future__ import annotations
 
 import logging
+import os
+import traceback
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +30,12 @@ _MARKITDOWN_EXTENSIONS = {".pdf", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xl
 _TEXT_EXTENSIONS = {".txt", ".md", ".markdown", ".csv", ".json", ".xml", ".html", ".htm", ".log", ".py", ".js", ".ts", ".java", ".go", ".rs", ".c", ".cpp", ".h", ".yaml", ".yml", ".toml", ".ini", ".cfg"}
 
 
-def parse_file(file_path: str | Path) -> str:
+def parse_file(
+    file_path: str | Path,
+    *,
+    doc_id: str | None = None,
+    kb_id: str | None = None,
+) -> str:
     """Parse a document file into plain text.
 
     Uses ``markitdown`` for binary/rich formats (PDF, DOCX, PPTX, XLSX).
@@ -27,18 +43,24 @@ def parse_file(file_path: str | Path) -> str:
 
     Args:
         file_path: Path to the source file.
+        doc_id: Optional owning document id (added to error context).
+        kb_id: Optional owning KB id (added to error context).
 
     Returns:
         The extracted plain text content.
 
     Raises:
-        FileNotFoundError: If the file does not exist.
+        FileNotFoundError: If the file does not exist (the message includes
+            ``doc_id`` / ``kb_id`` so the UI can show a "重新上传" action).
         ValueError: If the file extension is not supported.
-        RuntimeError: If markitdown conversion fails.
+        RuntimeError: If markitdown conversion fails (the original exception
+            class — typically ``NameError`` from a converter sub-module that
+            forgot to ``import os`` — is preserved as ``__cause__``).
     """
     p = Path(file_path)
     if not p.exists():
-        raise FileNotFoundError(f"File not found: {p}")
+        ctx = _format_context(doc_id=doc_id, kb_id=kb_id, path=p)
+        raise FileNotFoundError(f"File not found: {p} ({ctx})")
 
     ext = p.suffix.lower()
 
@@ -48,15 +70,37 @@ def parse_file(file_path: str | Path) -> str:
 
     # markitdown conversion
     if ext in _MARKITDOWN_EXTENSIONS:
-        return _convert_with_markitdown(p)
+        return _convert_with_markitdown(p, doc_id=doc_id, kb_id=kb_id)
 
     # Try markitdown for unknown extensions as a last resort
     logger.warning("Unknown extension '%s', attempting markitdown conversion", ext)
-    return _convert_with_markitdown(p)
+    return _convert_with_markitdown(p, doc_id=doc_id, kb_id=kb_id)
 
 
-def _convert_with_markitdown(p: Path) -> str:
-    """Convert a file to text, with lightweight fallbacks for common formats."""
+def _format_context(*, doc_id: str | None, kb_id: str | None, path: Path) -> str:
+    parts: list[str] = []
+    if kb_id:
+        parts.append(f"kb_id={kb_id}")
+    if doc_id:
+        parts.append(f"doc_id={doc_id}")
+    parts.append(f"path={path}")
+    return ", ".join(parts) if parts else str(path)
+
+
+def _convert_with_markitdown(
+    p: Path,
+    *,
+    doc_id: str | None = None,
+    kb_id: str | None = None,
+) -> str:
+    """Convert a file to text, with lightweight fallbacks for common formats.
+
+    Catches ``NameError`` from converter sub-modules (a known hazard when a
+    third-party converter forgets to ``import os`` in a sub-scope) and re-raises
+    a ``RuntimeError`` that keeps the original traceback so the worker can
+    surface a useful message instead of a bare ``name 'os' is not defined``.
+    """
+    ctx = _format_context(doc_id=doc_id, kb_id=kb_id, path=p)
     try:
         from markitdown import MarkItDown
 
@@ -65,6 +109,19 @@ def _convert_with_markitdown(p: Path) -> str:
         if text.strip():
             return text
         logger.warning("markitdown returned empty content for %s; trying fallback", p.name)
+    except NameError as exc:
+        # e.g. ``name 'os' is not defined`` from a converter sub-module.
+        tb = traceback.format_exc()
+        logger.error(
+            "markitdown NameError for %s: %s\n%s",
+            p.name,
+            exc,
+            tb,
+        )
+        raise RuntimeError(
+            f"无法解析 {p.name}：markitdown 转换器缺少依赖（{exc}）。"
+            f"({ctx})"
+        ) from exc
     except Exception as exc:
         logger.warning("markitdown failed for %s: %s; trying fallback", p.name, exc)
 
@@ -77,11 +134,11 @@ def _convert_with_markitdown(p: Path) -> str:
         if p.suffix.lower() in {".docx", ".xlsx"}:
             return _convert_office_fallback(p)
     except ImportError as exc:
-        raise RuntimeError(f"无法解析 {p.name}：缺少文档解析依赖（{exc.name}）") from exc
+        raise RuntimeError(f"无法解析 {p.name}：缺少文档解析依赖（{exc.name}）({ctx})") from exc
     except Exception as exc:
-        raise RuntimeError(f"无法解析 {p.name}：{exc}") from exc
+        raise RuntimeError(f"无法解析 {p.name}：{exc} ({ctx})") from exc
 
-    raise RuntimeError(f"无法解析 {p.name}：MarkItDown 未提取到正文")
+    raise RuntimeError(f"无法解析 {p.name}：MarkItDown 未提取到正文 ({ctx})")
 
 
 def _convert_office_fallback(p: Path) -> str:

@@ -397,6 +397,122 @@ function toolInputArgs(tool) {
   return null
 }
 
+// ── ZCode 插件/MCP 工具中文显示（McpToolCallBlock 同款语义）────────────────
+// ZCode 的 MCP 渲染块把 mcp__<server>__<tool> 拆成「服务器来源 + 动作」并人性化；
+// 这里同样拆分 + 中文映射，未收录的保持人性化英文名（首字母大写）。
+const MCP_SERVER_ZH = {
+  node_repl: 'Node 内核',
+  filesystem: '文件系统',
+  fetch: '网页抓取',
+  memory: '记忆',
+  time: '时间',
+  sqlite: 'SQLite',
+  github: 'GitHub',
+  gitlab: 'GitLab',
+  image_search: '搜图',
+  'image-search': '搜图',
+  browser_use: '浏览器操作',
+  'browser-use': '浏览器操作',
+  'sequential-thinking': '思维链',
+  everything: '示例服务器',
+  lark_cli: '飞书 CLI',
+  lark: '飞书',
+  dingtalk_cli: '钉钉 CLI',
+  wecom_cli: '企业微信 CLI',
+  tencent_meeting_cli: '腾讯会议 CLI',
+  alibaba_cloud_cli: '阿里云 CLI',
+  obsidian: 'Obsidian',
+  blender: 'Blender',
+  excalidraw: 'Excalidraw',
+  slack: 'Slack',
+  exa: 'Exa 搜索',
+  evoflow_assets: '实体资产',
+}
+
+const MCP_ACTION_ZH = {
+  js: '执行 JS',
+  read: '读取',
+  read_file: '读取文件',
+  write: '写入',
+  write_file: '写入文件',
+  create: '创建',
+  create_file: '创建文件',
+  update: '更新',
+  delete: '删除',
+  remove: '删除',
+  list: '列出',
+  list_files: '列出文件',
+  list_directory: '列出目录',
+  search: '搜索',
+  fetch: '抓取',
+  get: '查询',
+  set: '设置',
+  execute: '执行',
+  run: '运行',
+  evaluate: '执行表达式',
+  click: '点击',
+  navigate: '打开网页',
+  screenshot: '截图',
+  type: '输入',
+  scroll: '滚动',
+  get_weather: '查询天气',
+  post: '发布',
+  move: '移动',
+  find: '查找',
+  replace: '替换',
+  upload: '上传',
+  download: '下载',
+}
+
+/** ZCode formatMcpIdentifier 同款：snake/kebab → 空格分隔 + 首字母大写 */
+function humanizeMcpIdentifier(value) {
+  const words = String(value || '')
+    .trim()
+    .replace(/[-_]+/g, ' ')
+    .replace(/\s+/g, ' ')
+  if (!words) return value
+  return words[0].toLocaleUpperCase() + words.slice(1)
+}
+
+/** 拆 mcp__<server>__<tool...>：server 可含连字符，tool 从第二个 __ 后开始 */
+function splitMcpToolName(name) {
+  const rest = String(name || '').replace(/^mcp__/, '')
+  const idx = rest.indexOf('__')
+  if (idx < 0) return { server: rest, tool: '' }
+  return { server: rest.slice(0, idx), tool: rest.slice(idx + 2) }
+}
+
+function mcpActionZh(tool) {
+  if (!tool) return ''
+  if (MCP_ACTION_ZH[tool]) return MCP_ACTION_ZH[tool]
+  // 贪婪按 token 翻译前导动词（如 read_file_chunk → 读取文件 Chunk）
+  const tokens = tool.split('_')
+  let translated = []
+  for (const token of tokens) {
+    const zh = MCP_ACTION_ZH[token]
+    if (!zh) break
+    translated.push(zh)
+  }
+  if (translated.length && translated.length < tokens.length) {
+    return translated.join('') + ' ' + humanizeMcpIdentifier(tokens.slice(translated.length).join('_'))
+  }
+  if (translated.length === tokens.length) return translated.join('')
+  return humanizeMcpIdentifier(tool)
+}
+
+/** mcp__ 工具的中文标题（ZCode McpToolCallBlock 同款拆分 + 中文映射） */
+export function mcpToolDisplayTitleZh(name) {
+  const { server, tool } = splitMcpToolName(name)
+  const serverZh = MCP_SERVER_ZH[server] || humanizeMcpIdentifier(server)
+  const action = mcpActionZh(tool) || humanizeMcpIdentifier(tool)
+  return `${serverZh} · ${action}`
+}
+
+export function mcpToolShortLabelZh(name) {
+  const { server, tool } = splitMcpToolName(name)
+  return mcpActionZh(tool) || MCP_SERVER_ZH[server] || humanizeMcpIdentifier(tool) || '扩展工具'
+}
+
 export function resolveToolKey(tool) {
   const raw = typeof tool === 'string' ? tool : resolveEffectiveToolName(tool)
   const s = String(raw != null ? raw : '').trim()
@@ -574,6 +690,8 @@ export function capitalizeToolName(name) {
 
 /** 工具调用折叠条左侧标签：显示英文工具名（首字母大写） */
 export function toolShortLabel(toolName) {
+  // MCP 工具：超短中文标签（动作词或服务器名），与 ToolCallList 折叠条一致
+  if (String(toolName || '').startsWith('mcp__')) return mcpToolShortLabelZh(toolName)
   const key = resolveToolKey({ name: toolName })
   if (key && key !== 'tool') return capitalizeToolName(key)
   const raw = String(toolName || '').trim()
@@ -811,7 +929,7 @@ export function scenarioSwitchBrief(args) {
 /**
  * 子任务 assigned_to（agent_code）→ 展示名：优先后端下发的 assignedAgentName，其次 `/api/agents`。
  * @param {string} code
- * @param {unknown[] | undefined} agentsFromApi
+ * @param {unknown[] | null | undefined} agentsFromApi
  * @returns {string}
  */
 export function resolveAssignedAgentDisplayName(code, agentsFromApi) {
@@ -1008,9 +1126,27 @@ export function formatAssetsBriefBits(args) {
  */
 export function formatToolDisplayTitle(tool) {
   const name = resolveEffectiveToolName(tool)
+  const args = toolInputArgs(tool)
+
+  // ZCode McpToolCallBlock 同款：MCP 工具显示「服务器中文 · 操作中文 · 参数摘要」
+  if (String(name || '').startsWith('mcp__')) {
+    const head = mcpToolDisplayTitleZh(name)
+    const seen = new Set()
+    const bits = []
+    const push = (v, max = 64) => {
+      const s = String(v ?? '').trim()
+      if (!s || seen.has(s)) return
+      seen.add(s)
+      pushBriefBit(bits, v, max)
+    }
+    push(args?.url || args?.query || args?.topic || args?.command || args?.pattern)
+    push(args?.path || args?.root || args?.glob || args?.image_path)
+    if (!bits.length) return head
+    return `${head} · ${bits.join(' · ')}`
+  }
+
   const key = resolveToolKey(name) || String(name || 'tool').trim() || 'tool'
   const label = capitalizeToolName(key)
-  const args = toolInputArgs(tool)
 
   if (name === 'subtask_work_checklist' || key === 'subtask_work_checklist') {
     return formatSubtaskWorkChecklistTitle(args)

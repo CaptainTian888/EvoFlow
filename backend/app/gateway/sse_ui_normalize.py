@@ -1323,11 +1323,19 @@ class UiStreamNormalizer:
         path_arrived = bool(path_now) and path_now != path_prev
         logger.debug(f"[SANITIZE_WRITE] stats: content_len={len(content)}, content_grew={content_grew}, lines_changed={lines_changed}, path_arrived={path_arrived}")
         progress: dict[str, Any] | None = None
-        # Only emit progress when args actually arrive (content/old_string grows,
-        # lines change, or path becomes known). Do NOT emit on first sight alone —
-        # args may not have arrived yet, resulting in content_len=0 and empty path
-        # clobbering the correct event later.
-        if lines_changed or content_grew or old_grew or path_arrived:
+        # Only emit progress when args actually arrive (lines change, old_string grows,
+        # or path becomes known).  When path is not yet known, skip entirely —
+        # the actual tool_call arguments stream through TOOL_CALL_ARGS deltas, so
+        # the frontend sees everything it needs via that channel.  content_delta is
+        # only sent once path is confirmed to avoid un-anchored progress events.
+        # Only emit progress when path is known.  Sending content_delta before path
+        # arrives creates misleading "path=" events in the UI and makes progress
+        # events unanchored (frontend has no path to display).  The actual tool_call
+        # arguments — including content — stream through TOOL_CALL_ARGS deltas, so
+        # the frontend sees everything it needs via that channel; this progress
+        # event only needs to tell the frontend "a write tool just started, here's
+        # the path".  content_delta / lines_*. are only sent once path is confirmed.
+        if lines_changed or old_grew or path_arrived:
             wire_id = key if not key.startswith(("idx:", "anon:")) else str(merged.get("id") or merged.get("tool_call_id") or "").strip()
             progress = {
                 "type": "write_file_progress",
@@ -1339,10 +1347,10 @@ class UiStreamNormalizer:
                 "lines_removed": lines_removed,
                 "content_len": len(content),
             }
-            # Stream body via deltas (not TOOL_CALL_ARGS). Cap per event; large jumps
-            # send an absolute ``content`` snapshot so the UI does not lose the middle.
+            # Stream body via deltas.  Cap per event; large jumps send an absolute
+            # ``content`` snapshot so the UI does not lose the middle.
             _DELTA_MAX = 4096
-            if content_grew:
+            if path_now and content_grew:
                 cdelta = content[len(prev_content) :]
                 if len(cdelta) <= _DELTA_MAX:
                     if cdelta:
@@ -1355,7 +1363,7 @@ class UiStreamNormalizer:
                     progress["content"] = content
                     if tool_name.strip().lower() in {"replace", "str_replace", "replace_in_file"}:
                         progress["new_string"] = content
-            if old_grew:
+            if path_now and old_grew:
                 odelta = old_string[len(prev_old) :]
                 if len(odelta) <= _DELTA_MAX:
                     if odelta:

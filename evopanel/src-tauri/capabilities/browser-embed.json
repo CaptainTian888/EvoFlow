@@ -1,0 +1,9 @@
+{
+  "identifier": "browser-embed-capability",
+  "description": "Embedded browser panel WebView2 (guest bridge for Runtime.evaluate)",
+  "windows": ["browser-embed-*"],
+  "permissions": [
+    "core:default",
+    "core:event:default"
+  ]
+}

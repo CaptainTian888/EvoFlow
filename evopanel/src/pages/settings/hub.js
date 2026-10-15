@@ -266,6 +266,26 @@ async function ensurePanelMounted(rootEl, tab) {
           _tabCleanups.set('license', () => mod.cleanup())
           break
         }
+        case 'mcp-server-management': {
+          const mod = await import('./mcp-server-management.tsx')
+          if (!inner.isConnected) return
+          const pane = document.createElement('div')
+          pane.className = 'settings-modal-pane settings-modal-pane--mcp settings-embed-wrap'
+          inner.appendChild(pane)
+          await mod.mountMcpServerManagementInto(pane)
+          _tabCleanups.set('mcp-server-management', () => mod.cleanup())
+          break
+        }
+        case 'plugin-management': {
+          const mod = await import('./plugin-management.tsx')
+          if (!inner.isConnected) return
+          const pane = document.createElement('div')
+          pane.className = 'settings-modal-pane settings-modal-pane--plugin settings-embed-wrap'
+          inner.appendChild(pane)
+          await mod.mountPluginManagementInto(pane)
+          _tabCleanups.set('plugin-management', () => mod.cleanup())
+          break
+        }
         default:
           break
       }

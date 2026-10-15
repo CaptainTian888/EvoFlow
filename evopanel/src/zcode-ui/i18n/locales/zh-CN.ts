@@ -3736,7 +3736,7 @@ const zhCN: Record<string, string> = {
   "settings.plugin.source.plugin": "插件",
   "settings.plugins.description":
     "启用或停用已安装的插件。插件可打包技能、命令、Hooks 和 MCP 服务器。",
-  "settings.plugins.store.subtitle": "用插件为 ZCode 扩展技能、命令与 MCP 能力",
+  "settings.plugins.store.subtitle": "用插件为 EvoFlow 扩展技能、命令与 MCP 能力",
   "settings.plugins.store.searchPlaceholder": "搜索插件",
   "settings.plugins.store.searchResults": "搜索结果（{count}）",
   "settings.plugins.store.searchEmpty": "没有匹配的插件",

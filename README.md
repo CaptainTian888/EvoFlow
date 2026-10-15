@@ -122,13 +122,13 @@ Windows：`.\scripts\windows\dev-stack-isolated.bat`
 
 ## 授权
 
-版权所有 © 2026 **景银泰（EvovexAI）**。[PolyForm Noncommercial License 1.0.0](LICENSE)：源码可见（source-available），允许个人学习、研究与非商业使用；**商业使用须书面授权**（[cloud@evovexai.com](mailto:cloud@evovexai.com)）。**本许可证并非 OSI「开源」许可证。**第三方组件见 [NOTICE](NOTICE)；作者与贡献者权利见 [AUTHORS.md](AUTHORS.md)、[CLA.md](CLA.md)。
+版权所有 © 2026 **景银泰（EvovexAI）**。[PolyForm Noncommercial License 1.0.0](LICENSE)：源码可见（source-available），允许个人学习、研究与非商业使用；**商业使用须书面授权**（[cloud@evovexai.com](mailto:cloud@evovexai.com)）。**本许可证并非 OSI「开源」许可证。**第三方组件见 [NOTICE](NOTICE)；商业化与第三方许可证（含 zcode Apache-2.0）对 EvoFlow 的具体影响见 [docs/legal/zcode-license-impact.md](docs/legal/zcode-license-impact.md)；作者与贡献者权利见 [AUTHORS.md](AUTHORS.md)、[CLA.md](CLA.md)。
 
 ---
 
 ## 致谢
 
-EvoFlow 是独立产品。开发中参考了 [DeerFlow](https://github.com/bytedance/deer-flow)、[Hermes Agent](https://github.com/NousResearch/hermes-agent)、[OpenClaw](https://github.com/openclaw/openclaw)、[OpenAI Codex](https://github.com/openai/codex)、[LangGraph](https://github.com/langchain-ai/langgraph) / [LangChain](https://github.com/langchain-ai/langchain)、[MCP](https://modelcontextprotocol.io)、[Tauri](https://tauri.app) 等项目的设计思路；完整版权与许可证说明见 [NOTICE](NOTICE)。
+EvoFlow 是独立产品。开发中参考了 [DeerFlow](https://github.com/bytedance/deer-flow)、[Hermes Agent](https://github.com/NousResearch/hermes-agent)、[OpenClaw](https://github.com/openclaw/openclaw)、[OpenAI Codex](https://github.com/openai/codex)、[LangGraph](https://github.com/langchain-ai/langgraph) / [LangChain](https://github.com/langchain-ai/langchain)、[MCP](https://modelcontextprotocol.io)、[Tauri](https://tauri.app) 等项目的设计思路；同时 vendored / 借鉴了 [ZCode](https://github.com/zai-org/ZCode)（Z.AI Co., Ltd.，Apache-2.0）的部分 UI、协议与服务代码（详见 [NOTICE](NOTICE) 中 `ZCode (Apache License 2.0)` 一节）。完整版权与许可证说明见 [NOTICE](NOTICE)。
 
 ---
 

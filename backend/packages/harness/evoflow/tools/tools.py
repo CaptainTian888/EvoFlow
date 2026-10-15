@@ -180,7 +180,7 @@ def get_builtin_tools() -> tuple[BaseTool, ...]:
     from evoflow.tools.builtins.todo_tool import todo_tool
     from evoflow.tools.builtins.view_image_tool import view_image_tool
 
-    return (
+    tools = [
         plan_tool,
         ask_clarification_tool,
         propose_goal_tool,
@@ -202,7 +202,18 @@ def get_builtin_tools() -> tuple[BaseTool, ...]:
         read_lints_tool,
         bash_tool,
         read_file_tool,
-    )
+    ]
+    # ZCode 插件运行时：browser-use / computer-use 启用时提供 node_repl 内核工具
+    # （官方插件技能硬性要求 mcp__node_repl__js 这个确切工具名）。
+    try:
+        from evoflow.plugins.node_repl_tool import build_node_repl_js_tool
+
+        node_repl_tool = build_node_repl_js_tool()
+        if node_repl_tool is not None:
+            tools.append(node_repl_tool)
+    except Exception:
+        logger.warning("node_repl tool registration failed", exc_info=True)
+    return tuple(tools)
 
 
 @lru_cache(maxsize=1)
@@ -312,15 +323,28 @@ def _cached_resolve_tools(
 
     # ── HostDirect mode ──
     if tools_mode == "host_direct":
+        host_direct_tools = list(
+            _load_host_direct_tools(
+                config=config,
+                model_name=model_name,
+                subagent_enabled=subagent_enabled,
+                include_search=include_search,
+                include_mcp=include_mcp,
+            )
+        )
+        # ZCode 插件运行时：browser-use / computer-use 启用时追加 node_repl 内核工具
+        # （官方插件技能硬性要求 mcp__node_repl__js 这个确切工具名）。
+        try:
+            from evoflow.plugins.node_repl_tool import build_node_repl_js_tool
+
+            node_repl_tool = build_node_repl_js_tool()
+            if node_repl_tool is not None:
+                host_direct_tools.append(node_repl_tool)
+        except Exception:
+            logger.warning("node_repl tool registration failed", exc_info=True)
         return tuple(
             _finalize_tool_catalog(
-                _load_host_direct_tools(
-                    config=config,
-                    model_name=model_name,
-                    subagent_enabled=subagent_enabled,
-                    include_search=include_search,
-                    include_mcp=include_mcp,
-                ),
+                host_direct_tools,
                 tools_mode=tools_mode,
             )
         )

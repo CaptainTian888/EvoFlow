@@ -13,10 +13,13 @@ from evoflow.collab.storage import (
     rollup_root_task_progress_from_subtasks,
 )
 from evoflow.collab.task_outputs import (
+    agent_code_for_task_row,
     evidence_paths_from_outputs,
     merge_task_outputs,
     outputs_from_evidence_paths,
+    resolve_output_path_ex,
     task_outputs_of,
+    workspace_root_for_task_row,
 )
 from evoflow.timeutil import utc_now_iso_z
 
@@ -233,6 +236,29 @@ async def apply_subtask_outcome_report(
         output_items = [sanitize_output_item(item) for item in output_items if isinstance(item, dict)]
     if not paths:
         paths = evidence_paths_from_outputs(output_items)
+    # Augment file-type outputs with backend-resolved metadata so the panel can
+    # render 「已生成/未生成」 badges and open the right workspace root
+    # without re-probing the filesystem. Non-file outputs are passed through.
+    if output_items:
+        _sub_root = workspace_root_for_task_row(st)
+        _sub_agent = agent_code_for_task_row(st)
+        for _item in output_items:
+            if not isinstance(_item, dict):
+                continue
+            if str(_item.get("type") or "").strip().lower() != "file":
+                continue
+            _res = resolve_output_path_ex(
+                str(_item.get("value") or ""),
+                _sub_root,
+                agent_code=_sub_agent,
+            )
+            _item["value"] = _res.absolute
+            _item["_resolve_meta"] = {
+                "absolute": _res.absolute,
+                "root_used": _res.root_used,
+                "strategy": _res.strategy,
+                "found": _res.found,
+            }
     # Keep task_report self-contained for Lead readers; UI also gets structured outputs.
     if paths and "产出路径" not in summ:
         summ = summ + "\n\n产出路径：\n" + "\n".join(f"- `{p}`" for p in paths)

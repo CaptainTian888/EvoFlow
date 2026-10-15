@@ -23599,6 +23599,61 @@ html.dark .react-chat-workspace-preview-zoom-bar {
   color: inherit;
 }
 
+.react-chat-mention-menu-item--row {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+
+.react-chat-mention-menu-item--row .react-chat-mention-menu-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
+}
+
+.react-chat-mention-menu-item--row .react-chat-mention-menu-path {
+  flex: 0 0 auto;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--bg-secondary, #f3f4f6);
+  color: var(--text-secondary, #6b7280);
+}
+
+.react-chat-mention-menu-item--row .react-chat-mention-menu-desc {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--text-tertiary, #9ca3af);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
+}
+
+.react-chat-mention-menu-icon {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  font-size: 14px;
+  line-height: 1;
+  font-family: 'Apple Color Emoji', 'Segoe UI Emoji', 'Twemoji Mozilla', 'Noto Color Emoji',
+    'Segoe UI Symbol', system-ui, sans-serif;
+}
+
+.react-chat-mention-menu-icon-img {
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
+  display: block;
+}
+
 .react-chat-mention-menu-item.is-active,
 .react-chat-mention-menu-item:hover {
   background: var(--bg-secondary, #f3f4f6);
@@ -28345,6 +28400,20 @@ html.dark .react-chat-header-win-sep {
   flex-shrink: 0;
   font-size: var(--ef-text-sm);
   line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: 'Apple Color Emoji', 'Segoe UI Emoji', 'Twemoji Mozilla', 'Noto Color Emoji',
+    'Segoe UI Symbol', system-ui, sans-serif;
+  min-width: 14px;
+  min-height: 14px;
+}
+
+.react-chat-skill-composer-pill-icon-img {
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
+  display: block;
 }
 
 .react-chat-skill-composer-pill-label {

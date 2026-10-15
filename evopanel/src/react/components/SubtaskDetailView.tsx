@@ -6,13 +6,22 @@ import {
   shortenPath,
   taskOutputsOf,
 } from '../../lib/task-summary.js'
-import { bindTaskOutputCardActions } from '../../lib/task-output-preview.js'
+import {
+  bindTaskOutputCardActions,
+  enrichOutputCardsExistence,
+} from '../../lib/task-output-preview.js'
 
 type OutputItem = {
   type?: string
   key?: string
   value?: string
   label?: string
+  _resolve_meta?: {
+    absolute?: string
+    root_used?: string
+    strategy?: string
+    found?: boolean
+  }
 }
 
 type SubtaskOutcome = {
@@ -91,6 +100,7 @@ function OutputCards({ items }: { items: OutputItem[] }) {
   useEffect(() => {
     if (!rootRef.current) return
     bindTaskOutputCardActions(rootRef.current, {})
+    void enrichOutputCardsExistence(rootRef.current, {})
   }, [items])
 
   if (!items.length) return null
@@ -107,6 +117,20 @@ function OutputCards({ items }: { items: OutputItem[] }) {
             const short = shortenPath(value, 72)
             const isUrl = item.type === 'url' || /^https?:\/\//i.test(value)
             const previewable = isPreviewableOutput(item)
+            // Pass through backend resolution metadata so the panel can open
+            // the right workspace root without re-probing the filesystem.
+            const resolveMeta =
+              item._resolve_meta && typeof item._resolve_meta === 'object'
+                ? item._resolve_meta
+                : null
+            const resolveMetaJson = resolveMeta ? JSON.stringify(resolveMeta) : ''
+            // Existence badge: trust backend-found flag, fall back to client probe.
+            const initialBadge =
+              resolveMeta && resolveMeta.found === true
+                ? { text: '已生成', cls: 'td-output-badge--ready' }
+                : resolveMeta && resolveMeta.found === false
+                  ? { text: '未生成', cls: 'td-output-badge--missing' }
+                  : null
             return (
               <li
                 key={`${item.key || 'o'}-${i}`}
@@ -114,11 +138,23 @@ function OutputCards({ items }: { items: OutputItem[] }) {
                 data-type={item.type || 'file'}
                 data-act={previewable && !isUrl ? 'preview-output' : undefined}
                 data-path={previewable && !isUrl ? value : undefined}
+                data-path-for-existence={!isUrl && value ? value : undefined}
+                data-resolve-meta={resolveMetaJson || undefined}
                 data-title={title}
                 title={previewable && !isUrl ? '点击预览' : value}
               >
                 <div className="td-output-main">
-                  <div className="td-output-name">{title}</div>
+                  <div className="td-output-name">
+                    {title}
+                    {initialBadge ? (
+                      <span
+                        className={`td-output-badge ${initialBadge.cls}`}
+                        data-role="existence-badge"
+                      >
+                        {initialBadge.text}
+                      </span>
+                    ) : null}
+                  </div>
                   {short ? <div className="td-output-path" title={value}>{short}</div> : null}
                 </div>
                 <div className="td-output-actions">

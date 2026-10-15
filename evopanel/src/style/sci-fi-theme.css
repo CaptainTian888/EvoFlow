@@ -3597,28 +3597,35 @@ html[data-scifi-ui='1'] #evopanel-app-wallpaper::after {
  *     / checkbox / .cron-btn.primary 均为白色背景
  *   - .users-check-field 是 checkbox wrapper,.cron-btn.primary 是创建按钮
  *
- * 注意:设置页可能用 Modal/Portal 渲染,html[data-scifi-ui] 选择器有时不生效,
- *     所以用 .users-section / .config-section 裸选择器无条件覆盖;
- *     transparent 模式下设置页本来就该用白底,这里假设全局已有 fallback
+ * 修复历史:
+ *   - 旧版(2026-10 之前):在 :where() 门控版本之外,还写了 7 个
+ *     裸选择器(``#users-display-name`` / ``#users-username`` /
+ *     ``#users-email`` / ``#users-password`` ID 块、``.users-section
+ *     .form-input:focus`` / ``…input:focus``、``.users-section
+ *     .form-label``、``.users-section .form-hint``、
+ *     ``.users-check-field``、``.users-check-field input[type="checkbox"]``、
+ *     ``.users-section .cron-btn.primary``),以为"设置页可能用
+ *     Modal/Portal 渲染,html[data-scifi-ui] 选择器有时不生效"。
+ *     实际上 ``#content > .page`` 一路到 ``<html>`` 的祖先链能
+ *     命中 ``html[data-scifi-ui='1']``,这段假设是错的。
+ *   - 旧版把 ``background-color: rgba(15,19,18,0.78) !important``
+ *     + ``color: var(--text-primary) !important`` 无门控地
+ *     应用到所有 4 个用户创建输入框;在 light 主题下
+ *     ``--text-primary`` 是深色,叠加深绿黑背景 → **字和背景同色,
+ *     完全看不见**（user 报告:"黑底,看不到字体"）。
+ *   - 此次修复:删除所有 7 个无门控的镜像选择器,只保留
+ *     :where() 门控版本。sci-fi 主题开启时才生效,关闭时由
+ *     ``theme-surfaces.css`` 的 settings 通用兜底接管。
  * ============================================================ */
 :where(html[data-scifi-ui='1']) .users-section .form-input,
 :where(html[data-scifi-ui='1']) .users-section input[type="text"],
 :where(html[data-scifi-ui='1']) .users-section input[type="email"],
 :where(html[data-scifi-ui='1']) .users-section input[type="password"],
-:where(html[data-scifi-ui='1']) .users-section input[type="number"],
-.users-section .form-input,
-.users-section input[type="text"],
-.users-section input[type="email"],
-.users-section input[type="password"],
-.users-section input[type="number"],
-/* ID 级最高优先级兜底 */
-#users-display-name,
-#users-username,
-#users-email,
-#users-password {
+:where(html[data-scifi-ui='1']) .users-section input[type="number"] {
   background-color: rgba(15, 19, 18, 0.78) !important;
   background-image: linear-gradient(145deg, rgba(15, 19, 18, 0.78), rgba(8, 12, 11, 0.72)) !important;
   color: var(--text-primary) !important;
+  caret-color: var(--text-primary) !important;
   border: 1px solid color-mix(in srgb, var(--scifi-glow-accent) 28%, rgba(255, 255, 255, 0.10)) !important;
   border-radius: 9px !important;
   box-shadow:
@@ -3630,13 +3637,7 @@ html[data-scifi-ui='1'] #evopanel-app-wallpaper::after {
 }
 
 :where(html[data-scifi-ui='1']) .users-section .form-input:focus,
-:where(html[data-scifi-ui='1']) .users-section input:focus,
-.users-section .form-input:focus,
-.users-section input:focus,
-#users-display-name:focus,
-#users-username:focus,
-#users-email:focus,
-#users-password:focus {
+:where(html[data-scifi-ui='1']) .users-section input:focus {
   border-color: color-mix(in srgb, var(--scifi-glow-accent) 75%, white) !important;
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--scifi-glow-accent) 32%, transparent),
@@ -3646,26 +3647,26 @@ html[data-scifi-ui='1'] #evopanel-app-wallpaper::after {
   outline: none !important;
 }
 
-.users-section .form-label {
+:where(html[data-scifi-ui='1']) .users-section .form-label {
   color: var(--text-primary) !important;
 }
 
-.users-section .form-hint,
-.users-section-hint {
+:where(html[data-scifi-ui='1']) .users-section .form-hint,
+:where(html[data-scifi-ui='1']) .users-section-hint {
   color: color-mix(in srgb, var(--text-primary) 55%, transparent) !important;
 }
 
-.users-check-field {
+:where(html[data-scifi-ui='1']) .users-check-field {
   color: var(--text-primary) !important;
 }
 
-.users-check-field input[type="checkbox"] {
+:where(html[data-scifi-ui='1']) .users-check-field input[type="checkbox"] {
   accent-color: var(--scifi-glow-accent) !important;
   width: 16px !important;
   height: 16px !important;
 }
 
-.users-section .cron-btn.primary {
+:where(html[data-scifi-ui='1']) .users-section .cron-btn.primary {
   background: linear-gradient(135deg, color-mix(in srgb, var(--scifi-glow-accent) 85%, black), color-mix(in srgb, var(--scifi-glow-accent) 65%, black)) !important;
   border: 1px solid color-mix(in srgb, var(--scifi-glow-accent) 60%, white) !important;
   color: white !important;
@@ -3686,16 +3687,31 @@ html[data-scifi-ui='1'] #evopanel-app-wallpaper::after {
 
 /* ============================================================
  * 设置页 · 所有 config-section 内的表单通用深色玻璃
+ *
+ * NOTE: this block originally had NO theme gate — meaning the dark
+ * glass style bled into the default light theme too, and on a light
+ * surface ``--text-primary`` is dark while the background is forced
+ * to ``rgba(15, 19, 18, 0.78)`` by ``!important``, so the field text
+ * became invisible ("黑底,看不到字体" — user report on
+ * settings → 联网搜索 / 安全中心 / 企业 OSS).
+ *
+ * The intent of the block (per the comment header) was a sci-fi
+ * theme overlay, so we now gate it with the same
+ * ``html[data-scifi-ui='1']`` selector the rest of this file uses.
+ * The default theme gets a separate, theme-aware fallback defined
+ * in ``theme-surfaces.css``.
  * ============================================================ */
-.config-section .form-input,
-.config-section input[type="text"],
-.config-section input[type="email"],
-.config-section input[type="password"],
-.config-section input[type="url"],
-.config-section input[type="number"],
-.config-section input[type="search"],
-.config-section textarea,
-.config-section select {
+:where(html[data-scifi-ui='1']) .config-section :is(
+  .form-input,
+  input[type="text"],
+  input[type="email"],
+  input[type="password"],
+  input[type="url"],
+  input[type="number"],
+  input[type="search"],
+  textarea,
+  select
+) {
   background-color: rgba(15, 19, 18, 0.78) !important;
   background-image: linear-gradient(145deg, rgba(15, 19, 18, 0.78), rgba(8, 12, 11, 0.72)) !important;
   color: var(--text-primary) !important;
@@ -3708,10 +3724,17 @@ html[data-scifi-ui='1'] #evopanel-app-wallpaper::after {
   transition: border-color 0.18s ease, box-shadow 0.18s ease !important;
 }
 
-.config-section .form-input:focus,
-.config-section input:focus,
-.config-section textarea:focus,
-.config-section select:focus {
+:where(html[data-scifi-ui='1']) .config-section :is(
+  .form-input,
+  input[type="text"],
+  input[type="email"],
+  input[type="password"],
+  input[type="url"],
+  input[type="number"],
+  input[type="search"],
+  textarea,
+  select
+):focus {
   border-color: color-mix(in srgb, var(--scifi-glow-accent) 75%, white) !important;
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--scifi-glow-accent) 32%, transparent),
@@ -3723,11 +3746,17 @@ html[data-scifi-ui='1'] #evopanel-app-wallpaper::after {
 
 /* ============================================================
  * 模型编辑弹窗 · .models-edit-modal-body 内的表单
+ *
+ * Same sci-fi-only gating as the config-section block above: the
+ * dark glass + ``var(--text-primary)`` combo must not leak into the
+ * default light theme (otherwise input text becomes invisible).
  * ============================================================ */
-.models-edit-modal-body .form-input,
-.models-edit-modal-body input,
-.models-edit-modal-body textarea,
-.models-edit-modal-body select {
+:where(html[data-scifi-ui='1']) .models-edit-modal-body :is(
+  .form-input,
+  input,
+  textarea,
+  select
+) {
   background-color: rgba(15, 19, 18, 0.78) !important;
   background-image: linear-gradient(145deg, rgba(15, 19, 18, 0.78), rgba(8, 12, 11, 0.72)) !important;
   color: var(--text-primary) !important;
@@ -3740,8 +3769,12 @@ html[data-scifi-ui='1'] #evopanel-app-wallpaper::after {
   transition: border-color 0.18s ease, box-shadow 0.18s ease !important;
 }
 
-.models-edit-modal-body .form-input:focus,
-.models-edit-modal-body input:focus {
+:where(html[data-scifi-ui='1']) .models-edit-modal-body :is(
+  .form-input,
+  input,
+  textarea,
+  select
+):focus {
   border-color: color-mix(in srgb, var(--scifi-glow-accent) 75%, white) !important;
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--scifi-glow-accent) 32%, transparent),
@@ -3751,7 +3784,7 @@ html[data-scifi-ui='1'] #evopanel-app-wallpaper::after {
   outline: none !important;
 }
 
-.models-edit-modal-body .form-hint {
+:where(html[data-scifi-ui='1']) .models-edit-modal-body .form-hint {
   color: color-mix(in srgb, var(--text-primary) 55%, transparent) !important;
 }
 

@@ -369,6 +369,7 @@ export function errorTypeLabel(type) {
 /**
  * 相同异常按类型 + 指纹聚合。
  * @param {WorkProcessEvent[]} events
+ * @returns {any[]}
  */
 export function aggregateWorkProcessErrors(events) {
   /** @type {Map<string, any>} */
@@ -467,6 +468,7 @@ function isSkippableLiveAnchor(ev) {
  * 任务仍在跑时：把尚未落盘终态的最后一条工具/回复标成进行中。
  * @param {WorkProcessEvent[]} events
  * @param {{ live?: boolean }} [opts]
+ * @returns {WorkProcessEvent[]}
  */
 export function annotateLiveWorkProcessEvents(events, opts = {}) {
   const list = Array.isArray(events) ? events : []
@@ -493,6 +495,7 @@ export function annotateLiveWorkProcessEvents(events, opts = {}) {
 }
 
 /** @param {WorkProcessEvent[]} events */
+/** @returns {WorkProcessEvent | null} */
 export function pickLatestWorkProcessLive(events) {
   const list = Array.isArray(events) ? events : []
   if (!list.length) return null
@@ -541,6 +544,7 @@ export function formatWorkProcessLiveLine(ev, opts = {}) {
 /**
  * @param {WorkProcessEvent | null | undefined} ev
  * @param {{ live?: boolean }} [opts]
+ * @returns {string}
  */
 export function formatWorkProcessLiveBanner(ev, opts = {}) {
   const live = Boolean(opts.live)
@@ -992,6 +996,22 @@ export function groupEventsIntoSteps(events) {
   return steps
 }
 
+/**
+ * @param {WorkProcessEvent[]} events
+ * @param {any[]} rows
+ * @param {number | null | undefined} [roundTokens]
+ * @param {number | null | undefined} [deliverableCount]
+ * @returns {{
+ *   durationMs: number | null,
+ *   toolCalls: number,
+ *   fileReads: number,
+ *   errors: number,
+ *   errorGroups: any[],
+ *   stepCount: number,
+ *   tokenLabel: string,
+ *   deliverableLabel: string,
+ * }}
+ */
 export function summarizeWorkProcess(events, rows, roundTokens = null, deliverableCount = null) {
   const list = events || []
   const times = list.map((e) => e.ts).filter((t) => t != null)
@@ -1062,6 +1082,7 @@ export function fmtWorkProcessTokens(n) {
 /**
  * @param {WorkProcessEvent[]} events
  * @param {{ kind?: string, statusKey?: string, query?: string, timeFrom?: number | null, timeTo?: number | null }} opts
+ * @returns {WorkProcessEvent[]}
  */
 export function filterWorkProcessEvents(events, opts = {}) {
   const kind = String(opts.kind || 'all')

@@ -341,6 +341,90 @@ def cancel_jobs_for_doc(doc_id: str, *, reason: str = "document deleted") -> int
         return int(cur.rowcount or 0)
 
 
+def purge_failed_orphan_jobs(*, limit: int = 500) -> int:
+    """Cancel jobs whose owning KB or document was soft-deleted.
+
+    Walks the central job queue, joins against ``kb_bases`` (deleted_at) and
+    the per-KB ``kb_documents`` (deleted_at), and flips any non-terminal job
+    to ``cancelled`` with a clear reason. This stops the worker from burning
+    retries on rows that no longer exist and removes the long tail of
+    ``knowledge base or document not found`` errors that show up in the UI
+    banner after a KB is deleted or rebuilt.
+
+    Returns the number of jobs cancelled.
+    """
+    now = utc_now()
+    cancelled = 0
+    seen: set[tuple[str, str | None]] = set()
+
+    with db() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, kb_id, doc_id
+            FROM kb_jobs
+            WHERE state IN ('queued', 'running', 'error')
+            ORDER BY updated_at ASC
+            LIMIT ?
+            """,
+            (int(limit),),
+        ).fetchall()
+
+        for row in rows:
+            job_id = str(row["id"] or "")
+            kb_id = str(row["kb_id"] or "").strip()
+            doc_id = str(row["doc_id"] or "").strip() or None
+            if not job_id or not kb_id:
+                continue
+            key = (kb_id, doc_id)
+            if key in seen:
+                continue
+            seen.add(key)
+
+            # KB soft-deleted?
+            base = conn.execute(
+                "SELECT 1 FROM kb_bases WHERE id=? AND deleted_at IS NULL",
+                (kb_id,),
+            ).fetchone()
+            if base is None:
+                conn.execute(
+                    """
+                    UPDATE kb_jobs SET state='cancelled',
+                      error_message='knowledge base deleted (purged by reconcile)',
+                      finished_at=?, updated_at=?, locked_by='', locked_at=NULL
+                    WHERE id=? AND state IN ('queued', 'running', 'error')
+                    """,
+                    (now, now, job_id),
+                )
+                cancelled += 1
+                continue
+
+            # doc soft-deleted (per-KB index DB)?
+            if doc_id:
+                try:
+                    with db_for_kb(kb_id) as kb_conn:
+                        doc = kb_conn.execute(
+                            "SELECT 1 FROM kb_documents WHERE id=? AND deleted_at IS NULL",
+                            (doc_id,),
+                        ).fetchone()
+                except Exception:
+                    logger.debug("orphan purge: doc lookup failed for %s/%s", kb_id, doc_id, exc_info=True)
+                    continue
+                if doc is None:
+                    conn.execute(
+                        """
+                        UPDATE kb_jobs SET state='cancelled',
+                          error_message='document deleted (purged by reconcile)',
+                          finished_at=?, updated_at=?, locked_by='', locked_at=NULL
+                        WHERE id=? AND state IN ('queued', 'running', 'error')
+                        """,
+                        (now, now, job_id),
+                    )
+                    cancelled += 1
+    if cancelled:
+        logger.info("owned kb purged %s orphan jobs", cancelled)
+    return cancelled
+
+
 def _mirror_doc_status(kb_id: str, doc_id: str, sql: str, params: tuple) -> None:
     """Apply a document-status update in the KB's own index DB.
 

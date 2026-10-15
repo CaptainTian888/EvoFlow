@@ -327,16 +327,18 @@ const VirtualHistoryBody = memo(function VirtualHistoryBody(
       if (holdHistoryScrollRef.current) return true
       // 用户手势中改 scrollTop 会与手指/滚轮抢位置 → 卡顿抖动
       if (Date.now() - lastUserScrollAtRef.current < 160) return false
-      // 整回合刚封存（RUN_FINISHED 后 grace 窗口内）：无视 readingHistoryRef，
-      // 否则「整段从 1 段膨胀到 30 段」时 virtualizer 调正 scrollTop 把视口推回
-      // 用户当时的位置（如果用户碰过滚轮 → 视口被推回顶部 → 「页面跳到顶」）。
-      // 修法：postStreamFollowUntilRef 仍有效时强制走 autoFollow 路径，
-      // streamEnded 分支会在下一帧清掉 userScrolledAway + readingHistory 锁，
-      // 配合 schedulePostStreamScrollToBottom 把视口钉回底。
-      // （47986170 曾直接引用外层 MessageVirtualList 的 ref —— 本组件作用域里
-      //   不存在，运行时 ReferenceError 让整个测高校正失效；现由父级下传。）
+      // 整回合刚封存（RUN_FINISHED 后 grace 窗口内）：无视 readingHistoryRef。
+      // autoFollow=true（贴底意图）时禁用校正：postStream 期间 AI 消息高度常减小
+      // （reasoning/tool 折叠、cursor 消失），virtualizer 校正在 item 变瘦时会把
+      // scrollTop 减小以保持视口 item 位置 → 视口上移跳到上方用户消息块；且校正
+      // （RO 回调）可能晚于贴底 rAF，把 scrollTop 又拉回中间无人纠正 → 卡住。
+      // 贴底改由 RO settlingPostStream(pinPostStreamBottomFrame) + schedulePostStreamScrollToBottom
+      // 独占，对高度增/减一致。autoFollow=false（用户上滚读历史）时仍校正保持位置。
+      // （47986170 曾直接引用外层 ref —— 本组件作用域里不存在，运行时 ReferenceError
+      //   让测高校正失效；现由父级下传。原修法返回 autoFollow 靠校正对"增高=贴底"的
+      //   副作用，但对"变瘦=上移"有害，故反向。）
       if (postStreamFollowUntilRef && Date.now() <= postStreamFollowUntilRef.current) {
-        return autoFollowRef.current
+        return !autoFollowRef.current
       }
       // 读历史且手势已停：允许测高校正，避免滚到一半卡住
       if (readingHistoryRef.current) return true

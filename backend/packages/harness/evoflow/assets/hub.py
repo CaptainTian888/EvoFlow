@@ -523,8 +523,15 @@ def write_episode(
     heading = str(title or "").strip() or body.split("\n", 1)[0].lstrip("# ").strip()[:60]
     one_liner = (str(summary or "").strip() or heading)[:30]
     slug = _slug_ascii(heading, fallback="episode")
-    date_part = datetime.now(UTC).astimezone().strftime("%Y%m%d")
+    now = datetime.now(UTC).astimezone()
+    date_part = now.strftime("%Y%m%d")
+    day = now.date().isoformat()
+    episodic_dir = entity_root(entity.normalized()) / "memory" / "episodic"
     fname = f"{date_part}-{slug}.md"
+    n = 1
+    while (episodic_dir / fname).exists():
+        n += 1
+        fname = f"{date_part}-{slug}-{n}.md"
     rel = f"memory/episodic/{fname}"
     created = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     e = entity.normalized()

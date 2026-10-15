@@ -806,6 +806,71 @@ class VendorRoundtripChatMixin:
         acc: ChatGenerationChunk | None = None
         chunk_count = 0
 
+        # Stream trace: get thread_id for vendor logging.
+        # Priority: langgraph runtime config > contextvar set by gateway > run_manager metadata/tags > kwargs.
+        _stream_trace = None
+        _thread_id_for_trace = None
+        _trace_resolved_via: str | None = None
+        import sys as _st_sys
+        try:
+            from evoflow.debug.stream_trace import stream_trace as _get_stream_trace
+        except Exception as _e:
+            print(f"[STREAM_TRACE_DEBUG] import failed: {_e!r}", file=_st_sys.stderr, flush=True)
+        try:
+            from langgraph.config import get_config as _lg_get_config
+            cfg = _lg_get_config()
+            c = cfg.get("configurable") if isinstance(cfg, dict) else {}
+            _thread_id_for_trace = c.get("thread_id") if isinstance(c, dict) else None
+            if _thread_id_for_trace:
+                _trace_resolved_via = "langgraph_get_config"
+        except Exception as _e:
+            print(f"[STREAM_TRACE_DEBUG] get_config failed: {_e!r}", file=_st_sys.stderr, flush=True)
+        if not _thread_id_for_trace:
+            # Fall back to contextvar populated by the gateway right before
+            # the LangGraph run is invoked (chat model lives outside the
+            # langgraph runnable context, so get_config() never sees it).
+            try:
+                from evoflow.debug.stream_trace import get_current_thread_id as _get_ctx_tid
+                _thread_id_for_trace = _get_ctx_tid()
+                if _thread_id_for_trace:
+                    _trace_resolved_via = "contextvar"
+            except Exception as _e:
+                print(f"[STREAM_TRACE_DEBUG] get_current_thread_id failed: {_e!r}", file=_st_sys.stderr, flush=True)
+        if not _thread_id_for_trace and run_manager is not None:
+            _meta: dict[str, Any] = {}
+            if getattr(run_manager, "metadata", None):
+                _meta.update(run_manager.metadata or {})
+            if getattr(run_manager, "tags", None):
+                for tag in run_manager.tags or []:
+                    if isinstance(tag, str) and tag.startswith("thread_id:"):
+                        _thread_id_for_trace = tag.split(":", 1)[1]
+                        if _thread_id_for_trace:
+                            _trace_resolved_via = "run_manager_tag"
+                        break
+            if not _thread_id_for_trace and isinstance(_meta, dict) and _meta.get("thread_id"):
+                _thread_id_for_trace = _meta.get("thread_id")
+                if _thread_id_for_trace:
+                    _trace_resolved_via = "run_manager_metadata"
+        if not _thread_id_for_trace:
+            _tid_kw = kwargs.get("configurable", {}) or {}
+            if isinstance(_tid_kw, dict):
+                _thread_id_for_trace = _tid_kw.get("thread_id")
+                if _thread_id_for_trace:
+                    _trace_resolved_via = "kwargs"
+        if _thread_id_for_trace:
+            _stream_trace = _get_stream_trace(str(_thread_id_for_trace))
+            print(
+                f"[STREAM_TRACE_DEBUG] vendor thread_id={_thread_id_for_trace!s} via={_trace_resolved_via} run_manager={run_manager is not None}",
+                file=_st_sys.stderr,
+                flush=True,
+            )
+        else:
+            print(
+                f"[STREAM_TRACE_DEBUG] vendor NO thread_id found (run_manager={run_manager is not None}, kwargs keys={list(kwargs.keys())[:5]})",
+                file=_st_sys.stderr,
+                flush=True,
+            )
+
         # Watchdog: max total stream duration. Prevents reasoning models from
         # streaming thinking tokens indefinitely when the upstream API is stuck.
         # Default 300s is generous enough for long reasoning, but catches true hangs.
@@ -824,6 +889,9 @@ class VendorRoundtripChatMixin:
                             chunk_count,
                             repr(gen_chunk),
                         )
+                    # Stream trace: log vendor chunk
+                    if _stream_trace:
+                        _stream_trace.log_vendor_chunk(gen_chunk, extra={"chunk_count": chunk_count, "ttft_ms": ttft})
                     acc = gen_chunk if acc is None else acc + gen_chunk
                     yield gen_chunk
         except RuntimeError as e:
@@ -903,3 +971,10 @@ class VendorRoundtripChatMixin:
             except Exception as e:
                 logger.debug("vendor_roundtrip astream finalize failed", exc_info=True)
                 complete_vendor_roundtrip(chat_result=None, latency_ms=(time.perf_counter() - t0) * 1000.0, error=e, first_token_latency_ms=ttft)
+            # Stream trace: log stream end
+            if _stream_trace:
+                _stream_trace.log_stream_end({
+                    "chunk_count": chunk_count,
+                    "ttft_ms": f"{ttft:.1f}" if ttft else None,
+                    "latency_ms": (time.perf_counter() - t0) * 1000.0,
+                })

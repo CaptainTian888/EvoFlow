@@ -1,0 +1,9 @@
+{
+  "name": "hello-command",
+  "displayName": "Hello Command",
+  "description": "EvoFlow 官方示例：注册一个 /hello 斜杠命令，演示插件的 commands 组件。",
+  "version": "1.0.0",
+  "author": "EvoFlow",
+  "homepage": "https://github.com/EvovexAI/EvoFlow",
+  "keywords": ["examples", "commands"]
+}

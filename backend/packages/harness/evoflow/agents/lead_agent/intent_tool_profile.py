@@ -127,6 +127,9 @@ def resolve_active_scenario_keys_for_display(
 # 基础 chat 工具（ask_clarification 不在默认集中，由员工自行绑定）
 # 读文件、rg、terminal、worker、subagent、todo 等随 session_mode / 白名单绑定
 CORE_TOOL_NAMES: tuple[str, ...] = (
+    # ZCode 插件运行时内核工具：browser-use / computer-use 启用时才真实存在
+    # （build_node_repl_js_tool 条件返回），存在即 eager 绑定，未启用时自动缺席。
+    "mcp__node_repl__js",
     # "mode_set",  # 暂不常驻：用户在界面切 plan/agent；逻辑保留在 scenario_activation
 )
 

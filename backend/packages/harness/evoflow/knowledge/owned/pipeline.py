@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import traceback
 from typing import Any
 
 from evoflow.config.model_config import ModelConfig
@@ -78,8 +79,16 @@ async def run_parse_index(
 
     jobs.update_progress(job_id, {"phase": "parsing", "percent": 15, "message": "解析正文"})
     try:
-        text = parse_file(path)
+        text = parse_file(path, doc_id=doc_id, kb_id=kb_id)
     except Exception as exc:
+        # Keep the full traceback so the UI / kb_jobs.error_message can surface
+        # the actual failing frame (e.g. ``markitdown`` converter's ``NameError``)
+        # instead of a bare ``name 'os' is not defined``.
+        full_tb = traceback.format_exc()
+        user_msg = str(exc)[:1500]
+        # Prepend the last frame's summary to make the message self-contained.
+        last_line = full_tb.strip().splitlines()[-1] if full_tb.strip() else user_msg
+        combined = f"{user_msg}\n[traceback] {last_line}"[:2000]
         with db_for_kb(kb_id) as conn:
             conn.execute(
                 """
@@ -89,8 +98,9 @@ async def run_parse_index(
                     vector_status=CASE WHEN chunk_count > 0 THEN 'degraded' ELSE 'failed' END,
                     index_error=?, error_message=?, updated_at=? WHERE id=?
                 """,
-                (str(exc)[:2000], str(exc)[:2000], utc_now(), doc_id),
+                (combined, combined, utc_now(), doc_id),
             )
+        logger.error("parse_file failed doc=%s kb=%s: %s", doc_id, kb_id, full_tb)
         raise
 
     jobs.update_progress(job_id, {"phase": "assets", "percent": 25, "message": "抽取图片"})

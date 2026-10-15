@@ -15,7 +15,19 @@ const OFFICIAL_PLUGIN_ICON_BY_ID: Readonly<Record<string, string>> = {
   "spreadsheets@zcode-plugins-official": spreadsheetsIconUrl,
 };
 
-const TRUSTED_BUNDLED_PLUGIN_ICONS = new Set(Object.values(OFFICIAL_PLUGIN_ICON_BY_ID));
+// EvoFlow 官方市场 id 复用同一批打包图标（与 ZCode 官方内置插件一一对应）。
+const EVOFLOW_OFFICIAL_ICON_BY_ID: Readonly<Record<string, string>> = Object.fromEntries(
+  Object.entries(OFFICIAL_PLUGIN_ICON_BY_ID).map(([id, url]) => [
+    id.replace("@zcode-plugins-official", "@evoflow-plugins-official"),
+    url,
+  ]),
+);
+const OFFICIAL_ICON_BY_ID: Readonly<Record<string, string>> = {
+  ...OFFICIAL_PLUGIN_ICON_BY_ID,
+  ...EVOFLOW_OFFICIAL_ICON_BY_ID,
+};
+
+const TRUSTED_BUNDLED_PLUGIN_ICONS = new Set(Object.values(OFFICIAL_ICON_BY_ID));
 
 /** 按完整身份解析客户端自有图标，避免商店、候选和消息各自维护不同例外。 */
 export function resolvePluginIconSource(
@@ -23,7 +35,7 @@ export function resolvePluginIconSource(
   icon?: string,
 ): string | undefined {
   if (pluginId) {
-    const bundledIcon = OFFICIAL_PLUGIN_ICON_BY_ID[pluginId];
+    const bundledIcon = OFFICIAL_ICON_BY_ID[pluginId];
     if (bundledIcon) return bundledIcon;
   }
   return isTrustedImageUrl(icon) ? icon : undefined;

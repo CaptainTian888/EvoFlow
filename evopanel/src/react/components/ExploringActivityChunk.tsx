@@ -3,7 +3,7 @@ import type { ActivityPiece } from '../lib/exploring-activity-group.js'
 
 function mergeConsecutiveReasoningPieces(pieces: ActivityPiece[]): ActivityPiece[] {
   const result: ActivityPiece[] = []
-  let buf: ActivityPiece[] = []
+  let buf: Extract<ActivityPiece, { kind: 'reasoning' }>[] = []
   const flush = () => {
     if (buf.length === 0) return
     if (buf.length === 1) { result.push(buf[0]); buf = []; return }

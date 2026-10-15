@@ -6,8 +6,8 @@ mod utils;
 mod voice_hotkey;
 
 use commands::{
-    app_server, assistant, backend, boot_cycle, browser_embed, config, gateway, logs, mcp_market,
-    ui_extensions, update, voice_overlay,
+    app_server, assistant, backend, boot_cycle, browser_embed, browser_embed_bridge, config,
+    gateway, logs, mcp_market, ui_extensions, update, voice_overlay,
 };
 /// Windows-only: expose WebView2 CDP commands directly to Python over HTTP invoke.
 #[cfg(target_os = "windows")]
@@ -30,6 +30,7 @@ pub fn run() {
     // that on a separate env like `EVOFLOW_SHARE_WINDOW=1`.
     tauri::Builder::default()
         .manage(browser_embed::BrowserEmbedState::default())
+        .manage(browser_embed_bridge::EmbedBridge::default())
         .manage(std::sync::Arc::new(
             browser_embed::BrowserCdpBroker::default(),
         ))
@@ -350,6 +351,7 @@ pub fn run() {
             browser_embed::browser_embed_upsert,
             browser_embed::browser_embed_set_bounds,
             browser_embed::browser_embed_close,
+            browser_embed_bridge::browser_embed_bridge_response,
         ])
         .build(tauri::generate_context!())
         .expect("启动 EvoFlow 失败")

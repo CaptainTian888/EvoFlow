@@ -536,6 +536,11 @@ function normalizeOutputItem(item, index) {
   if (extracted.key && /^artifact[_-]?\d*$/i.test(key)) key = extracted.key
   const out = { type, key, value }
   if (label) out.label = label
+  // Pass through backend resolution metadata so the panel can open the right
+  // workspace root without re-probing the filesystem.
+  if (item && typeof item === 'object' && item._resolve_meta && typeof item._resolve_meta === 'object') {
+    out._resolve_meta = item._resolve_meta
+  }
   return out
 }
 
@@ -823,10 +828,22 @@ export function renderOutputItemCardsHtml(items, escapeHtml, opts = {}) {
       const existenceAttr = !isUrl && !isText && value
         ? ` data-path-for-existence="${esc(value)}"`
         : ''
+      // Pass through backend resolution metadata so the panel can open the
+      // right workspace root without re-probing the filesystem.
+      const resolveMeta = item._resolve_meta && typeof item._resolve_meta === 'object'
+        ? item._resolve_meta
+        : null
+      const resolveAttr = resolveMeta
+        ? ` data-resolve-meta='${esc(JSON.stringify(resolveMeta))}'`
+        : ''
       const badge =
         item.source === 'automation_expected'
           ? '<span class="td-output-badge td-output-badge--pending" data-role="existence-badge">检测中…</span>'
-          : ''
+          : resolveMeta && resolveMeta.found === true
+            ? '<span class="td-output-badge td-output-badge--ready" data-role="existence-badge">已生成</span>'
+            : resolveMeta && resolveMeta.found === false
+              ? '<span class="td-output-badge td-output-badge--missing" data-role="existence-badge">未生成</span>'
+              : ''
       const cardAct =
         previewable && !isUrl
           ? ` data-act="preview-output" data-path="${esc(value)}" data-title="${title}" data-type="${esc(item.type)}"`
@@ -852,7 +869,7 @@ export function renderOutputItemCardsHtml(items, escapeHtml, opts = {}) {
       if (workHref) {
         actions += `<a class="td-output-action td-output-action--muted" href="${esc(workHref)}">工作项</a>`
       }
-      return `<li class="${rowClass}" data-type="${esc(item.type)}"${cardAct}${existenceAttr} title="${previewable && !isUrl ? '点击预览' : esc(value)}">
+      return `<li class="${rowClass}" data-type="${esc(item.type)}"${cardAct}${existenceAttr}${resolveAttr} title="${previewable && !isUrl ? '点击预览' : esc(value)}">
         <div class="td-output-main">
           <div class="td-output-name">${title}${badge}</div>
           ${!isText && short ? `<div class="td-output-path" title="${esc(value)}">${short}</div>` : ''}

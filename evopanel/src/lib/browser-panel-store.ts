@@ -69,6 +69,13 @@ export function getBrowserRuntimeSnapshot(): BrowserRuntimeState {
 
 const DEFAULT_TID = ''
 
+/**
+ * Fixed engine session used by ``/api/browser/*`` (node-repl browser-use bridge).
+ * The side panel must mount *this* WebView2 label so the user sees the same page
+ * the agent drives — chat thread ids never reach the bridge execute path.
+ */
+export const NODE_REPL_BRIDGE_THREAD_ID = 'evoflow-node-repl-bridge'
+
 /** Backend falls back to a literal ``evoflow`` session when the tool runtime has no
  * thread_id. That path never matches the panel's real thread, so reject it and keep
  * whatever real thread id we already have. */
@@ -163,19 +170,39 @@ export function applyBrowserCommandResponse(input: {
   return true
 }
 
-export function notifyBrowserToolStart(toolCallId: string, argsText?: string | null): boolean {
+export function notifyBrowserToolStart(
+  toolCallId: string,
+  argsText?: string | null,
+  opts?: { toolName?: string; forceOpen?: boolean },
+): boolean {
+  const toolName = String(opts?.toolName || '').trim().toLowerCase()
+  const isNodeRepl = toolName === 'mcp__node_repl__js'
   const { action, url } = parseBrowserToolArgs(argsText)
-  dbgLog(`[browser-panel-store] tool start toolCallId=${toolCallId} action=${action} url=${url || '(none)'} argsText=${argsText || ''}`)
+  dbgLog(
+    `[browser-panel-store] tool start toolCallId=${toolCallId} tool=${toolName || '(n/a)'} ` +
+      `action=${action} url=${url || '(none)'} argsText=${(argsText || '').slice(0, 200)}`,
+  )
+  // node-repl / browser-use always drives the shared bridge WebView2. Bind the
+  // panel to that session *before* ensureBrowserStage so the embed host mounts
+  // the same HWND the agent is about to control.
+  if (isNodeRepl) {
+    patch({ streamThreadId: NODE_REPL_BRIDGE_THREAD_ID })
+  }
   patch({
     operating: true,
-    operatingAction: action,
+    operatingAction: action || (isNodeRepl ? 'node_repl' : ''),
     operatingToolCallId: String(toolCallId || '').trim(),
   })
-  // For page-opening actions, raise the right stage *before* the result
-  // arrives so the user can see the live panel mount and the screencast
-  // connect while the agent is still working. The result event then
-  // patches the page URL on top.
-  if (action === 'open' || action === 'navigate' || action === 'snapshot') {
+  // For page-opening actions (and every node-repl browser call), raise the
+  // right stage *before* the result arrives so the user can see the live
+  // panel mount while the agent is still working.
+  if (
+    opts?.forceOpen ||
+    isNodeRepl ||
+    action === 'open' ||
+    action === 'navigate' ||
+    action === 'snapshot'
+  ) {
     ensureBrowserStage()
   }
   // Publish the target URL now rather than waiting for the tool result. The
@@ -199,10 +226,23 @@ export function notifyBrowserToolResult(toolCallId: string, resultText?: string 
     `[browser-panel-store] tool result toolCallId=${toolCallId} live=${JSON.stringify(liveSummary)} raw=${(resultText || '').slice(0, 160)}`,
   )
   if (resultText && !live) {
+    // node-repl results are SDK stdout / structured objects, not browser_live —
+    // that is expected. Keep the panel bound to the bridge session anyway.
     dbgWarn(`[browser-panel-store] live parse returned null for toolCallId=${toolCallId}`)
   }
   const next: Partial<BrowserRuntimeState> = {
     operating: state.operatingToolCallId === String(toolCallId || '').trim() ? false : state.operating,
+  }
+  // If we are already on the node-repl bridge session (or just opened for it),
+  // keep the panel up even without a browser_live payload.
+  const onBridge =
+    state.streamThreadId === NODE_REPL_BRIDGE_THREAD_ID ||
+    state.operatingAction === 'node_repl'
+  if (onBridge) {
+    next.streamThreadId = NODE_REPL_BRIDGE_THREAD_ID
+    next.browserMode = next.browserMode || state.browserMode || 'embed'
+    next.sharedBrowser = false
+    ensureBrowserStage()
   }
   if (live) {
     const backendTid = extractThreadIdFromStreamPath(
@@ -210,7 +250,7 @@ export function notifyBrowserToolResult(toolCallId: string, resultText?: string 
     )
     if (backendTid) {
       next.streamThreadId = backendTid
-    } else {
+    } else if (!onBridge) {
       dbgWarn(
         `[browser-panel-store] backend streamWs=${String((live as { streamWs?: string }).streamWs || '')} has placeholder thread — keeping real threadId=${state.streamThreadId || '(empty)'}`,
       )
@@ -232,12 +272,12 @@ export function notifyBrowserToolResult(toolCallId: string, resultText?: string 
     // user's desktop. Only legacy headed / external CDP / WebView2 embed share
     // the user's own browser, so we suppress the shared-browser flag there.
     next.sharedBrowser = headed || mode === 'headed' || mode === 'cdp' || mode === 'embed'
-    if (mode === 'evopanel') next.sharedBrowser = false
+    if (mode === 'evopanel' || mode === 'embed' || onBridge) next.sharedBrowser = false
     // Agent opened a page → bring the browser stage up (ZCode side-pane behavior).
-    if (pageUrl || backendTid) ensureBrowserStage()
+    if (pageUrl || backendTid || onBridge) ensureBrowserStage()
   }
   patch(next)
-  return Boolean(live)
+  return Boolean(live) || onBridge
 }
 
 export function notifyBrowserToolEnd(toolCallId: string): boolean {
@@ -253,6 +293,16 @@ export function notifyBrowserFrameMetadata(meta?: BrowserStreamFrameMetadata) {
   patch({ lastFrameMeta: meta })
 }
 
+/** Pull URL intents out of node-repl ``code`` (browsers.open / navigate / tabs.new). */
+function extractUrlFromNodeReplCode(code: string): string {
+  const raw = String(code || '')
+  if (!raw) return ''
+  const openMatch = raw.match(
+    /(?:browsers\.open|tabs\.new|\.navigate|agent\.browsers\.open)\(\s*["'`]([^"'`]+)["'`]/,
+  )
+  return String(openMatch?.[1] || '').trim()
+}
+
 /** Pull the requested URL out of the tool arguments, tolerating a partial
  *  (streamed, truncated) JSON payload. The embedded browser boots as soon as the
  *  stage opens — which happens on tool *start* — so waiting for the tool result to
@@ -262,15 +312,16 @@ function parseBrowserToolArgs(argsText?: string | null): { action: string; url: 
   const raw = String(argsText || '').trim()
   if (!raw) return { action: '', url: '' }
   try {
-    const args = JSON.parse(raw) as { action?: string; url?: string }
-    return {
-      action: String(args?.action || '').trim().toLowerCase(),
-      url: String(args?.url || '').trim(),
-    }
+    const args = JSON.parse(raw) as { action?: string; url?: string; code?: string }
+    const action = String(args?.action || '').trim().toLowerCase()
+    let url = String(args?.url || '').trim()
+    if (!url && args?.code) url = extractUrlFromNodeReplCode(args.code)
+    return { action, url }
   } catch {
     const action = String(raw.match(/"action"\s*:\s*"([^"]+)"/i)?.[1] || '').trim().toLowerCase()
     // Streamed args can end mid-string, so accept whatever was captured so far.
-    const url = String(raw.match(/"url"\s*:\s*"([^"]*)/i)?.[1] || '').trim()
+    let url = String(raw.match(/"url"\s*:\s*"([^"]*)/i)?.[1] || '').trim()
+    if (!url) url = extractUrlFromNodeReplCode(raw)
     return { action, url }
   }
 }

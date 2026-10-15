@@ -67,6 +67,8 @@ class LeadAgentRuntimeContext:
     sandbox_id: str | None = None
     preferred_skills: list[str] | None = None
     preferred_skill: str | None = None
+    # Composer plugin picker (ZCode plugin semantics): plugin ids activated for this turn.
+    preferred_plugins: list[str] | None = None
     # Smart-employee (proactive) patrol / execute
     proactive_process: bool | None = None
     proactive_agent_code: str | None = None
@@ -157,6 +159,7 @@ MODEL_REQUEST_CONTEXT_KEYS: tuple[str, ...] = (
     "thinking_enabled",
     "preferred_skills",
     "preferred_skill",
+    "preferred_plugins",
     "triggered_by",
     "proactive_process",
     "proactive_agent_code",
@@ -220,6 +223,28 @@ def resolve_preferred_skills_for_turn(ctx: dict[str, Any] | None) -> list[str]:
         return parse_preferred_skills_from_context(sess)
     except Exception:
         return []
+
+
+def resolve_preferred_plugins_for_turn(ctx: dict[str, Any] | None) -> list[str]:
+    """Composer plugin picker ids for this turn, with session-sticky fallback."""
+    raw = (ctx or {}).get("preferred_plugins")
+    plugins = [str(item).strip() for item in raw] if isinstance(raw, list) else []
+    plugins = [item for item in plugins if item]
+    if plugins:
+        return plugins
+    sk = str((ctx or {}).get("session_key") or "").strip()
+    if not sk:
+        return []
+    try:
+        from evoflow.persistence.session_repositories import get_session_context_for_run_config
+
+        sess = get_session_context_for_run_config(sk)
+        raw = (sess or {}).get("preferred_plugins")
+        if isinstance(raw, list):
+            return [str(item).strip() for item in raw if str(item).strip()]
+    except Exception:
+        return []
+    return []
 
 
 def runtime_context_mapping(runtime: Runtime | None) -> dict[str, Any]:

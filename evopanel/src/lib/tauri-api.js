@@ -1652,6 +1652,14 @@ export const api = {
     gatewayProxy('PATCH', `/knowledge/owned/bases/${encodeURIComponent(String(id || ''))}`, data),
   reindexOwnedKnowledgeBase: async (id, data = null) =>
     gatewayProxy('POST', `/knowledge/owned/bases/${encodeURIComponent(String(id || ''))}/reindex`, data || {}),
+  retryOwnedDocument: async (kbId, docId) =>
+    gatewayProxy(
+      'POST',
+      `/knowledge/owned/bases/${encodeURIComponent(String(kbId || ''))}/documents/${encodeURIComponent(String(docId || ''))}/retry`,
+      {},
+    ),
+  purgeOrphanOwnedJobs: async (id) =>
+    gatewayProxy('POST', `/knowledge/owned/bases/${encodeURIComponent(String(id || ''))}/purge-orphans`, {}),
   deleteOwnedKnowledgeBase: async (id) =>
     gatewayProxy('DELETE', `/knowledge/owned/bases/${encodeURIComponent(String(id || ''))}`),
   listOwnedKnowledgeDocuments: async (id) =>
@@ -3132,6 +3140,11 @@ export const api = {
   pauseTask: async (taskId) => gatewayProxy('POST', `/tasks/${taskId}/stop`),
   resumeTask: async (taskId) => gatewayProxy('POST', `/tasks/${taskId}/resume`),
   restartTask: async (taskId) => gatewayProxy('POST', `/tasks/${taskId}/restart`),
+  retryTask: async (taskId, { subtaskIds = null, retryAllFailed = false } = {}) =>
+    gatewayProxy('POST', `/tasks/${taskId}/retry`, {
+      ...(Array.isArray(subtaskIds) && subtaskIds.length ? { subtask_ids: subtaskIds } : {}),
+      retry_all_failed: retryAllFailed || !subtaskIds,
+    }),
 
   // 任务执行历史
   getExecutionHistory: async (taskId) => gatewayProxy('GET', `/tasks/${taskId}/execution-history`),

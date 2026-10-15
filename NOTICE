@@ -46,6 +46,52 @@ Where DeerFlow MIT applies to specific files, those files may be used under MIT
 terms for those portions, in addition to any obligations under this project's
 primary LICENSE.
 
+ZCode (Apache License 2.0)
+----------------------------
+
+Portions of this project are vendored from or adapted from ZCode
+(https://github.com/zai-org/ZCode), Z.ai's coding agent harness. ZCode is
+licensed under the Apache License, Version 2.0. The following copyright notice
+applies to those portions:
+
+    Copyright 2026 Z.AI Co., Ltd
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+        http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+
+A copy of the Apache-2.0 license text is kept at licenses/zcode-APACHE-2.0.txt.
+
+Vendored / derived paths in this repository (subject to ZCode Apache-2.0 terms
+in addition to this project's primary license):
+
+* evopanel/src/zcode-ui/             (shared React UI, hooks, Zustand stores)
+* evopanel/src/zcode-shared/         (shared protocols, types, codecs)
+* evopanel/src/zcode-rpc/            (RPC framework and serialization)
+* evopanel/src/zcode-provider/       (provider common facilities)
+* evopanel/src/zcode-provider-node/  (provider Node implementation)
+* evopanel/src/zcode-services/       (business services and persistence)
+* evopanel/src/zcode-model-option-map/ (model option map)
+* evopanel/vendor/zcode-cua/         (Computer-Use API-compatible placeholder)
+
+Per Apache-2.0 §4(b), files in those paths are EvoFlow-modified copies of
+upstream ZCode sources; significant edits are tracked in the EvoFlow git
+history. A generated vendor manifest is kept at
+evopanel/scripts/zcode-vendor-manifest.json (source revision pinned).
+
+The Apache-2.0 license applies only to those ZCode-derived portions
+identified above. It does **not** change this repository's primary
+PolyForm Noncommercial 1.0.0 license for the rest of EvoFlow, and it does
+not grant any party the right to use the Z.AI trademarks.
+
 Bundled document skills note
 ----------------------------
 
@@ -98,6 +144,16 @@ EvoFlow is an independent product. During development we also studied (and in
 places adapted ideas from) the following open-source agent projects. Linking
 them here is attribution and thanks — it does **not** mean EvoFlow is a fork
 of any of them, and it does **not** change this repository's primary license.
+
+* ZCode (Z.AI Co., Ltd.)
+  https://github.com/zai-org/ZCode
+  Areas that were vendored or substantially adapted into EvoFlow are listed
+  in the "ZCode (Apache License 2.0)" section above. Beyond those vendored
+  portions, EvoFlow also reused ZCode's design notes (e.g. DESIGN.md) and
+  the v4 protocol / projection layout as starting points for EvoFlow's own
+  shell task board and chat panes. Some paths retain upstream-oriented
+  naming (the `zcode-*` workspace folders) for traceability; see file
+  headers and scripts/zcode-vendor-manifest.json where present.
 
 * Hermes Agent (Nous Research)
   https://github.com/NousResearch/hermes-agent

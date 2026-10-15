@@ -129,6 +129,32 @@ function RefreshIcon({ className }: { className?: string }) {
   )
 }
 
+const IFRAME_START_PAGE_DOC = `<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<style>
+  body { font-family: system-ui, sans-serif; display: flex; flex-direction: column;
+         align-items: center; justify-content: center; min-height: 90vh; margin: 0;
+         background: #f8fafc; color: #0f172a; }
+  h1 { font-size: 22px; margin: 0 0 8px; }
+  p { color: #64748b; margin: 0 0 20px; }
+  a { display: inline-block; margin: 4px 8px; padding: 8px 16px; border-radius: 8px;
+      background: #fff; border: 1px solid #cbd5e1; color: #0f172a; text-decoration: none; }
+  a:hover { background: #e2e8f0; }
+</style>
+</head>
+<body>
+  <h1>EvoFlow 内置浏览器</h1>
+  <p>在上方地址栏输入网址，或从快捷入口开始：</p>
+  <div>
+    <a href="https://www.baidu.com">百度</a>
+    <a href="https://www.bing.com">Bing</a>
+    <a href="https://example.com">Example</a>
+  </div>
+</body>
+</html>`
+
 function LiveSpinner() {
   return <span className="browser-panel-spinner" aria-hidden />
 }
@@ -1171,6 +1197,12 @@ export const BrowserPanel = memo(function BrowserPanel({
   const [embedSupported, setEmbedSupported] = useState(() => browserEmbedSupportedSync())
   const [embedReady, setEmbedReady] = useState(false)
   const [embedFailed, setEmbedFailed] = useState(false)
+  // iframe 回退：原生嵌入链路（Tauri invoke）挂起或失败时，面板直接用 iframe
+  // 显示网页内容——零后端依赖，保证「打开就有内容」。
+  const [iframeFallback, setIframeFallback] = useState(false)
+  const [iframeSrc, setIframeSrc] = useState('')
+  const [iframeNonce, setIframeNonce] = useState(0)
+  const iframeRef = useRef<HTMLIFrameElement | null>(null)
   const [viewport, setViewport] = useState<BrowserViewportSize | undefined>(undefined)
   const [viewportBusy, setViewportBusy] = useState(false)
   const [activePreset, setActivePreset] = useState<BrowserViewportPresetId>('desktop')
@@ -1216,6 +1248,7 @@ export const BrowserPanel = memo(function BrowserPanel({
   }, [liveStreamUrl, effectiveThreadId])
 
   const handleRefresh = useCallback(async () => {
+    if (iframeFallback) { setIframeNonce((n) => n + 1); return }
     if (refreshBusy || !streamPath) return
     dbgLog(`[browser-panel] refresh thread=${effectiveThreadId}`)
     setRefreshBusy(true)
@@ -1282,6 +1315,13 @@ export const BrowserPanel = memo(function BrowserPanel({
   const [navError, setNavError] = useState('')
   const handleNavigate = useCallback(
     async (url: string) => {
+      const normalized = url.startsWith('http') || url.startsWith('about:') ? url : 'https://' + url
+      // iframe 回退模式：地址栏直接驱动 iframe，零后端依赖
+      if (iframeFallback || !embedSupported) {
+        setIframeFallback(true)
+        setIframeSrc(normalized)
+        return
+      }
       const tid = effectiveThreadId
       if (navBusy) return
       if (!tid) {
@@ -1339,6 +1379,7 @@ export const BrowserPanel = memo(function BrowserPanel({
     [effectiveThreadId, navBusy],
   )
   const handleBack = useCallback(async () => {
+    if (iframeFallback) { iframeRef.current?.contentWindow?.history.back(); return }
     const tid = effectiveThreadId
     if (!tid || navBusy) return
     setNavBusy(true)
@@ -1357,6 +1398,7 @@ export const BrowserPanel = memo(function BrowserPanel({
     }
   }, [effectiveThreadId, navBusy])
   const handleForward = useCallback(async () => {
+    if (iframeFallback) { iframeRef.current?.contentWindow?.history.forward(); return }
     const tid = effectiveThreadId
     if (!tid || navBusy) return
     setNavBusy(true)
@@ -1585,6 +1627,8 @@ export const BrowserPanel = memo(function BrowserPanel({
         `hasStream=${hasStream} mode=${effectiveMode || '(none)'}`,
     )
   }, [embedSupported, effectiveThreadId, preferEmbeddedBrowser, embedReady, embedFailed, hasStream, effectiveMode])
+
+
   // 'evopanel' = in-process Playwright engine. Browser lives in EvoPanel — there
   // is no separate desktop Chrome window to switch to, so suppress the "Chrome
   // opened on your desktop" hint. Only legacy `headed` / external `cdp` paths
@@ -1616,6 +1660,19 @@ export const BrowserPanel = memo(function BrowserPanel({
     isBrowserSurface,
     surfaceKind: rightStageStore.getSnapshot().surface?.kind,
   })
+  // 嵌入就绪超时：原生 WebView2 创建可能无限挂起（invoke 永不返回）。
+  // 10 秒仍未 ready → 切 iframe 回退，面板始终有内容（转圈永久卡死是此前的问题）。
+  useEffect(() => {
+    if (!isOpen || !isBrowserSurface) return
+    if (!preferEmbeddedBrowser || embedReady || embedFailed) return
+    const t = window.setTimeout(() => {
+      dbgWarn('[browser-panel] embed not ready in 10s — switching to iframe fallback')
+      setIframeFallback(true)
+      setIframeSrc((prev) => prev || effectivePageUrl || '')
+    }, 10000)
+    return () => window.clearTimeout(t)
+  }, [isOpen, isBrowserSurface, preferEmbeddedBrowser, embedReady, embedFailed, effectivePageUrl, embedThreadId])
+
   const overrideBody =
     !isBrowserSurface && bodySlot
       ? typeof bodySlot === 'function'
@@ -1904,7 +1961,18 @@ export const BrowserPanel = memo(function BrowserPanel({
             <p className="browser-panel-shared-hint-text">{sharedBrowserHint}</p>
           </div>
         ) : null}
-        {hasStream ? (
+        {iframeFallback || !embedSupported || Boolean(iframeSrc) || Boolean(effectivePageUrl) ? (
+          <div className="browser-panel-iframe-host">
+            <iframe
+              key={`iframe-${iframeNonce}-${iframeSrc}`}
+              ref={iframeRef}
+              src={iframeSrc || undefined}
+              srcDoc={iframeSrc ? undefined : IFRAME_START_PAGE_DOC}
+              className="browser-panel-iframe"
+              title="内置浏览器"
+            />
+          </div>
+        ) : hasStream ? (
           <div className={`browser-panel-live-host${showStreamPreviewLabel ? ' is-preview' : ''}`}>
             {showStreamPreviewLabel ? <div className="browser-panel-preview-label">侧栏预览</div> : null}
             {operating ? (

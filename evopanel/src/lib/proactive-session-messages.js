@@ -76,11 +76,19 @@ export function pickProactiveConversationSessionKey(conversations, opts = {}) {
 /**
  * 依次尝试候选会话，返回第一条非空 transcript。
  * @param {{
- *   agentCode: string
- *   taskId?: string
- *   roundId?: string
- *   sessionKey?: string
+ *   agentCode: string,
+ *   taskId?: string,
+ *   roundId?: string,
+ *   sessionKey?: string,
  * }} opts
+ * @returns {Promise<{
+ *   messages: any[],
+ *   session_key?: string,
+ *   round_id?: string,
+ *   cost?: { total_tokens?: number | null } | null,
+ *   empty?: boolean,
+ *   error?: string,
+ * }>}
  */
 export async function fetchProactiveTranscript(opts = {}) {
   const code = String(opts.agentCode || '').trim()

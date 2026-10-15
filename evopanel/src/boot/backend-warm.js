@@ -130,7 +130,7 @@ export function startBackendReadyPoll() {
   _backendReadyPollTimer = setInterval(tick, 500)
 }
 
-function showBackendDownOverlay() {
+export function showBackendDownOverlay() {
   hideBackendWarmingBanner()
   removeBootSplash()
   if (document.getElementById('backend-down-overlay')) return

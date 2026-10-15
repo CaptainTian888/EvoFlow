@@ -416,12 +416,48 @@ fn query_param(path: &str, key: &str) -> Option<String> {
     None
 }
 
-/// Read the full HTTP request (up to the double-CRLF that ends the headers)
-/// into ``buf``. Returns the byte length actually read, or ``None`` if the
-/// connection closed mid-headers.
+/// Minimal percent-decoder for query `url=` values (`https%3A%2F%2F…`).
+fn percent_decode(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let h = |c: u8| -> Option<u8> {
+                match c {
+                    b'0'..=b'9' => Some(c - b'0'),
+                    b'a'..=b'f' => Some(c - b'a' + 10),
+                    b'A'..=b'F' => Some(c - b'A' + 10),
+                    _ => None,
+                }
+            };
+            if let (Some(hi), Some(lo)) = (h(bytes[i + 1]), h(bytes[i + 2])) {
+                out.push((hi << 4) | lo);
+                i += 3;
+                continue;
+            }
+        }
+        if bytes[i] == b'+' {
+            out.push(b' ');
+        } else {
+            out.push(bytes[i]);
+        }
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Read a full HTTP/1.1 request including the body.
+///
+/// Previous logic stopped as soon as the buffer *ended* with ``\r\n\r\n``,
+/// which drops the POST body when headers and body arrive in separate TCP
+/// segments (common with small JSON payloads). That made every
+/// ``Page.navigate`` look like ``about:blank`` and broke panel seeding.
 fn read_http_request(socket: &mut TcpStream) -> Option<Vec<u8>> {
+    let _ = socket.set_read_timeout(Some(std::time::Duration::from_secs(5)));
     let mut buf = Vec::with_capacity(8192);
     let mut tmp = [0u8; 2048];
+    let mut header_end: Option<usize> = None;
     loop {
         match socket.read(&mut tmp) {
             Ok(0) => {
@@ -431,12 +467,27 @@ fn read_http_request(socket: &mut TcpStream) -> Option<Vec<u8>> {
                 break;
             }
             Ok(n) => buf.extend_from_slice(&tmp[..n]),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut => {
+                // No more data for now — if we already have headers+body, stop.
+                if header_end.is_some() {
+                    break;
+                }
+                return if buf.is_empty() { None } else { Some(buf) };
+            }
             Err(_) => return None,
         }
-        // Stop when we've seen the double-CRLF that ends HTTP headers.
-        if buf.len() >= 4 {
-            let tail = &buf[buf.len() - 4..];
-            if tail == b"\r\n\r\n" || &tail[1..] == b"\n\n" {
+        if header_end.is_none() {
+            if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                header_end = Some(pos + 4);
+            } else if let Some(pos) = buf.windows(2).position(|w| w == b"\n\n") {
+                header_end = Some(pos + 2);
+            }
+        }
+        if let Some(hend) = header_end {
+            let content_length = parse_content_length(&buf[..hend]).unwrap_or(0);
+            if buf.len().saturating_sub(hend) >= content_length {
+                // Trim any accidental trailing read beyond Content-Length.
+                buf.truncate(hend + content_length);
                 break;
             }
         }
@@ -445,6 +496,17 @@ fn read_http_request(socket: &mut TcpStream) -> Option<Vec<u8>> {
         }
     }
     Some(buf)
+}
+
+fn parse_content_length(headers: &[u8]) -> Option<usize> {
+    let text = String::from_utf8_lossy(headers);
+    for line in text.lines() {
+        let lower = line.to_ascii_lowercase();
+        if let Some(rest) = lower.strip_prefix("content-length:") {
+            return rest.trim().parse::<usize>().ok();
+        }
+    }
+    None
 }
 
 /// Serve one HTTP connection.  Runs on a dedicated ``std::thread`` so it can
@@ -462,9 +524,31 @@ fn handle_connection(mut socket: TcpStream, app: tauri::AppHandle) {
 
     let response = match (method, path) {
         ("POST", path) if path.starts_with("/browser-cdp/command") => {
-            let body = extract_post_body(&buf);
+            let mut body = extract_post_body(&buf);
             let thread_id = query_param(path, "thread_id").unwrap_or_default();
             let cdp_method = query_param(path, "method").unwrap_or_default();
+            // Belt-and-suspenders: PowerShell/curl escaping often mangles the
+            // JSON body so Page.navigate arrives as `{\` / empty. Accept
+            // `?url=` on the query string and merge when body lacks a url.
+            if cdp_method == "Page.navigate" {
+                if let Some(raw_url) = query_param(path, "url") {
+                    let decoded = percent_decode(&raw_url);
+                    let body_has_url = serde_json::from_str::<serde_json::Value>(&body)
+                        .ok()
+                        .and_then(|v| {
+                            v.get("url")
+                                .and_then(|u| u.as_str())
+                                .map(|s| !s.trim().is_empty())
+                        })
+                        .unwrap_or(false);
+                    if !body_has_url && !decoded.is_empty() {
+                        body = serde_json::json!({ "url": decoded }).to_string();
+                        log_line(&format!(
+                            "[browser-cdp-http] merged navigate url from query: {decoded}"
+                        ));
+                    }
+                }
+            }
             run_cdp_dispatch(app, thread_id, cdp_method, body)
         }
         ("GET", path) if path.starts_with("/browser-cdp/status") => {
@@ -541,38 +625,30 @@ fn run_cdp_dispatch(
             let _ = tx.send(r);
         })
         .ok();
+    // Budget must cover: ensure/create (main-thread) + call_cdp (25s) + one
+    // recreate retry (another 25s). The previous 60s cap raced the retry path.
     let result = rx
-        .recv_timeout(std::time::Duration::from_secs(60))
+        .recv_timeout(std::time::Duration::from_secs(120))
         .unwrap_or_else(|e| Err(format!("dispatch timeout: {e}")));
     log_line(&format!(
         "[browser-cdp] run_cdp_dispatch EXIT result={:?}",
         result
     ));
 
-    // Detect WebView2 timeout and trigger Edge fallback.
-    let is_timeout = match &result {
-        Err(e) => e.contains("timed out") || e.contains("webview UI thread did not dispatch"),
-        _ => false,
-    };
-
-    if is_timeout && !EDGE_LAUNCHED.swap(true, std::sync::atomic::Ordering::SeqCst) {
-        // Only one thread launches Edge; others wait briefly.
-        log_line("[browser-cdp] WebView2 timeout detected, launching Edge fallback...");
-        let edge_port = launch_edge_fallback();
-        if edge_port > 0 {
+    // WebView2 timeout: do NOT fall back to system Edge.
+    //
+    // Product contract (node-repl bridge assertAvailable): only the in-app
+    // WebView2 side panel is an acceptable surface. Launching Edge flips
+    // ``browser-cdp-transport`` to ``edge``, after which every browser-use
+    // call is rejected — and the user never sees a page in the side panel.
+    // Surface the timeout so the agent/UI can remount the embed instead.
+    if let Err(e) = &result {
+        if e.contains("timed out") || e.contains("webview UI thread did not dispatch") {
             log_line(&format!(
-                "[browser-cdp] Edge fallback active on port {edge_port}, signaling Python..."
+                "[browser-cdp] WebView2 timeout (no Edge fallback): {e}"
             ));
-            // Update the main port file so Python's mtime-based cache re-reads.
-            let port_file = evoflow_dir().join(PORT_FILE);
-            let _ = std::fs::write(&port_file, edge_port.to_string());
-            log_line(&format!(
-                "[browser-cdp] updated port file {} with Edge port {edge_port}",
-                port_file.display()
-            ));
-        } else {
-            log_line("[browser-cdp] Edge fallback FAILED, returning WebView2 error to Python");
-            EDGE_LAUNCHED.store(false, std::sync::atomic::Ordering::SeqCst);
+            // Keep transport=webview2 so a later panel remount can recover.
+            write_transport("webview2");
         }
     }
 

@@ -1,5 +1,5 @@
 import { createPortal } from 'react-dom'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   contextUsageLevel,
   contextUsageRatio,
@@ -167,6 +167,20 @@ export function ContextUsageRing({
   const [portalRoot, setPortalRoot] = useState<HTMLElement | null>(null)
   const rootRef = useRef<HTMLSpanElement | null>(null)
   const prevUsedRef = useRef(0)
+  const closeTimerRef = useRef<number | null>(null)
+  const clearCloseTimer = useCallback(() => {
+    if (closeTimerRef.current != null) {
+      window.clearTimeout(closeTimerRef.current)
+      closeTimerRef.current = null
+    }
+  }, [])
+  const scheduleClose = useCallback(() => {
+    clearCloseTimer()
+    closeTimerRef.current = window.setTimeout(() => {
+      closeTimerRef.current = null
+      setOpen(false)
+    }, 120)
+  }, [clearCloseTimer])
 
   // Create / destroy a dedicated div in document.body for the portal panel
   useEffect(() => {
@@ -202,8 +216,13 @@ export function ContextUsageRing({
   }, [usage, targetRatio])
 
   useEffect(() => {
-    if (!available && open) setOpen(false)
-  }, [available, open])
+    if (!available && open) {
+      clearCloseTimer()
+      setOpen(false)
+    }
+  }, [available, open, clearCloseTimer])
+
+  useEffect(() => () => clearCloseTimer(), [clearCloseTimer])
 
   if (!available || !usage) return null
 
@@ -296,7 +315,8 @@ export function ContextUsageRing({
       role="dialog"
       aria-label="上下文占用"
       style={panelStyle}
-      onMouseLeave={() => setOpen(false)}
+      onMouseEnter={() => clearCloseTimer()}
+      onMouseLeave={() => scheduleClose()}
     >
       {/* Header: title + summary */}
       <div className="react-chat-ctx-zcode-header">
@@ -393,9 +413,19 @@ export function ContextUsageRing({
       <span
         ref={rootRef}
         className={cn('react-chat-context-ring-wrap', className)}
-        onMouseEnter={() => setOpen(true)}
-        onFocus={() => setOpen(true)}
-        onBlur={() => setOpen(false)}
+        onMouseEnter={() => {
+          clearCloseTimer()
+          setOpen(true)
+        }}
+        onMouseLeave={() => scheduleClose()}
+        onFocus={() => {
+          clearCloseTimer()
+          setOpen(true)
+        }}
+        onBlur={() => {
+          clearCloseTimer()
+          setOpen(false)
+        }}
       >
         {/* ZCode-style circular trigger button */}
         <button

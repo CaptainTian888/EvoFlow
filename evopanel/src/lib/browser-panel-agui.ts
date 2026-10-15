@@ -2,15 +2,22 @@ import { parseBrowserLiveToolOutput } from './chat-normalize.js'
 import { buildBrowserStreamPath } from './browser-stream-client.js'
 import {
   ensureBrowserStage,
+  NODE_REPL_BRIDGE_THREAD_ID,
   notifyBrowserToolEnd,
   notifyBrowserToolResult,
   notifyBrowserToolStart,
+  setBrowserPanelThreadId,
 } from './browser-panel-store.js'
+
+export { NODE_REPL_BRIDGE_THREAD_ID }
 import type { BrowserPanelState } from './browser-panel-screenshots.js'
 
 export function isBrowserToolWireName(name: string): boolean {
   const n = String(name || '').trim().toLowerCase()
-  return n === 'browser' || n.startsWith('browser_') || n === 'preview_url'
+  if (n === 'browser' || n.startsWith('browser_') || n === 'preview_url') return true
+  // ZCode 插件运行时内核工具：browser-use / computer-use 技能的唯一执行入口，
+  // 面板随调用自动展开（与 browser* 工具同等的「所见即所控」体验）。
+  return n === 'mcp__node_repl__js'
 }
 
 export type BrowserPanelPreview = {
@@ -48,10 +55,18 @@ export function previewPatchFromBrowserAgUiTool(
   const argsText = String(tc.argsText || '').trim()
   if (argsText) {
     try {
-      const args = JSON.parse(argsText) as { action?: string; url?: string }
+      const args = JSON.parse(argsText) as { action?: string; url?: string; code?: string }
       const action = String(args?.action || '').trim().toLowerCase()
       const url = String(args?.url || '').trim()
       if (action === 'open' && url) out.pageUrl = url
+      // node_repl 内核工具：从 js 代码里提取首个意图 URL（browsers.open / tabs.new / navigate）
+      const code = String(args?.code || '')
+      if (!out.pageUrl && code) {
+        const openMatch = code.match(
+          /(?:browsers\.open|tabs\.new|\.navigate|agent\.browsers\.open)\(\s*["'`]([^"'`]+)["'`]/,
+        )
+        if (openMatch?.[1]) out.pageUrl = openMatch[1]
+      }
     } catch {
       const urlMatch = argsText.match(/"url"\s*:\s*"([^"]+)"/)
       if (urlMatch?.[1]) out.pageUrl = urlMatch[1]
@@ -156,8 +171,12 @@ export function syncBrowserPanelFromAgUiEvent(
   const type = String(aguiEvent.type || '').toUpperCase()
   const toolCallId = String(aguiEvent.toolCallId || '').trim()
   const tc = toolCallId ? toolCalls?.get(toolCallId) : undefined
+  // browser-use / node-repl always owns the shared bridge WebView2 session.
+  if (toolName === 'mcp__node_repl__js') {
+    setBrowserPanelThreadId(NODE_REPL_BRIDGE_THREAD_ID)
+  }
   if (type === 'TOOL_CALL_START' || type === 'TOOL_CALL_ARGS') {
-    return notifyBrowserToolStart(toolCallId, tc?.argsText)
+    return notifyBrowserToolStart(toolCallId, tc?.argsText, { toolName, forceOpen: true })
   }
   if (type === 'TOOL_CALL_RESULT') {
     const result =
@@ -166,6 +185,9 @@ export function syncBrowserPanelFromAgUiEvent(
         : typeof (aguiEvent as { content?: string }).content === 'string'
           ? (aguiEvent as { content?: string }).content
           : null
+    // Keep the panel open even when the tool result is not a browser_live JSON
+    // blob (node-repl returns JS stdout / structured SDK results).
+    ensureBrowserStage()
     const changed = notifyBrowserToolResult(toolCallId, result)
     notifyBrowserToolEnd(toolCallId)
     // AG-UI can deliver TOOL_CALL_RESULT before the reducer has stored
@@ -181,9 +203,10 @@ export function syncBrowserPanelFromAgUiEvent(
         }
       })
     }
-    return changed
+    return changed || true
   }
   if (type === 'TOOL_CALL_END') {
+    ensureBrowserStage()
     notifyBrowserToolEnd(toolCallId)
     return true
   }

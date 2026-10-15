@@ -23,6 +23,7 @@ import {
   useReactFlow,
   type Connection,
   type Edge,
+  type IsValidConnection,
   type Node,
   type OnMove,
   type Viewport,
@@ -256,7 +257,7 @@ function FlowInner({
   onNodesChange: ReturnType<typeof useNodesState<Node<StepNodeData>>>[2]
   onEdgesChange: ReturnType<typeof useEdgesState>[2]
   onConnect: (conn: Connection) => void
-  isValidConnection?: (conn: Connection) => boolean
+  isValidConnection?: IsValidConnection<Edge>
   onNodeClick: (e: React.MouseEvent, node: Node<StepNodeData>) => void
   onPaneClick: () => void
   onMoveEnd: OnMove
@@ -303,10 +304,7 @@ function FlowInner({
         y: Math.round(raw.y / 20) * 20,
       }
       if (kind === 'answer') onDropAnswer?.(pos)
-      else if (kind.startsWith('agent:')) {
-        const agentCode = kind.slice('agent:'.length)
-        onDropAgent?.(pos, agentCode)
-      } else onDropAgent?.(pos)
+      else onDropAgent?.(pos)
     },
     [onDropAgent, onDropAnswer, screenToFlowPosition, setDragOver],
   )
@@ -426,7 +424,7 @@ function FlowInner({
 
         {/* 空画布模板引导：只有 0 个步骤节点时显示 */}
         {stepCount === 0 && onApplyTemplate ? (
-          <Panel position="center" className="wf-empty-templates">
+          <Panel position="top-center" className="wf-empty-templates">
             <div className="wf-empty-templates-header">
               <h3>从模板快速开始</h3>
               <p>选一个常用模板，一键生成工作流，再按需调整</p>
@@ -670,8 +668,8 @@ export const AppWorkflowCanvas = forwardRef<AppWorkflowCanvasHandle, Props>(func
     [selectedId, updateStep],
   )
 
-  const isValidConnection = useCallback(
-    (conn: Connection): boolean => {
+  const isValidConnection = useCallback<IsValidConnection<Edge>>(
+    (conn): boolean => {
       if (!conn.source || !conn.target || conn.source === conn.target) return false
       if (conn.target === START_NODE_ID) return false
       if (conn.source === ANSWER_NODE_ID) return false

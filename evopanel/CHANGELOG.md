@@ -6,6 +6,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-10-16
+
+### Added
+
+- **任务失败步骤重试**：任务列表页与详情页新增「重试失败步骤」按钮，调用 `POST /tasks/{id}/retry`，仅补跑 `failed` 子任务，已完成的子任务保留不动；支持指定子任务 ID 或重试全部失败步骤
+- **插件系统**：新增插件管理后端（`plugins/` runtime / service / storage / manifest / components / sources / zip_source）、网关路由 `plugins.py`、前端插件管理页面与 PluginPickerModal / PluginQuickPanel 选择弹窗
+- **浏览器桥接**：新增 `browser_bridge` / `cua_bridge` 网关路由、Tauri `browser_embed_bridge` 命令、前端 BrowserPanel 能力增强与 `browser-embed.json` 能力声明
+- **MCP 服务器管理**：新增 MCP 服务器管理前后端（`mcp-server-management`）、市场配置同步（`mcp-marketplaces` / `mcp-server-sync`）、设置页管理界面
+- **流式追踪调试工具**：新增 `stream_trace.py` / `analyze_stream_trace.py` 调试分析脚本，用于流式渲染问题定位
+- **第三方许可声明**：新增 zcode 各子包 `THIRD_PARTY_ZCODE.md` 与 `licenses/zcode-APACHE-2.0.txt` 许可文件
+- **集成文档**：新增 Claude Code Python SDK 集成指南、zcode 许可影响说明、evoflow 介绍页
+
+### Changed
+
+- **任务操作术语规范化**：paused 状态按钮「继续」→「恢复执行」；failed 状态原「重试」拆分为「重试失败步骤」（仅补跑失败子任务）+「重新执行」（整任务克隆重跑）；详情页「再跑一次」→「重新执行」
+- **前端 API 层**：`tauri-api.js` 新增 `retryTask` 方法，支持 `{ subtaskIds, retryAllFailed }` 参数
+- **经验工具移除**：删除 `experience_tool.py`，旧经验库迁移至资产中心扁平 MD 结构
+- **知识库解析与嵌入**：owned pipeline / embedding_bind / parser / service / worker 多处增强
+- **技能注入中间件**：`skills_injection_middleware` 与 `skills/loader` 调整
+- **i18n**：en-US / zh-CN 国际化文案更新
+- **主题与样式**：react-chat.css / sci-fi-theme.css / theme-surfaces.css 更新
+
+### Fixed
+
+- 修复子任务产出与 outcome 判定逻辑（`subtask_outcome.py` / `task_outputs.py`）
+- 修复流式路由日志与 SSE 归一化处理（`langgraph_route_logger.py` / `sse_ui_normalize.py`）
+- 修复会话仓储与权限预设持久化问题（`session_repositories.py` / `permission_preset_store.py`）
+
 ## [1.0.9] - 2026-10-14
 
 ### Added

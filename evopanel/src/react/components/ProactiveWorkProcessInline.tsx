@@ -16,6 +16,7 @@ import {
   WorkProcessLiveNow,
   WorkProcessSummaryBar,
   type StatFilterKey,
+  type WorkProcessEventView,
 } from './ProactiveWorkProcessViews.js'
 
 export type ProactiveWorkProcessInlineProps = {
@@ -176,7 +177,7 @@ export function ProactiveWorkProcessInline({
       ) : null}
 
       <WorkProcessEventList
-        events={filtered}
+        events={filtered as unknown as WorkProcessEventView[]}
         emptyText={
           loading
             ? '正在加载上班轨迹…'

@@ -41,6 +41,64 @@ if (isTauri) initDesktopNotifications()
 if (isTauri) initDesktopContextMenu()
 if (isTauri) initDesktopDevtoolsHotkey()
 
+// Register ASAP — agent CDP can emit before boot() finishes mounting ChatApp.
+// Directly upsert a WebView2 so ensure_webview_for_cdp finds a healthy HWND
+// without waiting on React layout.
+if (isTauri) {
+  void import('@tauri-apps/api/event')
+    .then(({ listen }) =>
+      listen('browser-panel-request', async (ev) => {
+        try {
+          const payload = ev?.payload || {}
+          const tid = String(payload.threadId || 'evoflow-node-repl-bridge').trim()
+          const url = String(payload.url || '').trim()
+          console.log('[browser-panel-request:early]', tid, url || '(none)')
+          const {
+            applyBrowserCommandResponse,
+            ensureBrowserStage,
+            setBrowserPanelThreadId,
+            NODE_REPL_BRIDGE_THREAD_ID,
+          } = await import('./lib/browser-panel-store.js')
+          const { browserEmbedUpsert, registerBrowserEmbedCdp } = await import(
+            './lib/browser-embed-client.js'
+          )
+          const bridgeTid = tid || NODE_REPL_BRIDGE_THREAD_ID
+          setBrowserPanelThreadId(bridgeTid)
+          if (!String(window.location.hash || '').includes('/chat')) {
+            navigate('/chat')
+          }
+          const vw = Math.max(480, Math.floor((window.innerWidth || 1280) * 0.45))
+          const vh = Math.max(360, Math.floor((window.innerHeight || 800) - 96))
+          const vx = Math.max(0, Math.floor((window.innerWidth || 1280) - vw - 12))
+          const vy = 64
+          const navUrl = url && /^https?:\/\//i.test(url) ? url : 'about:blank'
+          const info = await browserEmbedUpsert({
+            threadId: bridgeTid,
+            url: navUrl,
+            x: vx,
+            y: vy,
+            width: vw,
+            height: vh,
+          })
+          if (info?.cdpUrl) {
+            await registerBrowserEmbedCdp(bridgeTid, info.cdpUrl)
+            console.log('[browser-panel-request:early] upsert ok', info.webviewLabel || bridgeTid)
+          } else {
+            console.warn('[browser-panel-request:early] upsert returned no cdpUrl', info)
+          }
+          if (navUrl !== 'about:blank') {
+            applyBrowserCommandResponse({ threadId: bridgeTid, pageUrl: navUrl })
+          } else {
+            ensureBrowserStage()
+          }
+        } catch (err) {
+          console.warn('[browser-panel-request:early] failed', err)
+        }
+      }),
+    )
+    .catch((err) => console.warn('[browser-panel-request:early] listen failed', err))
+}
+
 // 样式（v3.5 阶段 F1 commit 1: 抽到 ./boot/0-styles.js,顺序敏感)
 // import './style/variables.css' ... 33 个 import 已抽到 0-styles.js
 import './boot/0-styles.js'
@@ -52,7 +110,7 @@ import './boot/3-recovery.js'
 // v3.5 阶段 F1 commit 3: 后端就绪轮询 + 离线兜底(backend-warming banner /
 // backend-down overlay) 抽到 ./boot/backend-warm.js,只 export
 // startBackendReadyPoll 给下面 IIFE 调
-import { startBackendReadyPoll } from './boot/backend-warm.js'
+import { startBackendReadyPoll, showBackendDownOverlay } from './boot/backend-warm.js'
 
 // v3.5 阶段 F1 commit 4: 全局服务健康 banner(vanilla DOM,跟 ChatApp banner
 // 并存不冲突) 抽到 ./boot/service-banner.js,export installGlobalServiceBanner
@@ -612,6 +670,62 @@ async function boot() {
         }
         await listen('upgrade-done', refreshAfterTask)
         await listen('upgrade-error', refreshAfterTask)
+
+        // Agent CDP arrives before AG-UI TOOL_CALL_START can open the panel.
+        // Rust emits this so we mount the bridge WebView2 immediately.
+        await listen('browser-panel-request', async (ev) => {
+          try {
+            const payload = ev?.payload || {}
+            const tid = String(payload.threadId || 'evoflow-node-repl-bridge').trim()
+            const url = String(payload.url || '').trim()
+            console.log('[browser-panel-request]', tid, url || '(none)')
+            const {
+              applyBrowserCommandResponse,
+              ensureBrowserStage,
+              setBrowserPanelThreadId,
+              NODE_REPL_BRIDGE_THREAD_ID,
+            } = await import('./lib/browser-panel-store.js')
+            const {
+              browserEmbedUpsert,
+              registerBrowserEmbedCdp,
+            } = await import('./lib/browser-embed-client.js')
+            const bridgeTid = tid || NODE_REPL_BRIDGE_THREAD_ID
+            setBrowserPanelThreadId(bridgeTid)
+            if (!String(window.location.hash || '').includes('/chat')) {
+              navigate('/chat')
+            }
+            // CRITICAL: do NOT wait for BrowserPanel layout. Agent CDP is already
+            // blocked on ensure_webview_for_cdp; a 0×0 slot would miss the window.
+            // Upsert with approximate right-half bounds now — BrowserPanel will
+            // reposition the same HWND when it mounts.
+            const vw = Math.max(480, Math.floor((window.innerWidth || 1280) * 0.45))
+            const vh = Math.max(360, Math.floor((window.innerHeight || 800) - 96))
+            const vx = Math.max(0, Math.floor((window.innerWidth || 1280) - vw - 12))
+            const vy = 64
+            const navUrl = url && /^https?:\/\//i.test(url) ? url : 'about:blank'
+            const info = await browserEmbedUpsert({
+              threadId: bridgeTid,
+              url: navUrl,
+              x: vx,
+              y: vy,
+              width: vw,
+              height: vh,
+            })
+            if (info?.cdpUrl) {
+              await registerBrowserEmbedCdp(bridgeTid, info.cdpUrl)
+              console.log('[browser-panel-request] upsert ok', info.webviewLabel || bridgeTid)
+            } else {
+              console.warn('[browser-panel-request] upsert returned no cdpUrl')
+            }
+            if (navUrl !== 'about:blank') {
+              applyBrowserCommandResponse({ threadId: bridgeTid, pageUrl: navUrl })
+            } else {
+              ensureBrowserStage()
+            }
+          } catch (err) {
+            console.warn('[browser-panel-request] handler failed', err)
+          }
+        })
       }).catch(() => {})
     }
   })

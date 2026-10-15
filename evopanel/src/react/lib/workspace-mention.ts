@@ -1,10 +1,11 @@
-/** Parse `#file` / `@employee` mention at cursor (composer-style composer autocomplete).
+/** Parse `#file` / `@employee` / `/skill-or-plugin` mention at cursor.
  *
  * Trigger chars:
- * - `#` -> file mention (was `@` historically; `@` is reserved for employee dispatch)
+ * - `#` -> file mention (workspace file autocomplete)
  * - `@` -> employee mention (dispatch task to an Agent Workforce role)
+ * - `/` -> capability mention (skill or plugin search, EvoFlow custom)
  */
-export type MentionType = 'file' | 'employee'
+export type MentionType = 'file' | 'employee' | 'skill' | 'plugin'
 
 export type MentionRange = {
   type: MentionType
@@ -27,10 +28,19 @@ function matchTrigger(text: string, cursor: number, trigger: string): MentionRan
   if (!match) return null
   const query = match[1] ?? ''
   const start = before.length - match[0].length
-  return { type: trigger === '#' ? 'file' : 'employee', query, start, end: cursor }
+  const end = cursor
+  const typeMap: Record<string, MentionType> = {
+    '#': 'file',
+    '@': 'employee',
+    '/': 'skill-or-plugin' as MentionType,
+  }
+  return { type: typeMap[trigger] ?? trigger as MentionType, query, start, end }
 }
 
 export function getMentionAtCursor(text: string, cursor: number): MentionRange | null {
+  // `/` takes priority — slash commands are more specific than @ or #.
+  const slash = matchTrigger(text, cursor, '/')
+  if (slash) return slash
   // Employee (`@`) takes precedence only when the char right before the query is
   // actually `@`; otherwise fall back to file (`#`). Both can coexist because
   // the preceding-trigger check disambiguates them.

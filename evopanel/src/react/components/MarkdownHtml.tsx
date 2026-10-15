@@ -233,7 +233,7 @@ function MarkdownHtmlInner({
       lastStreamPaintRef.current =
         typeof performance !== 'undefined' ? performance.now() : Date.now()
       if (!paintPlainStreamDom(textRef.current)) {
-        setMarkdownReady(buildStreamingPlainHtml(textRef.current))
+        setMarkdownReady(true)
       }
     }
 

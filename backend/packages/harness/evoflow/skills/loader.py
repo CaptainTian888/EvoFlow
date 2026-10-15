@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 # mtime_map: {relative_skill_path: (mtime_ns, file_size)}
 _skills_cache: tuple[dict[str, tuple[int, int]], list[Skill], float] | None = None
 _skills_cache_ttl: float = 300  # seconds before re-checking mtimes
+_plugin_state_sig: str | None = None
 # Rendered <skill_system> section cache (avoids rebuild on every turn).
 _skills_prompt_section_cache: dict[tuple, str] = {}
 _skills_prompt_section_lock = threading.Lock()
@@ -354,10 +355,39 @@ def load_skills(
     if extra_roots is None:
         extra_roots = cfg_extra_roots
 
+    # Plugin contributed skills (ZCode parity): enabled plugins' skills/ roots
+    # join discovery so their skills flow through the same directory / $mention /
+    # skill:<name> URI machinery. Merge happens before the cache key is built,
+    # so installing/uninstalling a plugin invalidates the scan cache.
+    try:
+        from evoflow.plugins.runtime import plugin_skill_roots
+
+        plugin_roots = plugin_skill_roots()
+        if plugin_roots:
+            extra_roots = [*(extra_roots or []), *plugin_roots]
+    except Exception:
+        logger.debug("Plugin skill roots unavailable", exc_info=True)
+
     if not skills_path.exists() and not scope_skill_roots and not extra_roots:
         return []
 
     use_simple_cache = not scope_skill_roots
+
+    # Plugin enable/disable toggles don't touch skill files, so the mtime cache
+    # can't see them; invalidate on installed-plugins state signature change.
+    if use_simple_cache:
+        try:
+            from evoflow.plugins.runtime import plugin_state_signature
+
+            global _plugin_state_sig
+            sig = plugin_state_signature()
+            if sig != _plugin_state_sig:
+                if _plugin_state_sig is not None:
+                    logger.info("Plugin enablement changed, invalidating skills cache")
+                _plugin_state_sig = sig
+                _skills_cache = None
+        except Exception:
+            pass
 
     # ── Check cache: TTL first, then lightweight mtime scan ───────────
     if use_simple_cache and _skills_cache is not None:
@@ -411,10 +441,25 @@ def load_skills(
 
         sync_skills_from_filesystem()
         registry = cfg_repo.list_skill_registry()
+        plugin_root_strings: set[str] = set()
+        try:
+            from evoflow.plugins.runtime import plugin_skill_roots
+
+            plugin_root_strings = {str(p.resolve()) for p in plugin_skill_roots()}
+        except Exception:
+            plugin_root_strings = set()
         for skill in skills:
             reg = registry.get(skill.name)
             if reg is not None:
                 skill.enabled = bool(reg.get("enabled", True))
+            elif (
+                plugin_root_strings
+                and skill.source_root is not None
+                and str(Path(skill.source_root).resolve()) in plugin_root_strings
+            ):
+                # Plugin-contributed skills: installing + enabling the plugin
+                # (plugin store semantics) is the enablement authority.
+                skill.enabled = True
             else:
                 from evoflow.config.extensions_config import ExtensionsConfig
 

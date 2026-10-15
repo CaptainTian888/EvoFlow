@@ -35,7 +35,7 @@ import {
 } from '../../lib/background-voice.js'
 import { getMentionAtCursor } from '../lib/workspace-mention.js'
 import { measureTextareaCaret } from '../lib/textarea-caret.js'
-import { WorkspaceMentionMenu, type MentionFileOption, type MentionEmployeeOption, type MentionOption, isEmployeeOption } from './WorkspaceMentionMenu.js'
+import { WorkspaceMentionMenu, type MentionFileOption, type MentionEmployeeOption, type MentionOption, type MentionSkillOption, type MentionPluginOption, isEmployeeOption, isSkillOption, isPluginOption } from './WorkspaceMentionMenu.js'
 import {
   appendUrlsToDraft,
   createComposeAttachHandlers,
@@ -144,6 +144,14 @@ export type WorkspaceMentionConfig = {
   onAttachFile: (entry: MentionFileOption) => void
   /** Active employees for `@员工` dispatch. When omitted, `@` is disabled. */
   roles?: MentionEmployeeOption[]
+  /** All available skills for `/` search. When omitted, `/` skill search is disabled. */
+  skills?: Array<{ name: string; label: string; icon: string; description?: string }>
+  /** All available plugins for `/` search. When omitted, `/` plugin search is disabled. */
+  plugins?: Array<{ id: string; label: string; iconUrl?: string; description?: string }>
+  /** Called when a skill is picked from the `/` menu. */
+  onPickSkill?: (skill: { name: string; label: string; icon: string }) => void
+  /** Called when a plugin is picked from the `/` menu. */
+  onPickPlugin?: (plugin: { id: string; label: string; iconUrl?: string }) => void
 }
 
 /** Result of parsing a leading `@员工名` token from the message text. */
@@ -306,7 +314,7 @@ export const ChatComposer = memo(function ChatComposer({
   /** `@员工名 任务` -> 派发任务给员工。命中时不走 onSend，主聊天不产生消息。 */
   onDispatchEmployee?: (agentCode: string, goal: string) => void | Promise<void>
   /** ZCode-style 上下文容量圆环，显示在发送按钮左侧 */
-  contextUsage?: import('./lib/context-usage.js').ContextUsageSnapshot | null
+  contextUsage?: import('../lib/context-usage.js').ContextUsageSnapshot | null
   /** Token totals for the context ring panel */
   tokenTotals?: import('../chat-types.js').TokenTotals | null
   /** 手动压缩上下文的回调 */
@@ -407,8 +415,16 @@ export const ChatComposer = memo(function ChatComposer({
     if (range.type === 'employee' && !(workspaceMention.roles && workspaceMention.roles.length)) {
       return null
     }
+    // Skill/plugin menu (`/` trigger) requires at least one of skills or plugins.
+    if (range.type === 'skill' || range.type === 'plugin') {
+      const hasSkills = Array.isArray(workspaceMention.skills) && workspaceMention.skills.length > 0
+      const hasPlugins = Array.isArray(workspaceMention.plugins) && workspaceMention.plugins.length > 0
+      if (!hasSkills && !hasPlugins) return null
+      // Normalise to 'skill' for the combined menu type.
+      return { ...range, type: 'skill' as const }
+    }
     return range
-  }, [workspaceMention?.enabled, workspaceMention?.roles, text, cursor])
+  }, [workspaceMention?.enabled, workspaceMention?.roles, workspaceMention?.skills, workspaceMention?.plugins, text, cursor])
 
   const mentionOpen = !!mentionRange
 
@@ -519,6 +535,25 @@ export const ChatComposer = memo(function ChatComposer({
   const applyMentionPick = useCallback(
     (item: MentionOption) => {
       if (!mentionRange) return
+      // Skill / plugin picks: call the dedicated callbacks and remove the
+      // `/query` token from the text (the selection shows up as a pill above the
+      // composer rather than as in-line text, mirroring the "+"-panel UX).
+      if (isSkillOption(item)) {
+        const next = text.slice(0, mentionRange.start) + text.slice(mentionRange.end)
+        setTextAndNotify(next)
+        setCursor(mentionRange.start)
+        workspaceMention?.onPickSkill?.({ name: item.name, label: item.label, icon: item.icon })
+        closeMention()
+        return
+      }
+      if (isPluginOption(item)) {
+        const next = text.slice(0, mentionRange.start) + text.slice(mentionRange.end)
+        setTextAndNotify(next)
+        setCursor(mentionRange.start)
+        workspaceMention?.onPickPlugin?.({ id: item.id, label: item.label, iconUrl: item.iconUrl })
+        closeMention()
+        return
+      }
       const isEmp = isEmployeeOption(item)
       const trigger = isEmp ? '@' : '#'
       const label = isEmp
@@ -562,6 +597,31 @@ export const ChatComposer = memo(function ChatComposer({
         return name.includes(ql) || code.includes(ql)
       })
       setMentionItems(matched)
+      setMentionLoading(false)
+      setMentionActive(0)
+      return
+    }
+    // Skill/plugin mentions (`/` trigger): local filter from skills + plugins catalog.
+    // Empty query lists all items so the menu auto-shows on first `/`.
+    if (mType === 'skill') {
+      const ql = q.toLowerCase()
+      const skillRows: MentionSkillOption[] = (workspaceMention.skills || [])
+        .filter((s) =>
+          !ql ||
+          String(s.name || '').toLowerCase().includes(ql) ||
+          String(s.label || '').toLowerCase().includes(ql) ||
+          String(s.description || '').toLowerCase().includes(ql),
+        )
+        .map((s) => ({ __kind: 'skill', name: s.name, label: s.label, icon: s.icon, description: s.description }))
+      const pluginRows: MentionPluginOption[] = (workspaceMention.plugins || [])
+        .filter((p) =>
+          !ql ||
+          String(p.id || '').toLowerCase().includes(ql) ||
+          String(p.label || '').toLowerCase().includes(ql) ||
+          String(p.description || '').toLowerCase().includes(ql),
+        )
+        .map((p) => ({ __kind: 'plugin', id: p.id, label: p.label, iconUrl: p.iconUrl, description: p.description }))
+      setMentionItems([...skillRows, ...pluginRows])
       setMentionLoading(false)
       setMentionActive(0)
       return

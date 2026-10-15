@@ -4273,7 +4273,7 @@ async function renderWorkItemPage(code, taskId, opts = {}) {
   return page
 }
 
-function renderWorkItemOutcomeCards(task, statusGroup) {
+function renderWorkItemOutcomeCards(task, statusGroup, role = null) {
   const result = taskSummaryText(task)
   const error = String(task.error || task.error_text || '').trim()
   const sections = parseTaskResultSections(statusGroup === 'failed' ? error || result : result)
@@ -4346,6 +4346,28 @@ function renderWorkItemOutcomeCards(task, statusGroup) {
               </details>`
             : ''
         }
+      </section>`)
+  }
+
+  // No workspace configured + any file output is unresolved (no _resolve_meta
+  // or found=false). Warn so the user knows relative paths likely won't open.
+  const roleWs = role ? workspaceOf(role) : ''
+  if (
+    !roleWs &&
+    outputs.some(
+      (o) =>
+        o &&
+        o.type === 'file' &&
+        !o._resolve_meta,
+    )
+  ) {
+    cards.push(`
+      <section class="td-card td-card--warn">
+        <h2 class="td-card-title">工作区未配置</h2>
+        <p class="td-card-sub">
+          此员工尚未配置工作区，部分产出文件为相对路径，可能无法在面板中预览。
+          请在「岗位设置 → 工作区路径」中配置后再查看。
+        </p>
       </section>`)
   }
 
@@ -4464,7 +4486,7 @@ function renderWorkItemDetail(role, task, { pendingApproval = null, roster = [],
   else if (showHandoffReadonly) statusBits[0] = statusGroup === 'cancelled' ? '已取消 · 转交已关闭' : '已失败 · 转交已关闭'
   else if (needsApprove) statusBits[0] = '待你拍板'
   else if (needsReview) statusBits[0] = '待你验收 · 交工确认'
-  const outcomeHtml = renderWorkItemOutcomeCards(task, statusGroup)
+  const outcomeHtml = renderWorkItemOutcomeCards(task, statusGroup, role)
   const showOutcome = Boolean(outcomeHtml) || ['reviewed', 'completed', 'failed', 'executing', 'paused', 'cancelled'].includes(statusGroup)
 
   const approvePanelHtml = isHandoffApprove

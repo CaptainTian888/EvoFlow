@@ -2177,6 +2177,7 @@ const SESSION_USER_PREF_KEYS = [
   'workspace_user_pinned',
   'preferred_skills',
   'preferred_skill',
+  'preferred_plugins',
 ]
 
 function isWorkspaceUserPinned(ctx) {
@@ -6099,6 +6100,23 @@ export class WsClient {
         if (one) preferredSkillsArr = [one]
       }
     }
+    // ZCode 插件语义：composer 选择的插件（preferred_plugins）随 run context 下发，
+    // 后端按轮注入插件 commands/skills；粘性回退与会话 context 一致。
+    const preferredPluginsRaw =
+      opts && typeof opts === 'object'
+        ? (opts.preferredPlugins || opts.preferred_plugins)
+        : ''
+    let preferredPluginsArr = Array.isArray(preferredPluginsRaw)
+      ? preferredPluginsRaw.map((s) => String(s || '').trim()).filter(Boolean)
+      : String(preferredPluginsRaw || '')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean)
+    if (!preferredPluginsArr.length && Array.isArray(sessionContext.preferred_plugins)) {
+      preferredPluginsArr = sessionContext.preferred_plugins
+        .map((s) => String(s || '').trim())
+        .filter(Boolean)
+    }
     const runContext = applySessionUserPrefsToRunContext(
       {
         ...defaultContext,
@@ -6137,6 +6155,7 @@ export class WsClient {
           ? { evf_prior_assistant_message_id: priorAssistantMessageId }
           : {}),
         ...(preferredSkillsArr.length ? { preferred_skills: preferredSkillsArr } : {}),
+        ...(preferredPluginsArr.length ? { preferred_plugins: preferredPluginsArr } : {}),
         ...(opts &&
         typeof opts === 'object' &&
         (opts.voiceInitiated || opts.voiceReply)

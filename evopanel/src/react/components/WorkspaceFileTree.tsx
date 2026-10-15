@@ -756,7 +756,7 @@ export function WorkspaceFileTree({
 
   // #8: keyboard navigation
   const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent<HTMLUListElement>) => {
+    (e: React.KeyboardEvent<HTMLElement>) => {
       const tag = (e.target as HTMLElement)?.tagName
       if (tag === 'INPUT' || tag === 'TEXTAREA') return
       if (isSearchMode || createDialog || flatNodes.length === 0) return

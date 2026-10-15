@@ -125,6 +125,9 @@ import { basenameFromPath } from './lib/workspace-mention.js'
 import { GoalModePanel } from './components/GoalModePanel.js'
 import { GoalProposalDock } from './components/GoalProposalDock.js'
 import { SkillPickerModal, type SkillSelection } from './components/SkillPickerModal.js'
+import { PluginQuickPanel } from './components/PluginQuickPanel.js'
+import type { PluginSelection } from './components/PluginPickerModal.js'
+import { resolvePluginIconSource } from '../zcode-ui/lib/pluginIconSource.js'
 import { ShareSessionModal } from './components/ShareSessionModal.js'
 import { AgentPickerModal } from './components/AgentPickerModal.js'
 import { PlanExecConfirm } from './components/PlanExecConfirmDock.js'
@@ -185,7 +188,10 @@ import { SidePanelBootShell } from './components/SidePanelBootShell.js'
 import { applyRightStageAgUiCustom, applyStageSetFromToolCall, STAGE_SET_APPLIED_EVENT, type StageSetPayload } from '../lib/right-stage/right-stage-agui.js'
 import { syncBrowserPanelFromAgUiEvent, isBrowserToolWireName } from '../lib/browser-panel-agui.js'
 import {
+  applyBrowserCommandResponse,
   closeBrowserStage,
+  ensureBrowserStage,
+  NODE_REPL_BRIDGE_THREAD_ID,
   setBrowserPanelThreadId,
 } from '../lib/browser-panel-store.js'
 import { dbgLog } from '../lib/browser-debug-log.js'
@@ -1928,7 +1934,7 @@ export default function ChatApp() {
   const [engineReady, setEngineReady] = useState(() => {
     // Desktop UI-first: unlock send on Gateway liveness ; LG may still warm.
     try {
-      if (typeof window !== 'undefined' && window.__TAURI_INTERNALS__) return false
+      if (typeof window !== 'undefined' && (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) return false
     } catch {
       /* ignore */
     }
@@ -3146,11 +3152,14 @@ export default function ChatApp() {
   // 撤销执行器：把变更日志里的快照写回工作区（有快照=还原内容；代理新建=删除）。
   // 只覆盖文件工具产生的变更，终端命令等绕过工具的写入不在快照里。
   useEffect(() => {
+    let cancelled = false
     setWorkspaceRevertExecutor(
       async (
         sessionKey: string,
         entries: Array<{ path: string; beforeContent: string | null; existed: boolean; deleted: boolean }>,
       ) => {
+        const { api } = await import('../lib/tauri-api.js')
+        if (cancelled) return { restored: [], skipped: entries.map((e) => e.path) }
         const scope = workspaceOpenScopeRef.current
         const root = String(scope.root || '').trim()
         const tid = root
@@ -3180,7 +3189,10 @@ export default function ChatApp() {
         return { restored, skipped }
       },
     )
-    return () => setWorkspaceRevertExecutor(null)
+    return () => {
+      cancelled = true
+      setWorkspaceRevertExecutor(null)
+    }
   }, [])
   const openWorkspaceFilePreviewRef = useRef(openWorkspaceFilePreview)
   openWorkspaceFilePreviewRef.current = openWorkspaceFilePreview
@@ -4643,36 +4655,6 @@ useEffect(() => {
     })
   }, [proactiveRoles, agents])
 
-  const workspaceMention = useMemo((): WorkspaceMentionConfig | undefined => {
-    const root = effectiveWorkspaceRoot
-    const threadId = String(wsClient.getSessionThreadId(selectedSessionKey || '') || '').trim()
-    if (!root && !threadId) return undefined
-    return {
-      enabled: true,
-      searchFiles: searchWorkspaceFilesForMention,
-      onAttachFile: (entry) => {
-        const path = String(entry.path || '').trim()
-        if (!path) return
-        setContextFiles((prev) => {
-          if (prev.some((x) => x.path === path)) return prev
-          const next = [...prev, { path, name: entry.name || basenameFromPath(path) }]
-          void persistContextFiles(next)
-          return next
-        })
-        void import('../components/toast.js').then(({ toast }) => {
-          toast(`已附加：${entry.name || basenameFromPath(path)}（发送后注入 Agent 上下文）`, 'info')
-        })
-      },
-      roles: proactiveRolesDisplay,
-    }
-  }, [
-    effectiveWorkspaceRoot,
-    persistContextFiles,
-    searchWorkspaceFilesForMention,
-    selectedSessionKey,
-    useVirtualPaths,
-    proactiveRolesDisplay,
-  ])
   const [bottomRoleOpen, setBottomRoleOpen] = useState(false)
 
   /** @员工名 任务 -> 派发给智能体员工，并跳转到该员工工作轨迹 */
@@ -4780,6 +4762,138 @@ useEffect(() => {
     },
     [persistSelectedSkills, selectedSessionKey],
   )
+  const addSelectedSkill = useCallback(
+    (sk: { name: string; label: string; icon: string }) => {
+      const name = String(sk.name || '').trim()
+      if (!name) return
+      setSelectedSkills((prev) => {
+        if (prev.some((s) => s.name === name)) return prev
+        const next = [
+          ...prev,
+          { name, label: sk.label || name, icon: sk.icon || '🧩' },
+        ]
+        void persistSelectedSkills(String(selectedSessionKey || ''), next)
+        return next
+      })
+    },
+    [persistSelectedSkills, selectedSessionKey],
+  )
+  /** 插件选择 pill（ZCode 插件语义：选中插件的 commands/skills 本轮生效） */
+  /** + 号一键直达：锚定插件/添加快捷面板（ZCode ChatPromptActionMenu 交互复刻） */
+  const [bottomPluginPanelOpen, setBottomPluginPanelOpen] = useState(false)
+  const [pluginPanelStyle, setPluginPanelStyle] = useState<CSSProperties | null>(null)
+  const [pluginList, setPluginList] = useState<Array<{ id: string; name: string; label: string; description: string; version?: string; marketplace: string; componentTypes?: string[]; iconUrl?: string }>>([])
+  const [pluginListLoading, setPluginListLoading] = useState(false)
+  const [selectedPlugins, setSelectedPlugins] = useState<PluginSelection[]>([])
+
+  const persistSelectedPlugins = useCallback(async (sk: string, plugins: PluginSelection[]) => {
+    const key = String(sk || '').trim()
+    if (!key) return
+    const ids = plugins.map((p) => String(p.id || '').trim()).filter(Boolean)
+    try {
+      const { api } = await import('../lib/tauri-api.js')
+      await api.chatUpdateContext(key, { preferred_plugins: ids })
+    } catch {
+      /* best-effort session sticky */
+    }
+  }, [])
+
+  const removeSelectedPlugin = useCallback(
+    (id: string) => {
+      setSelectedPlugins((prev) => {
+        const next = prev.filter((p) => p.id !== id)
+        void persistSelectedPlugins(String(selectedSessionKey || ''), next)
+        return next
+      })
+    },
+    [persistSelectedPlugins, selectedSessionKey],
+  )
+
+  const addSelectedPlugin = useCallback(
+    (pl: { id: string; label: string; iconUrl?: string }) => {
+      const id = String(pl.id || '').trim()
+      if (!id) return
+      setSelectedPlugins((prev) => {
+        if (prev.some((p) => p.id === id)) return prev
+        const next = [
+          ...prev,
+          { id, label: pl.label || id, iconUrl: pl.iconUrl },
+        ]
+        void persistSelectedPlugins(String(selectedSessionKey || ''), next)
+        return next
+      })
+    },
+    [persistSelectedPlugins, selectedSessionKey],
+  )
+
+  const loadPluginCatalog = useCallback(async () => {
+    setPluginListLoading(true)
+    try {
+      const { fetchEnabledPlugins } = await import('./components/PluginPickerModal.js')
+      setPluginList(await fetchEnabledPlugins())
+    } catch {
+      setPluginList([])
+    } finally {
+      setPluginListLoading(false)
+    }
+  }, [])
+
+  const workspaceMention = useMemo((): WorkspaceMentionConfig | undefined => {
+    const root = effectiveWorkspaceRoot
+    const threadId = String(wsClient.getSessionThreadId(selectedSessionKey || '') || '').trim()
+    if (!root && !threadId) return undefined
+    return {
+      enabled: true,
+      searchFiles: searchWorkspaceFilesForMention,
+      onAttachFile: (entry) => {
+        const path = String(entry.path || '').trim()
+        if (!path) return
+        setContextFiles((prev) => {
+          if (prev.some((x) => x.path === path)) return prev
+          const next = [...prev, { path, name: entry.name || basenameFromPath(path) }]
+          void persistContextFiles(next)
+          return next
+        })
+        void import('../components/toast.js').then(({ toast }) => {
+          toast(`已附加：${entry.name || basenameFromPath(path)}（发送后注入 Agent 上下文）`, 'info')
+        })
+      },
+      roles: proactiveRolesDisplay,
+      // `/` 触发器：注入技能 + 插件的搜索目录。`addSelected*` 会把命中项追加到
+      // `selectedSkills` / `selectedPlugins`，与加号面板的语义一致。
+      skills: skillList,
+      plugins: pluginList.map((p) => ({
+        id: p.id,
+        label: p.label || p.name,
+        iconUrl: p.iconUrl,
+        description: p.description,
+      })),
+      onPickSkill: (sk) => {
+        addSelectedSkill(sk)
+        void import('../components/toast.js').then(({ toast }) => {
+          toast(`已选技能：${sk.label}`, 'info')
+        })
+      },
+      onPickPlugin: (pl) => {
+        addSelectedPlugin(pl)
+        void import('../components/toast.js').then(({ toast }) => {
+          toast(`已选插件：${pl.label}`, 'info')
+        })
+      },
+    }
+  }, [
+    effectiveWorkspaceRoot,
+    persistContextFiles,
+    searchWorkspaceFilesForMention,
+    selectedSessionKey,
+    useVirtualPaths,
+    proactiveRolesDisplay,
+    skillList,
+    pluginList,
+    addSelectedSkill,
+    addSelectedPlugin,
+  ])
+
   const [roleSwitchBusy, setRoleSwitchBusy] = useState(false)
   const scenarioSessionHandlers = useMemo(
     () => ({
@@ -6682,10 +6796,43 @@ useEffect(() => {
     }
   }, [bottomMoreOpen])
 
+  // 插件快捷面板：锚定 + 按钮上方（与 bottom-more 同一定位机制）
+  useLayoutEffect(() => {
+    if (!bottomPluginPanelOpen || typeof window === 'undefined') {
+      setPluginPanelStyle(null)
+      return
+    }
+    const update = () => {
+      const btn = bottomMoreTriggerRef.current
+      if (!btn) return
+      const r = btn.getBoundingClientRect()
+      const gap = 10
+      const sidePad = 10
+      const left = Math.max(sidePad, Math.min(r.left, window.innerWidth - sidePad - 620))
+      const bottom = Math.max(sidePad, window.innerHeight - r.top + gap)
+      const maxH = Math.max(160, Math.min(window.innerHeight * 0.62, r.top - gap - sidePad))
+      setPluginPanelStyle({
+        position: 'fixed',
+        left,
+        bottom,
+        top: 'auto',
+        maxHeight: maxH,
+        zIndex: 10060,
+      })
+    }
+    update()
+    window.addEventListener('resize', update)
+    window.addEventListener('scroll', update, true)
+    return () => {
+      window.removeEventListener('resize', update)
+      window.removeEventListener('scroll', update, true)
+    }
+  }, [bottomPluginPanelOpen])
+
   // 底部「模式 + 模型/创意/工作空间」上拉：互斥 + 点击外部 / Esc 全部关闭
   // 技能 / 角色已改为独立 modal，不参与此下拉互斥逻辑
   useEffect(() => {
-    const anyOpen = modeMenuOpen || bottomModelOpen || bottomPermissionOpen || bottomMoreOpen || bottomWorkspaceOpen
+    const anyOpen = modeMenuOpen || bottomModelOpen || bottomPermissionOpen || bottomMoreOpen || bottomWorkspaceOpen || bottomPluginPanelOpen
     if (!anyOpen) return
     const closeAll = () => {
       setModeMenuOpen(false)
@@ -6696,6 +6843,7 @@ useEffect(() => {
       setBottomWorkspaceOpen(false)
       setBottomRoleOpen(false)
       setBottomSkillOpen(false)
+      setBottomPluginPanelOpen(false)
     }
     const onDown = (e: MouseEvent) => {
       const target = e.target as HTMLElement | null
@@ -6788,6 +6936,55 @@ useEffect(() => {
     if (!bottomSkillOpen) return
     // 技能弹窗（SkillPickerModal）自带搜索框聚焦与 Esc/遮罩关闭，此处仅作状态同步
   }, [bottomSkillOpen])
+
+  /** 会话级粘性插件：切换会话时从 context 恢复，与发送时 preferred_plugins 一致 */
+  useEffect(() => {
+    const sk = String(selectedSessionKey || '').trim()
+    if (!sk) {
+      setSelectedPlugins([])
+      return
+    }
+    const ctx = wsClient.getSessionContext(sk) as { preferred_plugins?: unknown }
+    if (!Array.isArray(ctx?.preferred_plugins)) {
+      setSelectedPlugins([])
+      return
+    }
+    const ids = ctx.preferred_plugins.map((s) => String(s || '').trim()).filter(Boolean)
+    setSelectedPlugins((prev) =>
+      ids.map((id) => {
+        const cached = prev.find((p) => p.id === id && p.iconUrl)
+        if (cached) return cached
+        const hit = pluginList.find((p) => p.id === id)
+        return {
+          id,
+          label: hit?.label || hit?.name || id.split('@')[0] || id,
+          iconUrl: hit?.iconUrl,
+        }
+      }),
+    )
+  }, [selectedSessionKey, pluginList])
+
+  /** 给已有的 selectedPlugins 反查 iconUrl(pluginList 异步到达后补齐) */
+  useEffect(() => {
+    if (pluginList.length === 0) return
+    setSelectedPlugins((prev) => {
+      let dirty = false
+      const next = prev.map((p) => {
+        if (p.iconUrl) return p
+        const hit = pluginList.find((row) => row.id === p.id)
+        if (!hit?.iconUrl) return p
+        dirty = true
+        return { ...p, iconUrl: hit.iconUrl, label: p.label || hit.label || hit.name }
+      })
+      return dirty ? next : prev
+    })
+  }, [pluginList])
+
+  useEffect(() => {
+    if (!bottomPluginPanelOpen) return
+    // 打开插件快捷面板时刷新目录（覆盖刚安装/停用的插件）
+    void loadPluginCatalog()
+  }, [bottomPluginPanelOpen, loadPluginCatalog])
 
   const onGoalClosureReport = useCallback((p: { sessionKey: string; outcome: string; body: string; ts?: number }) => {
     const sk = String(p.sessionKey || '').trim()
@@ -7145,7 +7342,7 @@ useEffect(() => {
               new Promise<null>((resolve) => window.setTimeout(() => resolve(null), 2500)),
             ])
             if (hit?.models) {
-              const p = hit.primary
+              const p = hit.primary as unknown as { primary_model?: unknown } | null
               const primary =
                 typeof p?.primary_model === 'string' ? p.primary_model.trim() : ''
               applyCatalog(hit.models, primary)
@@ -9172,7 +9369,7 @@ useEffect(() => {
           turnRunArtifactsRef.current = mergeChatArtifacts(
             turnRunArtifactsRef.current,
             normalizeChatArtifacts(
-              newArtifacts.map((path) => ({
+              newArtifacts.map((path: string) => ({
                 type: 'file',
                 path,
                 status: 'new' as const,
@@ -9188,9 +9385,9 @@ useEffect(() => {
             mergeChatArtifacts(
               prev,
               normalizeChatArtifacts(
-                newArtifacts.map((path) => ({
-                  type: 'file',
-                  path,
+            newArtifacts.map((path: string) => ({
+                type: 'file',
+                path,
                   status: 'new',
                 })),
               ),
@@ -10257,16 +10454,21 @@ useEffect(() => {
               `[chat-app] tool ${aguiEvent.type} name=${evToolName} toolCallId=${evToolCallId}`,
             )
           }
-          // Publish the *real* chat thread id so browser panel can validate the
-          // browser tool metadata. Backend falls back to a literal "evoflow"
-          // session when its runtime lacks thread_id, which never matches us.
+          // Bind the browser panel to the engine session the tool will drive.
+          // node-repl / browser-use always hits ``/api/browser/execute`` with the
+          // fixed bridge thread id — using the chat thread here mounts a second
+          // empty WebView2 the agent never controls.
           if (isBrowserToolWireName(evToolName)) {
-            const realTid = String(
-              (S.aguiTurn as { threadId?: string } | null | undefined)?.threadId ||
-                (aguiEvent as { threadId?: string }).threadId ||
-                '',
-            ).trim()
-            if (setBrowserPanelThreadId(realTid)) changed = true
+            if (evToolName === 'mcp__node_repl__js') {
+              if (setBrowserPanelThreadId(NODE_REPL_BRIDGE_THREAD_ID)) changed = true
+            } else {
+              const realTid = String(
+                (S.aguiTurn as { threadId?: string } | null | undefined)?.threadId ||
+                  (aguiEvent as { threadId?: string }).threadId ||
+                  '',
+              ).trim()
+              if (setBrowserPanelThreadId(realTid)) changed = true
+            }
           }
           syncWorkspacePreviewFromTools(S.turn.tools)
           syncStreamMediaAssetsFromTools(S)
@@ -12144,7 +12346,7 @@ useEffect(() => {
         const payload = await api.assetsListEntities()
         const rows = Array.isArray(payload?.entities) ? payload.entities : []
         const myEntity = rows.find(
-          (e) => String(e?.entityType || '').toLowerCase() === 'user',
+          (e: { entityType?: unknown; entityId?: unknown }) => String(e?.entityType || '').toLowerCase() === 'user',
         )
         if (myEntity && String(myEntity.entityId || '').trim()) {
           myUserRoot = String(myEntity.entityId).trim()
@@ -12224,6 +12426,46 @@ useEffect(() => {
   useEffect(() => {
     if (rightStageOpen) setInfoRailOpen(false)
   }, [rightStageOpen])
+
+  // Rust CDP path emits this when the agent drives the browser before the
+  // AG-UI TOOL_CALL_START has opened the side panel. Mount the bridge WebView2
+  // immediately so ensure_webview_for_cdp can reuse a healthy HWND.
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    if (!(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) return
+    let cancelled = false
+    let unlisten: (() => void) | undefined
+    void import('@tauri-apps/api/event')
+      .then(({ listen }) =>
+        listen<{ threadId?: string; url?: string }>('browser-panel-request', (ev) => {
+          if (cancelled) return
+          const tid =
+            String(ev.payload?.threadId || '').trim() || NODE_REPL_BRIDGE_THREAD_ID
+          const url = String(ev.payload?.url || '').trim()
+          dbgLog(`[chat-app] browser-panel-request thread=${tid} url=${url || '(none)'}`)
+          setBrowserPanelThreadId(tid)
+          if (url && /^https?:\/\//i.test(url)) {
+            applyBrowserCommandResponse({ threadId: tid, pageUrl: url })
+          } else {
+            ensureBrowserStage()
+          }
+        }),
+      )
+      .then((fn) => {
+        if (cancelled) {
+          fn()
+          return
+        }
+        unlisten = fn
+      })
+      .catch((err) => {
+        dbgLog(`[chat-app] browser-panel-request listen failed: ${String(err)}`)
+      })
+    return () => {
+      cancelled = true
+      unlisten?.()
+    }
+  }, [])
 
   useEffect(() => {
     if (normalizeRightStageKind(rightStageSurface?.kind || '') === 'artifacts') {
@@ -12999,7 +13241,7 @@ useEffect(() => {
       }),
     )
     setToolApprovalPolicyTick((n) => n + 1)
-    toast(permissionPresetToast(presetId), 'success')
+    toast(permissionPresetToast(presetId as Parameters<typeof permissionPresetToast>[0]), 'success')
   }
 
   // 当前 session 的有效权限档位（sessions 行 context + wsClient 会话映射）。
@@ -13067,6 +13309,8 @@ useEffect(() => {
       alreadyInjected?: boolean
       /** 外部传入的技能选择（优先于 selectedSkills 状态） */
       skillsOverride?: SkillSelection[]
+      /** 外部传入的插件选择（优先于 selectedPlugins 状态） */
+      pluginsOverride?: PluginSelection[]
     },
   ) {
     // 用户发新消息时重置停止标记，确保停止后可立即发新消息
@@ -13144,6 +13388,13 @@ useEffect(() => {
         icon: s.icon,
       }))
       void persistSelectedSkills(sessionKey, activeSkills)
+    }
+    // 选中插件时：run context 传 preferred_plugins，后端按轮注入插件 commands/skills
+    let preferredPluginIds: string[] = []
+    const activePlugins = opts?.pluginsOverride ?? selectedPlugins
+    if (activePlugins.length > 0 && userMessage.trim()) {
+      preferredPluginIds = activePlugins.map((p) => String(p.id || '').trim()).filter(Boolean)
+      void persistSelectedPlugins(sessionKey, activePlugins)
     }
     const slash = String(message || '').trim()
     if (!attachments?.length) {
@@ -13577,6 +13828,7 @@ useEffect(() => {
           priorTurnStripBundle?: PriorTurnStripBundle
           messageId?: string
           preferredSkills?: string[]
+          preferredPlugins?: string[]
           skipTranscriptAppend?: boolean
           voiceInitiated?: boolean
         },
@@ -13602,6 +13854,7 @@ useEffect(() => {
           ...priorSendOpts,
           messageId: optimisticMessageId,
           ...(preferredSkillNames.length ? { preferredSkills: preferredSkillNames } : {}),
+          ...(preferredPluginIds.length ? { preferredPlugins: preferredPluginIds } : {}),
           ...(opts?.skipTranscriptAppend || alreadyInjected ? { skipTranscriptAppend: true } : {}),
           ...(opts?.voiceInitiated ? { voiceInitiated: true } : {}),
           ...(shouldArmVoiceReply(voiceReplyEnabled) ? { voiceReply: true } : {}),
@@ -15453,6 +15706,46 @@ useEffect(() => {
                 ))}
               </div>
             ) : null}
+            {selectedPlugins.length > 0 ? (
+              <div className="react-chat-skill-composer-pills" aria-label="已选插件">
+                <span className="react-chat-context-pills-label">
+                  已选 {selectedPlugins.length} 个插件，发送时自动注入 Agent
+                </span>
+                {selectedPlugins.map((pl) => (
+                  <HoverBubble key={pl.id} text={`插件：${pl.label}`} side="top" align="start" maxWidth={320}>
+                    <button
+                      type="button"
+                      className="react-chat-skill-composer-pill"
+                      onClick={() => removeSelectedPlugin(pl.id)}
+                    >
+                      <span
+                        className="react-chat-skill-composer-pill-icon"
+                        aria-hidden
+                        style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}
+                      >
+                        {(() => {
+                          const iconSrc = resolvePluginIconSource(pl.id, pl.iconUrl)
+                          return iconSrc ? (
+                            <img
+                              src={iconSrc}
+                              alt=""
+                              className="react-chat-skill-composer-pill-icon-img"
+                              draggable={false}
+                            />
+                          ) : (
+                            '🧩'
+                          )
+                        })()}
+                      </span>
+                      <span className="react-chat-skill-composer-pill-label">{pl.label}</span>
+                      <span className="react-chat-skill-composer-pill-remove" aria-hidden>
+                        ×
+                      </span>
+                    </button>
+                  </HoverBubble>
+                ))}
+              </div>
+            ) : null}
             <MemoryRecallChip
               threadId={wsClient.getSessionThreadId(selectedSessionKey || '') || ''}
               refreshKey={`${selectedSessionKey || ''}:${memoryRecallRefreshKey}`}
@@ -15530,7 +15823,8 @@ useEffect(() => {
                 )
               }}
               onOpenAttachmentMenu={() => {
-                setBottomMoreOpen(true);
+                // + 号一键直达插件/添加快捷面板（ZCode 交互复刻）
+                setBottomPluginPanelOpen(true);
               }}
               bottomMoreTriggerRef={bottomMoreTriggerRef}
               permissionPill={currentPermissionPillLabel}
@@ -15556,13 +15850,7 @@ useEffect(() => {
                   return null
                 }
                 // portal 下拉菜单（通过 onOpenAttachmentMenu / setBottomMoreOpen 触发）
-                if (bottomMoreOpen) {
-                  console.log(
-                    '[ChatApp] bottom-more portal',
-                    Boolean(bottomMorePortalStyle),
-                  )
-                }
-                return bottomMoreOpen && typeof document !== 'undefined'
+                const bottomMorePortal = bottomMoreOpen && typeof document !== 'undefined'
                   ? createPortal(
                     <div
                       className="react-chat-bottom-dropdown react-chat-bottom-dropdown--more react-chat-bottom-dropdown--more-portal"
@@ -15810,6 +16098,62 @@ useEffect(() => {
                     document.body,
                   )
                   : null
+                // + 号一键直达：锚定插件/添加快捷面板（ZCode ChatPromptActionMenu 复刻）
+                const pluginPanelPortal = bottomPluginPanelOpen && typeof document !== 'undefined'
+                  ? createPortal(
+                    <PluginQuickPanel
+                      open={bottomPluginPanelOpen}
+                      onClose={() => setBottomPluginPanelOpen(false)}
+                      style={pluginPanelStyle}
+                      plugins={pluginList}
+                      loading={pluginListLoading}
+                      selected={selectedPlugins}
+                      onToggle={(item) => {
+                        setSelectedPlugins((prev) => {
+                          const next = prev.some((p) => p.id === item.id)
+                            ? prev.filter((p) => p.id !== item.id)
+                            : [
+                                ...prev,
+                                {
+                                  id: item.id,
+                                  label: item.label || item.name,
+                                  iconUrl: item.iconUrl,
+                                },
+                              ]
+                          // 即点即存（ZCode 面板无「完成」按钮）
+                          void persistSelectedPlugins(String(selectedSessionKey || ''), next)
+                          return next
+                        })
+                      }}
+                      onPickDocs={() => void pickDocFiles()}
+                      onPickImages={() => void pickFiles()}
+                      onOpenSkillPicker={() => setBottomSkillOpen(true)}
+                      onOpenGoal={() => goal.goal.setPanelOpen(true)}
+                      onOpenRolePicker={() => setBottomRoleOpen(true)}
+                      onOpenLegacyMenu={() => setBottomMoreOpen(true)}
+                      onInsertText={(text) => insertText(text)}
+                      showVoice={speechEnabled}
+                      voiceOn={voiceReplyEnabled}
+                      onToggleVoice={async () => {
+                        const next = !voiceReplyEnabled
+                        setVoiceReplyEnabled(next)
+                        await patchPanelSettings(voiceReplyModeToSettingsPatch(next))
+                        if (!next) {
+                          voiceReplyPendingRef.current = false
+                          voiceStreamingStartedRef.current = false
+                          voiceSpeechSyncedPlainRef.current = ''
+                          void import('../lib/speech-client.js').then(({ stopAllAssistantSpeech, resetStreamingSpeechQueue }) => {
+                            stopAllAssistantSpeech()
+                            resetStreamingSpeechQueue()
+                          })
+                        }
+                        toast(next ? '已开启语音播报' : '已关闭语音播报', 'success')
+                      }}
+                    />,
+                    document.body,
+                  )
+                  : null
+                return pluginPanelPortal || bottomMorePortal || null
               }}
               placeholder={
                 isMobileChat
