@@ -1,11 +1,10 @@
-//! Guest bridge for the embedded browser WebView2 (tauri-agent pattern).
+//! Guest bridge for the embedded browser WebView2.
 //!
-//! External pages cannot run our React shell, so we inject a small init script
-//! that listens for `browser-embed://cdp` and answers via
-//! `browser_embed_bridge_response`. Rust waits on an mpsc channel — same shape
-//! as `tauri-agent-plugin`'s `AgentBridge`, without pulling that crate in.
+//! Child embeds often never dispatch Tauri `emit` / `with_webview` / URL getters.
+//! The guest polls our loopback CDP HTTP server for `Runtime.evaluate` jobs and
+//! POSTs results back — no `__TAURI__` IPC required (works on https pages).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Mutex;
@@ -13,9 +12,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tauri::{AppHandle, Emitter, EventTarget, Runtime};
 
-pub const EMBED_CDP_EVENT: &str = "browser-embed://cdp";
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(8);
 
 #[derive(Debug, Deserialize)]
@@ -28,22 +25,41 @@ pub struct EmbedBridgeResponse {
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct EmbedBridgeRequest {
-    id: String,
-    method: String,
-    params: Value,
+pub struct EmbedEvalJob {
+    pub id: String,
+    pub expression: String,
 }
 
 #[derive(Default)]
 pub struct EmbedBridge {
     pending: Mutex<HashMap<String, Sender<Result<Value, String>>>>,
+    /// Jobs waiting for the guest poller, keyed by webview label.
+    queues: Mutex<HashMap<String, VecDeque<EmbedEvalJob>>>,
+    /// Last navigated URL per label (getters hang on child embeds).
+    last_urls: Mutex<HashMap<String, String>>,
     next_id: AtomicU64,
 }
 
 impl EmbedBridge {
-    pub fn request_eval<R: Runtime>(
+    pub fn note_url(&self, webview_label: &str, url: &str) {
+        if url.is_empty() {
+            return;
+        }
+        if let Ok(mut m) = self.last_urls.lock() {
+            m.insert(webview_label.to_string(), url.to_string());
+        }
+    }
+
+    pub fn cached_url(&self, webview_label: &str) -> Option<String> {
+        self.last_urls
+            .lock()
+            .ok()
+            .and_then(|m| m.get(webview_label).cloned())
+    }
+
+    /// Enqueue an evaluate job; guest poller picks it up via HTTP.
+    pub fn request_eval_http(
         &self,
-        app: &AppHandle<R>,
         webview_label: &str,
         expression: &str,
     ) -> Result<Value, String> {
@@ -56,28 +72,34 @@ impl EmbedBridge {
                 .unwrap_or(0)
         );
         let rx = self.insert_pending(id.clone());
-        let payload = EmbedBridgeRequest {
-            id: id.clone(),
-            method: "Runtime.evaluate".into(),
-            params: serde_json::json!({ "expression": expression, "returnByValue": true }),
-        };
-        // Target the embed webview by label (tauri-agent uses emit_to).
-        if let Err(e) = app.emit_to(
-            EventTarget::webview_window(webview_label),
-            EMBED_CDP_EVENT,
-            payload,
-        ) {
-            self.remove_pending(&id);
-            return Err(format!("embed bridge emit failed: {e}"));
+        {
+            let mut queues = self.queues.lock().map_err(|e| e.to_string())?;
+            queues
+                .entry(webview_label.to_string())
+                .or_default()
+                .push_back(EmbedEvalJob {
+                    id: id.clone(),
+                    expression: expression.to_string(),
+                });
         }
         match rx.recv_timeout(DEFAULT_TIMEOUT) {
             Ok(Ok(v)) => Ok(v),
             Ok(Err(e)) => Err(e),
             Err(_) => {
                 self.remove_pending(&id);
-                Err("embed bridge timed out waiting for guest response".into())
+                if let Ok(mut queues) = self.queues.lock() {
+                    if let Some(q) = queues.get_mut(webview_label) {
+                        q.retain(|j| j.id != id);
+                    }
+                }
+                Err("embed HTTP bridge timed out waiting for guest poll".into())
             }
         }
+    }
+
+    pub fn poll_job(&self, webview_label: &str) -> Option<EmbedEvalJob> {
+        let mut queues = self.queues.lock().ok()?;
+        queues.get_mut(webview_label)?.pop_front()
     }
 
     fn insert_pending(&self, id: String) -> Receiver<Result<Value, String>> {
@@ -110,41 +132,64 @@ impl EmbedBridge {
     }
 }
 
-/// Init script injected into every document of the embed WebView2.
-pub fn embed_guest_init_script() -> &'static str {
-    r#"(function(){
-  if (window.__evoEmbedBridgeInstalled) return;
-  window.__evoEmbedBridgeInstalled = true;
-  var EVENT = 'browser-embed://cdp';
-  function attach() {
-    var t = window.__TAURI__;
-    if (!t || !t.event || !t.core) { setTimeout(attach, 40); return; }
-    t.event.listen(EVENT, function(ev) {
-      var p = (ev && ev.payload) || {};
+/// Init script: poll loopback CDP HTTP for evaluate jobs (no Tauri IPC).
+pub fn embed_guest_init_script(http_port: u16, webview_label: &str) -> String {
+    let label = webview_label.replace('\\', "\\\\").replace('\'', "\\'");
+    format!(
+        r#"(function(){{
+  if (window.__evoEmbedHttpBridgeInstalled) return;
+  window.__evoEmbedHttpBridgeInstalled = true;
+  var PORT = {http_port};
+  var LABEL = '{label}';
+  function ping(msg) {{
+    try {{
+      var u = 'http://127.0.0.1:' + PORT + '/browser-cdp/guest-ping?label='
+        + encodeURIComponent(LABEL) + '&msg=' + encodeURIComponent(String(msg||''));
+      var i = new Image();
+      i.src = u;
+    }} catch (_e) {{}}
+  }}
+  function doFetch(url, opts) {{
+    opts = opts || {{}};
+    opts.cache = 'no-store';
+    opts.mode = 'cors';
+    // Edge Local Network Access: tag loopback so HTTPS→http://127.0.0.1 is allowed.
+    try {{ return fetch(url, Object.assign({{ targetAddressSpace: 'loopback' }}, opts)); }}
+    catch (_e) {{ return fetch(url, opts); }}
+  }}
+  function tick(port) {{
+    if (!port) {{ setTimeout(function(){{ tick(PORT); }}, 200); return; }}
+    var base = 'http://127.0.0.1:' + port;
+    doFetch(base + '/browser-cdp/eval-poll?label=' + encodeURIComponent(LABEL)).then(function(r){{
+      return r.json();
+    }}).then(function(job){{
+      if (!job || !job.id) return;
+      ping('job:' + job.id);
       var result = null;
       var error = null;
-      try {
-        if (p.method === 'Runtime.evaluate') {
-          var expr = (p.params && p.params.expression) || 'undefined';
-          result = (0, eval)(String(expr));
-          if (typeof result === 'undefined') result = null;
-          try { result = JSON.parse(JSON.stringify(result)); }
-          catch (_e) { result = String(result); }
-        } else {
-          error = 'unsupported method: ' + String(p.method || '');
-        }
-      } catch (e) {
+      try {{
+        result = (0, eval)(String(job.expression || 'undefined'));
+        if (typeof result === 'undefined') result = null;
+        try {{ result = JSON.parse(JSON.stringify(result)); }}
+        catch (_e) {{ result = String(result); }}
+      }} catch (e) {{
         error = String((e && e.message) || e);
-      }
-      t.core.invoke('browser_embed_bridge_response', {
-        response: { id: p.id, result: result, error: error }
-      }).catch(function(err) {
-        console.warn('[evo-embed-bridge] response failed', err);
-      });
-    });
-  }
-  attach();
-})();"#
+      }}
+      return doFetch(base + '/browser-cdp/eval-result', {{
+        method: 'POST',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify({{ id: job.id, result: result, error: error }})
+      }});
+    }}).catch(function(err){{
+      ping('fetch-err:' + err);
+    }}).finally(function(){{
+      setTimeout(function(){{ tick(port); }}, 80);
+    }});
+  }}
+  ping('boot');
+  tick(PORT);
+}})();"#
+    )
 }
 
 #[tauri::command]

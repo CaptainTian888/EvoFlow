@@ -20,6 +20,8 @@ use std::io::{Read as _, Write as _};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 
+use tauri::Manager;
+
 use crate::browser_cdp::{browser_cdp_command, browser_cdp_status};
 use crate::commands::evoflow_dir;
 
@@ -555,6 +557,22 @@ fn handle_connection(mut socket: TcpStream, app: tauri::AppHandle) {
             let thread_id = query_param(path, "thread_id").unwrap_or_default();
             run_cdp_status(app, thread_id)
         }
+        ("GET", path) if path.starts_with("/browser-cdp/eval-poll") => {
+            let label = query_param(path, "label").unwrap_or_default();
+            let decoded = percent_decode(&label);
+            run_eval_poll(&app, &decoded)
+        }
+        ("POST", path) if path.starts_with("/browser-cdp/eval-result") => {
+            let body = extract_post_body(&buf);
+            run_eval_result(&app, &body)
+        }
+        ("GET", path) if path.starts_with("/browser-cdp/guest-ping") => {
+            let label = percent_decode(&query_param(path, "label").unwrap_or_default());
+            let msg = percent_decode(&query_param(path, "msg").unwrap_or_default());
+            log_line(&format!("[browser-cdp] guest-ping label={label} msg={msg}"));
+            "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: 0\r\n\r\n"
+                .to_string()
+        }
         ("OPTIONS", path) if path.starts_with("/browser-cdp/") => {
             "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\nContent-Length: 0\r\n\r\n"
                 .to_string()
@@ -667,6 +685,31 @@ fn run_cdp_status(app: tauri::AppHandle, thread_id: String) -> String {
         Err(e) => serde_json::json!({"error": e}),
     };
     let json = serde_json::to_string(&value).unwrap_or_else(|_| r#"{"error":"json"}"#.into());
+    http_json_response(&json)
+}
+
+fn run_eval_poll(app: &tauri::AppHandle, label: &str) -> String {
+    use crate::commands::browser_embed_bridge::EmbedBridge;
+    let body = match app.try_state::<EmbedBridge>() {
+        Some(bridge) => match bridge.poll_job(label) {
+            Some(job) => serde_json::to_string(&job).unwrap_or_else(|_| "{}".into()),
+            None => "{}".into(),
+        },
+        None => "{}".into(),
+    };
+    http_json_response(&body)
+}
+
+fn run_eval_result(app: &tauri::AppHandle, body: &str) -> String {
+    use crate::commands::browser_embed_bridge::{EmbedBridge, EmbedBridgeResponse};
+    let ok = match (
+        app.try_state::<EmbedBridge>(),
+        serde_json::from_str::<EmbedBridgeResponse>(body),
+    ) {
+        (Some(bridge), Ok(resp)) => bridge.complete(resp),
+        _ => false,
+    };
+    let json = serde_json::json!({ "ok": ok }).to_string();
     http_json_response(&json)
 }
 

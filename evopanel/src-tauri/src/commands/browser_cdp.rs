@@ -51,6 +51,111 @@ fn cdp_global_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+/// COM pointer is !Send; we only invoke it on the UI/main thread.
+struct SendableCoreWebView(ICoreWebView2);
+// SAFETY: all ExecuteScript / store access happens on the Tauri main thread.
+unsafe impl Send for SendableCoreWebView {}
+unsafe impl Sync for SendableCoreWebView {}
+
+/// Stashed `ICoreWebView2` captured once at create (with_webview + pump). Later
+/// evaluate calls ExecuteScript on this pointer from the main thread — no
+/// another with_webview hop (child embeds often never dispatch those).
+fn core_webview_store() -> &'static Mutex<HashMap<String, SendableCoreWebView>> {
+    static STORE: OnceLock<Mutex<HashMap<String, SendableCoreWebView>>> = OnceLock::new();
+    STORE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Per-embed `--remote-debugging-port` so Runtime.evaluate can use real CDP WS
+/// when with_webview / ExecuteScript never dispatch on the HWND.
+fn embed_debug_ports() -> &'static Mutex<HashMap<String, u16>> {
+    static PORTS: OnceLock<Mutex<HashMap<String, u16>>> = OnceLock::new();
+    PORTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Bind an ephemeral local port, release it, and return the number for
+/// `--remote-debugging-port=` (WebView2 will re-bind the same port).
+pub fn allocate_embed_debug_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .and_then(|l| l.local_addr().map(|a| a.port()))
+        .unwrap_or(0)
+}
+
+pub fn register_embed_debug_port(label: &str, port: u16) {
+    if port == 0 {
+        return;
+    }
+    if let Ok(mut g) = embed_debug_ports().lock() {
+        g.insert(label.to_string(), port);
+    }
+    crate::commands::browser_cdp_server::log_line(&format!(
+        "[browser-cdp] embed debug port label={label} port={port}"
+    ));
+}
+
+fn embed_debug_port(label: &str) -> Option<u16> {
+    embed_debug_ports()
+        .lock()
+        .ok()
+        .and_then(|g| g.get(label).copied())
+}
+
+/// Capture CoreWebView2 right after embed create. Must pump on the main thread.
+pub fn capture_core_webview2(app: &AppHandle, window: &WebviewWindow, label: &str) {
+    let (tx, rx) = std::sync::mpsc::sync_channel::<bool>(1);
+    let win = window.clone();
+    let label_owned = label.to_string();
+    if app
+        .run_on_main_thread(move || {
+            let entered = Arc::new(AtomicBool::new(false));
+            let flag = entered.clone();
+            let label_cb = label_owned.clone();
+            if let Err(e) = win.with_webview(move |platform| {
+                flag.store(true, Ordering::SeqCst);
+                match unsafe { platform.controller().CoreWebView2() } {
+                    Ok(wv) => {
+                        if let Ok(mut g) = core_webview_store().lock() {
+                            g.insert(label_cb.clone(), SendableCoreWebView(wv));
+                        }
+                        crate::commands::browser_cdp_server::log_line(&format!(
+                            "[browser-cdp] captured CoreWebView2 label={label_cb}"
+                        ));
+                    }
+                    Err(e) => {
+                        crate::commands::browser_cdp_server::log_line(&format!(
+                            "[browser-cdp] CoreWebView2 capture failed label={label_cb}: {e}"
+                        ));
+                    }
+                }
+            }) {
+                crate::commands::browser_cdp_server::log_line(&format!(
+                    "[browser-cdp] capture with_webview enqueue failed: {e}"
+                ));
+                let _ = tx.send(false);
+                return;
+            }
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(1500);
+            while std::time::Instant::now() < deadline {
+                if entered.load(Ordering::SeqCst) {
+                    let _ = tx.send(true);
+                    return;
+                }
+                pump_win32_messages_once();
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            let _ = tx.send(false);
+        })
+        .is_err()
+    {
+        return;
+    }
+    let ok = rx.recv_timeout(std::time::Duration::from_secs(3)).unwrap_or(false);
+    if !ok {
+        crate::commands::browser_cdp_server::log_line(&format!(
+            "[browser-cdp] CoreWebView2 capture timed out label={label}"
+        ));
+    }
+}
+
 /// label -> sink for unsolicited protocol events.
 type EventSink = Arc<dyn Fn(&str) + Send + Sync>;
 
@@ -205,7 +310,7 @@ fn call_cdp_locked(
             .ok()
             .and_then(|v| v.get("url").and_then(|u| u.as_str()).map(str::to_string))
             .unwrap_or_else(|| "about:blank".to_string());
-        let outcome = native_navigate(&window, label, &url);
+        let outcome = native_navigate(app, &window, label, &url);
         write_cdp_trace(&trace_path, label, method, &outcome);
         return outcome;
     }
@@ -347,7 +452,12 @@ fn write_cdp_trace(
 
 /// Navigate via Tauri `WebviewWindow::navigate` — posts to the correct webview
 /// thread without nesting `wait_with_pump` (which hangs on agent-created HWNDs).
-fn native_navigate(window: &WebviewWindow, label: &str, url: &str) -> Result<String, String> {
+fn native_navigate(
+    app: &AppHandle,
+    window: &WebviewWindow,
+    label: &str,
+    url: &str,
+) -> Result<String, String> {
     let target = url.trim();
     if target.is_empty() {
         return Err("Page.navigate requires url".into());
@@ -357,15 +467,18 @@ fn native_navigate(window: &WebviewWindow, label: &str, url: &str) -> Result<Str
         .parse::<url::Url>()
         .or_else(|_| format!("https://{target}").parse::<url::Url>())
         .map_err(|e| format!("invalid navigate url {target:?}: {e}"))?;
+    let href = parsed.to_string();
     window
         .navigate(parsed)
         .map_err(|e| format!("window.navigate failed: {e}"))?;
+    if let Some(bridge) = app.try_state::<crate::commands::browser_embed_bridge::EmbedBridge>() {
+        bridge.note_url(label, &href);
+    }
     // CDP-shaped success payload so Python's browser_engine stays unchanged.
     Ok(json!({ "frameId": "evopanel", "loaderId": "evopanel" }).to_string())
 }
 
-/// Evaluate via WebView2 `ExecuteScript` and wrap the result like CDP
-/// `Runtime.evaluate` (`{ result: { type, value } }`).
+/// Evaluate: cached URL → stashed CoreWebView2 ExecuteScript → HTTP guest poll.
 fn native_evaluate(
     app: &AppHandle,
     window: &WebviewWindow,
@@ -376,33 +489,356 @@ fn native_evaluate(
         "[browser-cdp] native_evaluate label={label} expr={}",
         truncate(expression, 120)
     );
-    // Prefer tauri-agent-style guest bridge (init script → invoke). The COM
-    // with_webview path hangs on child embeds; only fall back if bridge fails.
-    if let Some(bridge) = app.try_state::<crate::commands::browser_embed_bridge::EmbedBridge>() {
-        match bridge.request_eval(app, label, expression) {
+    let expr = expression.trim();
+    let bridge = app
+        .try_state::<crate::commands::browser_embed_bridge::EmbedBridge>()
+        .ok_or_else(|| "embed bridge state missing".to_string())?;
+
+    // Fast path: never call window.url() — it hangs on child embeds.
+    if matches!(
+        expr,
+        "location.href"
+            | "window.location.href"
+            | "document.location.href"
+            | "location.href.toString()"
+            | "String(location.href)"
+    ) {
+        if let Some(url) = bridge.cached_url(label) {
+            crate::commands::browser_cdp_server::log_line(
+                "[browser-cdp] native_evaluate via cached url ok",
+            );
+            return Ok(cdp_evaluate_result(Value::String(url)));
+        }
+    }
+
+    // Primary: real Chromium CDP on the embed's remote-debugging-port.
+    if let Some(port) = embed_debug_port(label) {
+        match evaluate_via_remote_cdp(port, expr) {
             Ok(value) => {
-                let type_name = match &value {
-                    Value::Null => "undefined",
-                    Value::Bool(_) => "boolean",
-                    Value::Number(_) => "number",
-                    Value::String(_) => "string",
-                    Value::Array(_) | Value::Object(_) => "object",
-                };
                 crate::commands::browser_cdp_server::log_line(
-                    "[browser-cdp] native_evaluate via embed guest bridge ok",
+                    "[browser-cdp] native_evaluate via remote CDP ok",
                 );
-                return Ok(json!({ "result": { "type": type_name, "value": value } }).to_string());
+                return Ok(cdp_evaluate_result(value));
             }
             Err(e) => {
                 crate::commands::browser_cdp_server::log_line(&format!(
-                    "[browser-cdp] embed guest bridge eval failed ({e}); falling back to COM"
+                    "[browser-cdp] remote CDP miss ({e}); trying COM stash"
                 ));
             }
         }
     }
-    let raw = native_execute_script(app, window, expression)?;
-    // ExecuteScript returns a JSON-encoded completion value (stringified).
-    let value: Value = serde_json::from_str(&raw).unwrap_or(Value::String(raw.clone()));
+
+    // Secondary: stashed CoreWebView2 ExecuteScript (works if capture succeeded).
+    let has_stash = core_webview_store()
+        .lock()
+        .ok()
+        .map(|g| g.contains_key(label))
+        .unwrap_or(false);
+    if !has_stash {
+        capture_core_webview2(app, window, label);
+    }
+    match execute_script_on_stashed(app, label, expr) {
+        Ok(value) => {
+            crate::commands::browser_cdp_server::log_line(
+                "[browser-cdp] native_evaluate via stashed CoreWebView2 ok",
+            );
+            return Ok(cdp_evaluate_result(value));
+        }
+        Err(e) => {
+            crate::commands::browser_cdp_server::log_line(&format!(
+                "[browser-cdp] stashed ExecuteScript miss ({e}); trying HTTP poll"
+            ));
+        }
+    }
+
+    match bridge.request_eval_http(label, expr) {
+        Ok(value) => {
+            crate::commands::browser_cdp_server::log_line(
+                "[browser-cdp] native_evaluate via HTTP guest poll ok",
+            );
+            Ok(cdp_evaluate_result(value))
+        }
+        Err(e) => {
+            crate::commands::browser_cdp_server::log_line(&format!(
+                "[browser-cdp] HTTP guest poll miss ({e})"
+            ));
+            Err(e)
+        }
+    }
+}
+
+/// `Runtime.evaluate` over the embed WebView2 `--remote-debugging-port` WS.
+fn evaluate_via_remote_cdp(port: u16, expression: &str) -> Result<Value, String> {
+    use std::io::{Read as _, Write as _};
+    use std::net::TcpStream;
+    use std::time::Duration;
+
+    let list_url = format!("http://127.0.0.1:{port}/json/list");
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    let mut ws_url = String::new();
+    while std::time::Instant::now() < deadline {
+        match ureq_get_json(&list_url) {
+            Ok(list) => {
+                if let Some(url) = list
+                    .as_array()
+                    .and_then(|arr| {
+                        arr.iter().find_map(|t| {
+                            t.get("webSocketDebuggerUrl")
+                                .and_then(|u| u.as_str())
+                                .map(str::to_string)
+                        })
+                    })
+                {
+                    ws_url = url;
+                    break;
+                }
+            }
+            Err(_) => {}
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    if ws_url.is_empty() {
+        return Err(format!("no webSocketDebuggerUrl on debug port {port}"));
+    }
+
+    // ws://127.0.0.1:PORT/devtools/page/ID
+    let httpish = ws_url.replacen("ws://", "http://", 1);
+    let parsed = url::Url::parse(&httpish).map_err(|e| format!("bad ws url {ws_url}: {e}"))?;
+    let ws_host = parsed.host_str().unwrap_or("127.0.0.1");
+    let ws_port = parsed.port().unwrap_or(port);
+    let ws_path = if parsed.query().is_some() {
+        format!("{}?{}", parsed.path(), parsed.query().unwrap_or(""))
+    } else {
+        parsed.path().to_string()
+    };
+    let mut stream = TcpStream::connect(format!("{ws_host}:{ws_port}"))
+        .map_err(|e| format!("cdp ws connect failed: {e}"))?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .ok();
+    stream
+        .set_write_timeout(Some(Duration::from_secs(5)))
+        .ok();
+
+    let key = {
+        let mut b = [0u8; 16];
+        getrandom_simple(&mut b);
+        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, b)
+    };
+    let req = format!(
+        "GET {ws_path} HTTP/1.1\r\nHost: {ws_host}:{ws_port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
+    );
+    stream
+        .write_all(req.as_bytes())
+        .map_err(|e| format!("cdp ws handshake write: {e}"))?;
+    let mut buf = [0u8; 4096];
+    let n = stream
+        .read(&mut buf)
+        .map_err(|e| format!("cdp ws handshake read: {e}"))?;
+    let resp = String::from_utf8_lossy(&buf[..n]);
+    if !resp.contains("101") {
+        return Err(format!("cdp ws handshake rejected: {}", truncate(&resp, 200)));
+    }
+
+    let id = 1u64;
+    let payload = json!({
+        "id": id,
+        "method": "Runtime.evaluate",
+        "params": { "expression": expression, "returnByValue": true }
+    })
+    .to_string();
+    write_ws_text(&mut stream, &payload)?;
+
+    let raw = read_ws_text(&mut stream)?;
+    let msg: Value = serde_json::from_str(&raw).map_err(|e| format!("cdp ws json: {e}"))?;
+    if let Some(err) = msg.get("error") {
+        return Err(format!("cdp evaluate error: {err}"));
+    }
+    let result = msg
+        .pointer("/result/result")
+        .cloned()
+        .ok_or_else(|| format!("cdp evaluate missing result: {}", truncate(&raw, 200)))?;
+    // CDP shape: { type, value, ... } — unwrap value when present.
+    if let Some(v) = result.get("value") {
+        return Ok(v.clone());
+    }
+    if result.get("type").and_then(|t| t.as_str()) == Some("undefined") {
+        return Ok(Value::Null);
+    }
+    Ok(result)
+}
+
+fn ureq_get_json(url: &str) -> Result<Value, String> {
+    // Tiny blocking GET via std — avoid pulling another HTTP client into the hot path.
+    use std::io::{Read as _, Write as _};
+    let url = url::Url::parse(url).map_err(|e| e.to_string())?;
+    let host = url.host_str().unwrap_or("127.0.0.1");
+    let port = url.port_or_known_default().unwrap_or(80);
+    let path = if url.query().is_some() {
+        format!("{}?{}", url.path(), url.query().unwrap_or(""))
+    } else {
+        url.path().to_string()
+    };
+    let mut stream = std::net::TcpStream::connect(format!("{host}:{port}"))
+        .map_err(|e| e.to_string())?;
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+        .ok();
+    let req = format!("GET {path} HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n\r\n");
+    stream.write_all(req.as_bytes()).map_err(|e| e.to_string())?;
+    let mut buf = Vec::new();
+    stream.read_to_end(&mut buf).map_err(|e| e.to_string())?;
+    let text = String::from_utf8_lossy(&buf);
+    let body = text
+        .split_once("\r\n\r\n")
+        .or_else(|| text.split_once("\n\n"))
+        .map(|(_, b)| b)
+        .unwrap_or("");
+    serde_json::from_str(body.trim()).map_err(|e| format!("json list parse: {e}"))
+}
+
+fn getrandom_simple(out: &mut [u8]) {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let mut x = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0x12345678);
+    for b in out.iter_mut() {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        *b = (x & 0xff) as u8;
+    }
+}
+
+fn write_ws_text(stream: &mut std::net::TcpStream, text: &str) -> Result<(), String> {
+    use std::io::Write as _;
+    let payload = text.as_bytes();
+    let mut frame = Vec::with_capacity(2 + 4 + payload.len());
+    frame.push(0x81); // FIN + text
+    if payload.len() < 126 {
+        frame.push(0x80 | (payload.len() as u8)); // masked
+    } else if payload.len() <= 65535 {
+        frame.push(0x80 | 126);
+        frame.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+    } else {
+        return Err("cdp ws payload too large".into());
+    }
+    let mask = [0x11u8, 0x22, 0x33, 0x44];
+    frame.extend_from_slice(&mask);
+    for (i, b) in payload.iter().enumerate() {
+        frame.push(b ^ mask[i % 4]);
+    }
+    stream
+        .write_all(&frame)
+        .map_err(|e| format!("cdp ws write: {e}"))
+}
+
+fn read_ws_text(stream: &mut std::net::TcpStream) -> Result<String, String> {
+    use std::io::Read as _;
+    let mut hdr = [0u8; 2];
+    stream
+        .read_exact(&mut hdr)
+        .map_err(|e| format!("cdp ws hdr: {e}"))?;
+    let opcode = hdr[0] & 0x0f;
+    let mut len = (hdr[1] & 0x7f) as usize;
+    let masked = (hdr[1] & 0x80) != 0;
+    if len == 126 {
+        let mut ext = [0u8; 2];
+        stream.read_exact(&mut ext).map_err(|e| e.to_string())?;
+        len = u16::from_be_bytes(ext) as usize;
+    } else if len == 127 {
+        return Err("cdp ws 64-bit length unsupported".into());
+    }
+    let mut mask = [0u8; 4];
+    if masked {
+        stream.read_exact(&mut mask).map_err(|e| e.to_string())?;
+    }
+    let mut payload = vec![0u8; len];
+    stream
+        .read_exact(&mut payload)
+        .map_err(|e| format!("cdp ws payload: {e}"))?;
+    if masked {
+        for (i, b) in payload.iter_mut().enumerate() {
+            *b ^= mask[i % 4];
+        }
+    }
+    if opcode != 0x1 {
+        return Err(format!("cdp ws unexpected opcode {opcode}"));
+    }
+    String::from_utf8(payload).map_err(|e| e.to_string())
+}
+
+/// Look up stashed CoreWebView2 on the main thread and ExecuteScript with pump.
+fn execute_script_on_stashed(
+    app: &AppHandle,
+    label: &str,
+    expression: &str,
+) -> Result<Value, String> {
+    use webview2_com::ExecuteScriptCompletedHandler;
+
+    let (tx, rx) = std::sync::mpsc::channel::<Result<String, String>>();
+    let label_owned = label.to_string();
+    let js = format!(
+        "(function(){{try{{return ({expression});}}catch(e){{return {{__evoEvalError:String((e&&e.message)||e)}};}}}})()"
+    );
+    app.run_on_main_thread(move || {
+        let wv = match core_webview_store()
+            .lock()
+            .ok()
+            .and_then(|g| g.get(&label_owned).map(|s| s.0.clone()))
+        {
+            Some(w) => w,
+            None => {
+                let _ = tx.send(Err(format!("no stashed CoreWebView2 for {label_owned}")));
+                return;
+            }
+        };
+        let cell: Arc<Mutex<Option<Result<String, String>>>> = Arc::new(Mutex::new(None));
+        let cell_cb = cell.clone();
+        let handler = ExecuteScriptCompletedHandler::create(Box::new(move |error_code, result| {
+            let out = match error_code {
+                Ok(()) => Ok(result),
+                Err(err) => Err(format!("ExecuteScript failed: {err}")),
+            };
+            if let Ok(mut g) = cell_cb.lock() {
+                *g = Some(out);
+            }
+            Ok(())
+        }));
+        let hstr = windows::core::HSTRING::from(js.as_str());
+        if let Err(e) = unsafe { wv.ExecuteScript(&hstr, &handler) } {
+            let _ = tx.send(Err(format!("ExecuteScript COM error: {e}")));
+            return;
+        }
+        std::mem::forget(handler);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if let Some(outcome) = cell.lock().ok().and_then(|mut g| g.take()) {
+                let _ = tx.send(outcome);
+                return;
+            }
+            if std::time::Instant::now() >= deadline {
+                let _ = tx.send(Err("stashed ExecuteScript timed out".into()));
+                return;
+            }
+            pump_win32_messages_once();
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    })
+    .map_err(|e| format!("run_on_main_thread failed: {e}"))?;
+
+    let raw = rx
+        .recv_timeout(std::time::Duration::from_secs(8))
+        .map_err(|e| format!("stashed ExecuteScript wait failed: {e}"))??;
+    let value: Value = serde_json::from_str(&raw).unwrap_or(Value::String(raw));
+    if let Some(err) = value.get("__evoEvalError").and_then(|v| v.as_str()) {
+        return Err(format!("evaluate threw: {err}"));
+    }
+    Ok(value)
+}
+
+fn cdp_evaluate_result(value: Value) -> String {
     let type_name = match &value {
         Value::Null => "undefined",
         Value::Bool(_) => "boolean",
@@ -410,7 +846,65 @@ fn native_evaluate(
         Value::String(_) => "string",
         Value::Array(_) | Value::Object(_) => "object",
     };
-    Ok(json!({ "result": { "type": type_name, "value": value } }).to_string())
+    json!({ "result": { "type": type_name, "value": value } }).to_string()
+}
+
+fn native_execute_script_async_slot(window: &WebviewWindow, js: &str) -> Result<String, String> {
+    use webview2_com::ExecuteScriptCompletedHandler;
+
+    let slot: Arc<Mutex<Option<Result<String, String>>>> = Arc::new(Mutex::new(None));
+    let slot_cb = slot.clone();
+    let js_owned = js.to_string();
+    window
+        .with_webview(move |platform| {
+            let controller = platform.controller();
+            let webview = match unsafe { controller.CoreWebView2() } {
+                Ok(w) => w,
+                Err(e) => {
+                    if let Ok(mut g) = slot_cb.lock() {
+                        *g = Some(Err(format!("CoreWebView2 failed: {e}")));
+                    }
+                    return;
+                }
+            };
+            let slot_done = slot_cb.clone();
+            let handler = ExecuteScriptCompletedHandler::create(Box::new(move |error_code, result| {
+                let out = match error_code {
+                    Ok(()) => Ok(result),
+                    Err(err) => Err(format!("ExecuteScript failed: {err}")),
+                };
+                if let Ok(mut g) = slot_done.lock() {
+                    *g = Some(out);
+                }
+                Ok(())
+            }));
+            let hstr = windows::core::HSTRING::from(js_owned.as_str());
+            if let Err(e) = unsafe { webview.ExecuteScript(&hstr, &handler) } {
+                if let Ok(mut g) = slot_cb.lock() {
+                    *g = Some(Err(format!("ExecuteScript COM error: {e}")));
+                }
+                return;
+            }
+            // Keep the completed-handler alive until COM invokes it — dropping
+            // it when this closure returns cancels the callback (same pattern
+            // as subscribe_events forgetting event receivers).
+            std::mem::forget(handler);
+        })
+        .map_err(|e| format!("with_webview failed: {e}"))?;
+
+    // Short budget: gateway polls evaluate every ~3s; a long hold on
+    // cdp_global_lock starves Page.navigate.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while std::time::Instant::now() < deadline {
+        if let Some(outcome) = slot.lock().ok().and_then(|mut g| g.take()) {
+            crate::commands::browser_cdp_server::log_line(
+                "[browser-cdp] native_evaluate via async ExecuteScript slot ok",
+            );
+            return outcome;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(30));
+    }
+    Err("ExecuteScript async slot timed out".into())
 }
 
 /// Pump the Windows message queue so `with_webview` / COM completions can run
@@ -486,7 +980,10 @@ fn native_execute_script(
                 if let Ok(mut g) = cell_inner.lock() {
                     *g = Some(Err(format!("ExecuteScript COM error: {e}")));
                 }
+                return;
             }
+            // Keep handler alive until COM invokes it (same as async_slot).
+            std::mem::forget(handler);
         }) {
             let _ = tx.send(Err(format!("with_webview enqueue failed: {e}")));
             return;
@@ -729,39 +1226,30 @@ pub fn browser_cdp_command(
         }
     }
 
-    // Serialize only the COM call itself — not the panel wait / window create.
-    let _lock = cdp_global_lock()
-        .lock()
-        .map_err(|_| "CDP global lock poisoned".to_string())?;
-
+    // Page.navigate + Runtime.evaluate use dispatcher APIs (navigate /
+    // eval_with_callback) — no with_webview, no CDP global lock. Holding the
+    // lock across evaluate storms used to starve navigate and HTTP workers.
+    let unlocked = matches!(
+        method.as_str(),
+        "Page.navigate" | "Page.reload" | "Runtime.evaluate"
+    );
     crate::commands::browser_cdp_server::log_line("[browser-cdp] about to call_cdp");
-    let body = match call_cdp_locked(&app, &label, &method, &params_json) {
-        Ok(body) => body,
-        Err(e) if e.contains("not found") => {
-            // Window appeared to exist then vanished, or first call raced the
-            // panel upsert — ensure once under the lock then retry.
-            crate::commands::browser_cdp_server::log_line(&format!(
-                "[browser-cdp] call_cdp missing window ({e}); ensuring then retry"
-            ));
-            #[cfg(target_os = "windows")]
-            {
-                use crate::commands::browser_embed::ensure_webview_for_cdp;
-                ensure_webview_for_cdp(&app, &thread_id, "about:blank").map_err(|re| {
-                    format!("ensure after missing window failed: {re} (original: {e})")
-                })?;
+    let body = if unlocked {
+        call_cdp_locked(&app, &label, &method, &params_json)?
+    } else {
+        let _lock = cdp_global_lock()
+            .lock()
+            .map_err(|_| "CDP global lock poisoned".to_string())?;
+        match call_cdp_locked(&app, &label, &method, &params_json) {
+            Ok(body) => body,
+            Err(e) if e.contains("not found") => {
+                crate::commands::browser_cdp_server::log_line(&format!(
+                    "[browser-cdp] call_cdp missing window ({e}); no ensure for {method}"
+                ));
+                return Err(e);
             }
-            call_cdp_locked(&app, &label, &method, &params_json)?
+            Err(e) => return Err(e),
         }
-        Err(e) if e.contains("timed out") || e.contains("UI thread") => {
-            // Soft retry only — never destroy/recreate here. Recreate storms
-            // leave readyState=none and 60s wait_webview2_ready failures.
-            crate::commands::browser_cdp_server::log_line(&format!(
-                "[browser-cdp] call_cdp timed out ({e}); soft-retrying once"
-            ));
-            std::thread::sleep(std::time::Duration::from_millis(200));
-            call_cdp_locked(&app, &label, &method, &params_json)?
-        }
-        Err(e) => return Err(e),
     };
     crate::commands::browser_cdp_server::log_line("[browser-cdp] call_cdp returned");
     serde_json::from_str(&body).map_err(|e| format!("CDP result parse failed: {e}"))
@@ -813,15 +1301,13 @@ pub fn browser_cdp_status(
 ) -> Result<Value, String> {
     let label = webview_label_for_thread(&thread_id);
 
-    // Fast path: no webview yet — do not block on the CDP lock / ExecuteScript.
-    let Some(window) = app.get_webview_window(&label) else {
+    // Existence only — never call window.url() (hangs on child embeds).
+    if app.get_webview_window(&label).is_none() {
         return Err(format!("embedded webview '{label}' not found"));
     };
-    // Prefer Tauri's URL getter (no with_webview) so status stays responsive even
-    // when a long evaluate is holding the CDP lock on another worker.
-    let href = window
-        .url()
-        .map(|u| u.to_string())
+    let href = app
+        .try_state::<crate::commands::browser_embed_bridge::EmbedBridge>()
+        .and_then(|b| b.cached_url(&label))
         .unwrap_or_default();
     Ok(serde_json::json!({
         "url": href,

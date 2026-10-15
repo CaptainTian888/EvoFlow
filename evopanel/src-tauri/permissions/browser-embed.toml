@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-browser-embed-bridge-response"
+description = "Lets the embed guest answer Runtime.evaluate via invoke."
+commands.allow = ["browser_embed_bridge_response"]

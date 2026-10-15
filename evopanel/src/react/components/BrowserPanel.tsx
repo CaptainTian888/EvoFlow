@@ -773,6 +773,15 @@ function BrowserEmbedHost({
         }
         return
       }
+      // 面板展开动画期间 slot 会从小变大：等它稳定到合理尺寸再创建原生窗口，
+      // 否则窗口会按动画中间态的小边界创建，缩在面板左上角。
+      const settleStart = Date.now()
+      while (Date.now() - settleStart < 5000) {
+        const b = readEmbedBounds(slotRef.current)
+        if (b && b.width >= 320 && b.height >= 220) break
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+        if (cancelled) return
+      }
       const bounds = await waitForEmbedBounds(slotRef.current)
       if (!bounds) {
         dbgWarn(`[browser-embed] slot has no layout box yet thread=${tid}`)
@@ -814,6 +823,13 @@ function BrowserEmbedHost({
         setReady(true)
         onReady?.()
         void syncBounds()
+        // WebView2 刚创建时常不立即接受 resize：分几次强制校正边界，
+        // 防止窗口停在创建瞬间的中间态尺寸（缩在左上角）。
+        for (const delay of [300, 1000, 3000]) {
+          window.setTimeout(() => {
+            if (!cancelled) void syncBounds()
+          }, delay)
+        }
       }
     }
 

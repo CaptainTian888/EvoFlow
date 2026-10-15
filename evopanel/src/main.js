@@ -47,53 +47,59 @@ if (isTauri) initDesktopDevtoolsHotkey()
 if (isTauri) {
   void import('@tauri-apps/api/event')
     .then(({ listen }) =>
-      listen('browser-panel-request', async (ev) => {
-        try {
-          const payload = ev?.payload || {}
-          const tid = String(payload.threadId || 'evoflow-node-repl-bridge').trim()
-          const url = String(payload.url || '').trim()
-          console.log('[browser-panel-request:early]', tid, url || '(none)')
-          const {
-            applyBrowserCommandResponse,
-            ensureBrowserStage,
-            setBrowserPanelThreadId,
-            NODE_REPL_BRIDGE_THREAD_ID,
-          } = await import('./lib/browser-panel-store.js')
-          const { browserEmbedUpsert, registerBrowserEmbedCdp } = await import(
-            './lib/browser-embed-client.js'
-          )
-          const bridgeTid = tid || NODE_REPL_BRIDGE_THREAD_ID
-          setBrowserPanelThreadId(bridgeTid)
-          if (!String(window.location.hash || '').includes('/chat')) {
-            navigate('/chat')
+      // IMPORTANT: do not make this handler `async` / return a Promise.
+      // Rust ensure_webview emits and waits for the HWND; if emit awaits the
+      // listener while the listener awaits browser_embed_upsert → create, the
+      // UI pump deadlocks and Page.navigate hangs with 0 HTTP bytes.
+      listen('browser-panel-request', (ev) => {
+        void (async () => {
+          try {
+            const payload = ev?.payload || {}
+            const tid = String(payload.threadId || 'evoflow-node-repl-bridge').trim()
+            const url = String(payload.url || '').trim()
+            console.log('[browser-panel-request:early]', tid, url || '(none)')
+            const {
+              applyBrowserCommandResponse,
+              ensureBrowserStage,
+              setBrowserPanelThreadId,
+              NODE_REPL_BRIDGE_THREAD_ID,
+            } = await import('./lib/browser-panel-store.js')
+            const { browserEmbedUpsert, registerBrowserEmbedCdp } = await import(
+              './lib/browser-embed-client.js'
+            )
+            const bridgeTid = tid || NODE_REPL_BRIDGE_THREAD_ID
+            setBrowserPanelThreadId(bridgeTid)
+            if (!String(window.location.hash || '').includes('/chat')) {
+              navigate('/chat')
+            }
+            const vw = Math.max(480, Math.floor((window.innerWidth || 1280) * 0.45))
+            const vh = Math.max(360, Math.floor((window.innerHeight || 800) - 96))
+            const vx = Math.max(0, Math.floor((window.innerWidth || 1280) - vw - 12))
+            const vy = 64
+            const navUrl = url && /^https?:\/\//i.test(url) ? url : 'about:blank'
+            const info = await browserEmbedUpsert({
+              threadId: bridgeTid,
+              url: navUrl,
+              x: vx,
+              y: vy,
+              width: vw,
+              height: vh,
+            })
+            if (info?.cdpUrl) {
+              await registerBrowserEmbedCdp(bridgeTid, info.cdpUrl)
+              console.log('[browser-panel-request:early] upsert ok', info.webviewLabel || bridgeTid)
+            } else {
+              console.warn('[browser-panel-request:early] upsert returned no cdpUrl', info)
+            }
+            if (navUrl !== 'about:blank') {
+              applyBrowserCommandResponse({ threadId: bridgeTid, pageUrl: navUrl })
+            } else {
+              ensureBrowserStage()
+            }
+          } catch (err) {
+            console.warn('[browser-panel-request:early] failed', err)
           }
-          const vw = Math.max(480, Math.floor((window.innerWidth || 1280) * 0.45))
-          const vh = Math.max(360, Math.floor((window.innerHeight || 800) - 96))
-          const vx = Math.max(0, Math.floor((window.innerWidth || 1280) - vw - 12))
-          const vy = 64
-          const navUrl = url && /^https?:\/\//i.test(url) ? url : 'about:blank'
-          const info = await browserEmbedUpsert({
-            threadId: bridgeTid,
-            url: navUrl,
-            x: vx,
-            y: vy,
-            width: vw,
-            height: vh,
-          })
-          if (info?.cdpUrl) {
-            await registerBrowserEmbedCdp(bridgeTid, info.cdpUrl)
-            console.log('[browser-panel-request:early] upsert ok', info.webviewLabel || bridgeTid)
-          } else {
-            console.warn('[browser-panel-request:early] upsert returned no cdpUrl', info)
-          }
-          if (navUrl !== 'about:blank') {
-            applyBrowserCommandResponse({ threadId: bridgeTid, pageUrl: navUrl })
-          } else {
-            ensureBrowserStage()
-          }
-        } catch (err) {
-          console.warn('[browser-panel-request:early] failed', err)
-        }
+        })()
       }),
     )
     .catch((err) => console.warn('[browser-panel-request:early] listen failed', err))
@@ -520,7 +526,14 @@ async function boot() {
     // License entitlements before shell nav (tasks/apps/proactive)
     try {
       const { refreshLicenseStatus } = await import('./lib/license.js')
-      await refreshLicenseStatus()
+      // Cap wait — a hung license fetch used to stall boot after "routes registered"
+      // and left the splash up forever (panel CDP still worked via early listener).
+      await Promise.race([
+        refreshLicenseStatus(),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('license status timeout')), 5000),
+        ),
+      ])
     } catch (e) {
       console.warn('[boot] license status unavailable', e)
     }
@@ -673,58 +686,62 @@ async function boot() {
 
         // Agent CDP arrives before AG-UI TOOL_CALL_START can open the panel.
         // Rust emits this so we mount the bridge WebView2 immediately.
-        await listen('browser-panel-request', async (ev) => {
-          try {
-            const payload = ev?.payload || {}
-            const tid = String(payload.threadId || 'evoflow-node-repl-bridge').trim()
-            const url = String(payload.url || '').trim()
-            console.log('[browser-panel-request]', tid, url || '(none)')
-            const {
-              applyBrowserCommandResponse,
-              ensureBrowserStage,
-              setBrowserPanelThreadId,
-              NODE_REPL_BRIDGE_THREAD_ID,
-            } = await import('./lib/browser-panel-store.js')
-            const {
-              browserEmbedUpsert,
-              registerBrowserEmbedCdp,
-            } = await import('./lib/browser-embed-client.js')
-            const bridgeTid = tid || NODE_REPL_BRIDGE_THREAD_ID
-            setBrowserPanelThreadId(bridgeTid)
-            if (!String(window.location.hash || '').includes('/chat')) {
-              navigate('/chat')
+        // Same as early listener: never return a Promise from the handler —
+        // emit+await-upsert deadlocks the UI pump with ensure_webview.
+        await listen('browser-panel-request', (ev) => {
+          void (async () => {
+            try {
+              const payload = ev?.payload || {}
+              const tid = String(payload.threadId || 'evoflow-node-repl-bridge').trim()
+              const url = String(payload.url || '').trim()
+              console.log('[browser-panel-request]', tid, url || '(none)')
+              const {
+                applyBrowserCommandResponse,
+                ensureBrowserStage,
+                setBrowserPanelThreadId,
+                NODE_REPL_BRIDGE_THREAD_ID,
+              } = await import('./lib/browser-panel-store.js')
+              const {
+                browserEmbedUpsert,
+                registerBrowserEmbedCdp,
+              } = await import('./lib/browser-embed-client.js')
+              const bridgeTid = tid || NODE_REPL_BRIDGE_THREAD_ID
+              setBrowserPanelThreadId(bridgeTid)
+              if (!String(window.location.hash || '').includes('/chat')) {
+                navigate('/chat')
+              }
+              // CRITICAL: do NOT wait for BrowserPanel layout. Agent CDP is already
+              // blocked on ensure_webview_for_cdp; a 0×0 slot would miss the window.
+              // Upsert with approximate right-half bounds now — BrowserPanel will
+              // reposition the same HWND when it mounts.
+              const vw = Math.max(480, Math.floor((window.innerWidth || 1280) * 0.45))
+              const vh = Math.max(360, Math.floor((window.innerHeight || 800) - 96))
+              const vx = Math.max(0, Math.floor((window.innerWidth || 1280) - vw - 12))
+              const vy = 64
+              const navUrl = url && /^https?:\/\//i.test(url) ? url : 'about:blank'
+              const info = await browserEmbedUpsert({
+                threadId: bridgeTid,
+                url: navUrl,
+                x: vx,
+                y: vy,
+                width: vw,
+                height: vh,
+              })
+              if (info?.cdpUrl) {
+                await registerBrowserEmbedCdp(bridgeTid, info.cdpUrl)
+                console.log('[browser-panel-request] upsert ok', info.webviewLabel || bridgeTid)
+              } else {
+                console.warn('[browser-panel-request] upsert returned no cdpUrl')
+              }
+              if (navUrl !== 'about:blank') {
+                applyBrowserCommandResponse({ threadId: bridgeTid, pageUrl: navUrl })
+              } else {
+                ensureBrowserStage()
+              }
+            } catch (err) {
+              console.warn('[browser-panel-request] handler failed', err)
             }
-            // CRITICAL: do NOT wait for BrowserPanel layout. Agent CDP is already
-            // blocked on ensure_webview_for_cdp; a 0×0 slot would miss the window.
-            // Upsert with approximate right-half bounds now — BrowserPanel will
-            // reposition the same HWND when it mounts.
-            const vw = Math.max(480, Math.floor((window.innerWidth || 1280) * 0.45))
-            const vh = Math.max(360, Math.floor((window.innerHeight || 800) - 96))
-            const vx = Math.max(0, Math.floor((window.innerWidth || 1280) - vw - 12))
-            const vy = 64
-            const navUrl = url && /^https?:\/\//i.test(url) ? url : 'about:blank'
-            const info = await browserEmbedUpsert({
-              threadId: bridgeTid,
-              url: navUrl,
-              x: vx,
-              y: vy,
-              width: vw,
-              height: vh,
-            })
-            if (info?.cdpUrl) {
-              await registerBrowserEmbedCdp(bridgeTid, info.cdpUrl)
-              console.log('[browser-panel-request] upsert ok', info.webviewLabel || bridgeTid)
-            } else {
-              console.warn('[browser-panel-request] upsert returned no cdpUrl')
-            }
-            if (navUrl !== 'about:blank') {
-              applyBrowserCommandResponse({ threadId: bridgeTid, pageUrl: navUrl })
-            } else {
-              ensureBrowserStage()
-            }
-          } catch (err) {
-            console.warn('[browser-panel-request] handler failed', err)
-          }
+          })()
         })
       }).catch(() => {})
     }

@@ -685,12 +685,40 @@ fn create_embed_window(
     let boot_url = target_url.clone();
     let width = width.max(120.0);
     let height = height.max(80.0);
-    eprintln!("[browser-embed] create_embed_window: calling WebviewWindow::build() off main thread...");
+    // HTTP CDP must be up before inject so the guest poller knows the port.
+    let http_port = tauri::async_runtime::block_on(browser_cdp_server::ensure_http_server(
+        app.clone(),
+    ))
+    .unwrap_or(0);
+    let guest_js = super::browser_embed_bridge::embed_guest_init_script(http_port, label);
+    if let Some(bridge) = app.try_state::<super::browser_embed_bridge::EmbedBridge>() {
+        bridge.note_url(label, target_url.as_str());
+    }
+    // Real Chromium CDP on this embed only (not main). with_webview / ExecuteScript
+    // never dispatch on these HWNDs; remote debugging gives Runtime.evaluate a
+    // working transport without COM UI-thread hops.
+    // Tauri: different additional_browser_args REQUIRE a distinct data_directory
+    // or WebView2 reuses main's environment and ignores --remote-debugging-port.
+    let debug_port = browser_cdp::allocate_embed_debug_port();
+    let browser_args = format!(
+        "--remote-debugging-port={debug_port} --remote-allow-origins=*"
+    );
+    let data_dir = {
+        let base = crate::commands::evoflow_dir().join("webview2-embed");
+        let _ = std::fs::create_dir_all(&base);
+        base.join(label)
+    };
+    eprintln!(
+        "[browser-embed] create_embed_window: calling WebviewWindow::build() off main thread \
+         http_port={http_port} debug_port={debug_port} data_dir={}...",
+        data_dir.display()
+    );
     let win = WebviewWindow::builder(app, label, WebviewUrl::External(boot_url))
         .parent(&parent)
         .map_err(|e| format!("attach embedded browser parent failed: {e}"))?
-        // tauri-agent style guest: listen for browser-embed://cdp and answer via invoke.
-        .initialization_script(super::browser_embed_bridge::embed_guest_init_script())
+        .initialization_script(guest_js.clone())
+        .data_directory(data_dir)
+        .additional_browser_args(&browser_args)
         .on_new_window(move |url, _features| {
             let url = url.clone();
             let app = popup_app.clone();
@@ -723,8 +751,10 @@ fn create_embed_window(
         let _ = win.unminimize();
         log_window_state(&win, "create after re-assert");
     }
-    // Skip wait_webview2_ready (with_webview). Page.navigate uses
-    // WebviewWindow::navigate; COM readiness is not required to show a URL.
+    browser_cdp::register_embed_debug_port(label, debug_port);
+    // Best-effort COM stash + HTTP poller (may no-op on child HWNDs).
+    browser_cdp::capture_core_webview2(app, &win, label);
+    let _ = win.eval(guest_js);
     Ok(())
 }
 
@@ -868,19 +898,27 @@ pub fn ensure_webview_for_cdp(
     // the guest (main.js → browser_embed_upsert) to create the window label.
     // Do NOT probe/destroy via with_webview — that COM path hangs on child
     // embeds and races the panel upsert.
+    let payload = serde_json::json!({
+        "threadId": thread_id,
+        "url": url,
+        "source": "ensure_webview_for_cdp",
+    });
     browser_cdp_server::log_line(&format!(
         "[browser-embed] emit browser-panel-request thread={thread_id} url={url}"
     ));
-    let _ = app.emit(
-        "browser-panel-request",
-        serde_json::json!({
-            "threadId": thread_id,
-            "url": url,
-            "source": "ensure_webview_for_cdp",
-        }),
-    );
+    // Detached emit: never block this HTTP worker if a JS listener still awaits
+    // upsert (UI-pump deadlock). main.js handlers must also be fire-and-forget.
     {
-        let wait_deadline = std::time::Instant::now() + Duration::from_secs(25);
+        let app_emit = app.clone();
+        let payload_emit = payload.clone();
+        let _ = std::thread::Builder::new()
+            .name("browser-panel-emit".into())
+            .spawn(move || {
+                let _ = app_emit.emit("browser-panel-request", payload_emit);
+            });
+    }
+    {
+        let wait_deadline = std::time::Instant::now() + Duration::from_secs(8);
         let mut last_nudge = std::time::Instant::now();
         let key = sanitize_thread_key(thread_id);
         while std::time::Instant::now() < wait_deadline {
@@ -899,25 +937,29 @@ pub fn ensure_webview_for_cdp(
                 ));
                 return Ok(());
             }
-            if last_nudge.elapsed() >= Duration::from_secs(3) {
-                let _ = app.emit(
-                    "browser-panel-request",
-                    serde_json::json!({
-                        "threadId": thread_id,
-                        "url": url,
-                        "source": "ensure_webview_for_cdp_retry",
-                    }),
-                );
+            if last_nudge.elapsed() >= Duration::from_secs(2) {
+                let app_emit = app.clone();
+                let tid = thread_id.to_string();
+                let u = url.to_string();
+                let _ = std::thread::Builder::new()
+                    .name("browser-panel-emit-retry".into())
+                    .spawn(move || {
+                        let _ = app_emit.emit(
+                            "browser-panel-request",
+                            serde_json::json!({
+                                "threadId": tid,
+                                "url": u,
+                                "source": "ensure_webview_for_cdp_retry",
+                            }),
+                        );
+                    });
                 last_nudge = std::time::Instant::now();
             }
             std::thread::sleep(Duration::from_millis(100));
         }
     }
-    // Last resort: create with the *same* helper the panel uses
-    // (`create_embed_window`), parked over the right half of the main window
-    // so WebView2 gets a real visible HWND. Off-screen / invisible creates
-    // never finish COM init. When React later upserts, it repositions this
-    // same label into the side-panel slot.
+    // Timed agent create: never block ENSURE_WEBVIEW_LOCK forever. A hung
+    // WebviewWindow::build previously pinned this lock and starved CDP.
     let target = normalize_target_url(url)?;
     let boot_url = if target.scheme() == "about" {
         "https://example.com/"
@@ -941,25 +983,47 @@ pub fn ensure_webview_for_cdp(
         _ => (120.0, 120.0, 960.0, 720.0),
     };
     browser_cdp_server::log_line(&format!(
-        "[browser-embed] ensure_webview agent fallback create_embed_window \
-         label={label} bounds=({px:.0},{py:.0} {pw:.0}x{ph:.0})"
+        "[browser-embed] ensure_webview agent fallback (8s cap) label={label} \
+         bounds=({px:.0},{py:.0} {pw:.0}x{ph:.0})"
     ));
-    create_embed_window(app, &parent, &label, &boot_url, px, py, pw, ph)?;
-    let http_port = browser_cdp_server::current_http_port();
-    if http_port > 0 {
-        let _ = app.state::<BrowserEmbedState>().entries.lock().map(|mut m| {
-            m.insert(
-                sanitize_thread_key(thread_id),
-                EmbedEntry {
-                    cdp_ws_url: format!("ws://127.0.0.1:{http_port}{CDP_WS_PATH}"),
-                },
-            )
-        });
+    let app_create = app.clone();
+    let label_create = label.clone();
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    std::thread::Builder::new()
+        .name("embed-agent-create".into())
+        .spawn(move || {
+            let parent = match app_create.get_webview_window("main") {
+                Some(p) => p,
+                None => {
+                    let _ = tx.send(Err("main window not found".into()));
+                    return;
+                }
+            };
+            let r = create_embed_window(
+                &app_create,
+                &parent,
+                &label_create,
+                &boot_url,
+                px,
+                py,
+                pw,
+                ph,
+            );
+            let _ = tx.send(r);
+        })
+        .map_err(|e| format!("spawn embed create failed: {e}"))?;
+    match rx.recv_timeout(Duration::from_secs(8)) {
+        Ok(Ok(())) => {
+            browser_cdp_server::log_line(&format!(
+                "[browser-embed] ensure_webview agent-create ok label={label}"
+            ));
+            Ok(())
+        }
+        Ok(Err(e)) => Err(format!("agent-create embed failed: {e}")),
+        Err(_) => Err(format!(
+            "agent-create embed timed out for '{thread_id}' (panel upsert also missed)"
+        )),
     }
-    browser_cdp_server::log_line(&format!(
-        "[browser-embed] ensure_webview agent-create ok label={label} url={target}"
-    ));
-    Ok(())
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -1111,6 +1175,9 @@ pub async fn browser_embed_upsert(
         "[browser-embed] navigate check: boot_url={boot_url} target_url={target_url} same={}",
         boot_url == target_url
     ));
+    if let Some(bridge) = app.try_state::<super::browser_embed_bridge::EmbedBridge>() {
+        bridge.note_url(&label, target_url.as_str());
+    }
     if boot_url != target_url {
         match app.get_webview_window(&label) {
             Some(win) => match win.navigate(target_url.clone()) {
