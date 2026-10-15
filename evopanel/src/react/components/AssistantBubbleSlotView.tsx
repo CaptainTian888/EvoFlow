@@ -95,6 +95,13 @@ function AssistantBubbleSlotViewInner({
 }) {
   // ZCode 式扁平内联：plan.flatTimeline 为权威（MessageRow 默认 true，工作轨迹显式传 false）
   const flatTimeline = plan.flatTimeline !== false && !suppressExploringFold
+
+  // 授权暂停 → 续流 → 下一个待授权出现的间隙里，interactiveToolApproval 会短暂翻
+  // false（已批准的工具不再 pending、新的还没出现），折叠头会收起再弹开（闪烁）。
+  // 本行一旦进入过授权等待，回合内保持展开；用户手动收起（TurnHistoryFold manual）仍优先。
+  const approvalLatchRef = useRef(false)
+  if (interactiveToolApproval) approvalLatchRef.current = true
+  const approvalLatch = approvalLatchRef.current
   const layout = plan.layout
   const displayChunks = layout?.displayChunks ?? []
   const lastReasoningSegIdx = layout?.lastReasoningSegIdx ?? -1
@@ -432,7 +439,10 @@ function AssistantBubbleSlotViewInner({
           // threadBusy 仍亮，保持展开与齿轮直到线程真正空闲。
           // 授权暂停时 interactiveToolApproval=true（本行是审批宿主），同样保持
           // 展开，否则自动折叠会把审批面板藏进 history piece。
-          defaultOpen={isStreaming || threadBusy || interactiveToolApproval}
+          // approvalLatch：授权间隙（已批准→等待续流）不收起，避免折叠/展开闪烁。
+          defaultOpen={
+            isStreaming || threadBusy || interactiveToolApproval || approvalLatch
+          }
           // v5.3：已工作默认折叠时，最新一轮 piece 仍要外露。
           // body 永远渲染，由 children 自身用 CSS 决定哪些 piece 可见。
           bodyAlwaysRendered={!isStreaming && !threadBusy}

@@ -138,6 +138,54 @@ describe('tool-approval', () => {
     ).toEqual([])
   })
 
+  it('multi-approval turn: replay marker resolves only its own ids, next pending stays hosted', () => {
+    const approvedOut = JSON.stringify({
+      _evoflow_tool: { status: 'approved' },
+      approval: { tool_name: 'terminal', tool_call_id: 'tc_1', summary: 'a' },
+    })
+    const pendingOut2 = JSON.stringify({
+      _evoflow_tool: { status: 'pending_approval' },
+      approval: { tool_name: 'terminal', tool_call_id: 'tc_2', summary: 'b' },
+    })
+    const rows = [
+      {
+        role: 'assistant',
+        tools: [
+          { id: 'tc_1', name: 'terminal', output: approvedOut, status: 'approved' },
+          { id: 'tc_2', name: 'terminal', output: pendingOut2, status: 'pending_approval' },
+        ],
+      },
+      { role: 'user', text: buildToolApprovalReplayMessage(['tc_1']) },
+    ]
+    // tc_1 已批准（续流标记只覆盖 tc_1）——tc_2 的审批仍须以该行为宿主，
+    // 否则第二次审批的面板消失、折叠头收起。
+    expect(resolveToolApprovalHost({ rows, streamTools: [], isSending: false })).toEqual({
+      kind: 'row',
+      index: 0,
+    })
+
+    // 两轮都批准后（两条续流标记覆盖全部 pending），不再有宿主
+    const resolvedOut = (id) =>
+      JSON.stringify({
+        _evoflow_tool: { status: 'approved' },
+        approval: { tool_name: 'terminal', tool_call_id: id, summary: 'x' },
+      })
+    const rowsDone = [
+      {
+        role: 'assistant',
+        tools: [
+          { id: 'tc_1', name: 'terminal', output: resolvedOut('tc_1'), status: 'approved' },
+          { id: 'tc_2', name: 'terminal', output: resolvedOut('tc_2'), status: 'approved' },
+        ],
+      },
+      { role: 'user', text: buildToolApprovalReplayMessage(['tc_1']) },
+      { role: 'user', text: buildToolApprovalReplayMessage(['tc_2']) },
+    ]
+    expect(resolveToolApprovalHost({ rowsDone, streamTools: [], isSending: false })).toEqual({
+      kind: 'none',
+    })
+  })
+
   it('mergePendingApprovalLists skips locally resolved ids from stream fallback', () => {
     const stream = [{ tool_call_id: 'tc_1', tool_name: 'delete_file', summary: 'x' }]
     const exclude = new Set(['tc_1'])

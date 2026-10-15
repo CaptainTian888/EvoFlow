@@ -580,4 +580,60 @@ describe('TurnHistoryFold v5.2（外层状态条 = 唯一折叠入口，工作�
     expect(screen.getByText('需要权限')).toBeTruthy()
     expect(screen.getByRole('button', { name: '确认' })).toBeTruthy()
   })
+
+  it('多轮审批：批准后的授权间隙折叠头不收起（approval latch），下一轮待授权仍可见', () => {
+    const now = Date.now()
+    const toolOf = (id: string, status: string) => ({
+      id,
+      name: 'terminal',
+      input: { command: `run ${id}` },
+      status,
+      output: JSON.stringify({
+        approval: { tool_call_id: id, tool_name: 'terminal', summary: `run ${id}` },
+      }),
+      time: now - 10_000,
+    })
+    const buildUi = (opts: { toolId: string; status: string; interactive: boolean }) => {
+      const input = buildInput({
+        isStreaming: false,
+        interactiveToolApproval: opts.interactive,
+        displaySegments: [{ kind: 'tools', ids: [opts.toolId], seq: 1 }],
+        tools: [toolOf(opts.toolId, opts.status)],
+        durationLabel: '40s',
+      })
+      const plan = buildAssistantBubbleDisplayPlan(input as never)
+      return (
+        <AssistantBubbleSlotView
+          plan={plan}
+          displaySegments={input.displaySegments as never}
+          tools={input.tools as never}
+          rawText=""
+          reasoningPreview=""
+          isStreaming={false}
+          askInline={null}
+          suppressPlanExecPromptNoise={false}
+          interactiveToolApproval={opts.interactive}
+          onToolApproval={() => {}}
+          durationLabel="40s"
+          messageId="msg_appr_cycle"
+        />
+      )
+    }
+
+    // 第 1 轮：tc_1 待授权 → 展开显示「等待授权」
+    const { rerender } = render(buildUi({ toolId: 'tc_1', status: 'pending_approval', interactive: true }))
+    const trigger = () => screen.queryByTestId('chat-assistant-history-trigger-msg_appr_cycle')
+    expect(trigger()?.getAttribute('aria-expanded')).toBe('true')
+    expect(screen.getByRole('button', { name: '确认' })).toBeTruthy()
+
+    // 授权间隙：tc_1 已批准、下一轮 pending 还没出现（interactive 翻 false）
+    // → 折叠头必须保持展开（approval latch），不收起、不闪烁
+    rerender(buildUi({ toolId: 'tc_1', status: 'approved', interactive: false }))
+    expect(trigger()?.getAttribute('aria-expanded')).toBe('true')
+
+    // 第 2 轮：tc_2 待授权 → 仍展开、审批面板可见
+    rerender(buildUi({ toolId: 'tc_2', status: 'pending_approval', interactive: true }))
+    expect(trigger()?.getAttribute('aria-expanded')).toBe('true')
+    expect(screen.getByRole('button', { name: '确认' })).toBeTruthy()
+  })
 })
