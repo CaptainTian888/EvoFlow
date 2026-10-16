@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .builtin import EVOFLOW_OFFICIAL_PLUGIN_MARKETPLACE, seed_official_marketplace
+from .builtin import EVOFLOW_OFFICIAL_PLUGIN_MARKETPLACE, EXCLUDED_OFFICIAL_PLUGINS, seed_official_marketplace
 from .components import component_types_from_groups, enumerate_plugin_components
 from .manifest import (
     DEFAULT_VERSION,
@@ -638,7 +638,11 @@ class PluginManagementService:
                 if record.id == EVOFLOW_OFFICIAL_PLUGIN_MARKETPLACE and plugin_id not in installed_ids:
                     restorable_json.append(dict(available))
 
-        installed_json = [self._installed_summary(record, state) for record in state.plugins]
+        installed_json = [
+            self._installed_summary(record, state)
+            for record in state.plugins
+            if record.name not in EXCLUDED_OFFICIAL_PLUGINS
+        ]
         return {
             "marketplaces": marketplaces_json,
             "availablePlugins": available_json,

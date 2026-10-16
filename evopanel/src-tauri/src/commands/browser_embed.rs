@@ -34,6 +34,24 @@ pub use super::browser_cdp::CdpBrokerState;
 pub static EMBED_LAST_BOUNDS: std::sync::LazyLock<std::sync::Mutex<HashMap<String, (f64, f64, f64, f64)>>> =
     std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
 
+/// 每个 embed 窗口最近一次被谁移动（诊断用：异常时日志直接点名）。
+/// 取值：panel-upsert / estimate-upsert / panel-set-bounds / follow-main-move / create。
+pub static EMBED_LAST_WRITER: std::sync::LazyLock<std::sync::Mutex<HashMap<String, String>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
+fn note_writer(label: &str, writer: &str) {
+    if let Ok(mut w) = EMBED_LAST_WRITER.lock() {
+        w.insert(label.to_string(), format!("{writer}@{}", chrono_now_secs()));
+    }
+}
+
+fn chrono_now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 /// 主窗口移动/缩放后，把所有 embed 窗口重新贴回面板槽位（ZCode "所见即所控" 对齐）。
 pub fn reposition_embeds_after_main_move(app: &tauri::AppHandle) {
     let Some(parent) = app.get_webview_window("main") else { return };
@@ -57,31 +75,40 @@ pub fn reposition_embeds_after_main_move(app: &tauri::AppHandle) {
                 Ok((sx, sy)) => {
                     let _ = window.set_position(LogicalPosition::new(sx, sy));
                     let _ = window.set_size(LogicalSize::new(cw.max(120.0), ch.max(80.0)));
+                    note_writer(label, "follow-main-move");
                 }
                 Err(_) => continue,
             }
         }
-        // 未登记的（早路径/引擎兜底创建后面板从未接管）：贴到主窗口右侧停靠位，
-        // 并登记边界——否则这些窗口在主窗口移动时无人搬运，"悬浮脱离客户端"。
+        // 未登记的（早路径/引擎兜底创建后面板从未接管）：可见的贴到主窗口右侧
+        // 停靠位并登记；隐藏的保持隐藏（面板不开就不显示），仅登记边界。
         let tracked: std::collections::HashSet<String> = map.keys().cloned().collect();
         for (label, window) in app.webview_windows() {
             if !label.starts_with("browser-embed-") || tracked.contains(&label) {
                 continue;
             }
+            let visible = window.is_visible().unwrap_or(false);
             let w = (iw * 0.45).clamp(480.0, (iw - 16.0).max(120.0));
             let h = (ih - 96.0).clamp(360.0, (ih - 16.0).max(80.0));
             let x = (iw - w - 12.0).max(0.0);
             let y = 64.0f64.min((ih - h).max(0.0));
-            match client_to_screen(app, x, y) {
-                Ok((sx, sy)) => {
-                    let _ = window.set_position(LogicalPosition::new(sx, sy));
-                    let _ = window.set_size(LogicalSize::new(w, h));
-                    browser_cdp_server::log_line(&format!(
-                        "[browser-embed] reposition untracked embed: docked ({x:.0},{y:.0}) {w:.0}x{h:.0}"
-                    ));
-                    untracked.push((label, x, y, w, h));
+            if visible {
+                match client_to_screen(app, x, y) {
+                    Ok((sx, sy)) => {
+                        let _ = window.set_position(LogicalPosition::new(sx, sy));
+                        let _ = window.set_size(LogicalSize::new(w, h));
+                        browser_cdp_server::log_line(&format!(
+                            "[browser-embed] reposition untracked embed: docked ({x:.0},{y:.0}) {w:.0}x{h:.0}"
+                        ));
+                        untracked.push((label, x, y, w, h));
+                    }
+                    Err(_) => continue,
                 }
-                Err(_) => continue,
+            } else {
+                browser_cdp_server::log_line(&format!(
+                    "[browser-embed] untracked embed hidden: record bounds only ({x:.0},{y:.0}) {w:.0}x{h:.0}"
+                ));
+                untracked.push((label, x, y, w, h));
             }
         }
         for (label, x, y, w, h) in untracked.drain(..) {
@@ -97,6 +124,72 @@ fn clamp_rect(x: f64, y: f64, w: f64, h: f64, iw: f64, ih: f64) -> (f64, f64, f6
     let x = x.clamp(0.0, (iw - w).max(0.0));
     let y = y.clamp(0.0, (ih - h).max(0.0));
     (x, y, w, h)
+}
+
+/// 启动 embed 看门狗：每 2 秒巡检所有浏览器窗口的不变量，违反即记 ANOMALY
+/// （点名 last_writer）并当场吸回槽位。这是"下次再出现"的兜底——无论哪条
+/// 未知路径把窗口挪走，都会被自动纠正并留下完整取证信息。
+pub fn start_embed_watchdog(app: tauri::AppHandle) {
+    let spawned = std::thread::Builder::new()
+        .name("embed-watchdog".into())
+        .spawn(move || loop {
+            std::thread::sleep(Duration::from_secs(2));
+            embed_watchdog_tick(&app);
+        });
+    if let Err(e) = spawned {
+        browser_cdp_server::log_line(&format!("[browser-embed] watchdog spawn failed: {e}"));
+    }
+}
+
+fn embed_watchdog_tick(app: &tauri::AppHandle) {
+    let Some(parent) = app.get_webview_window("main") else { return };
+    if parent.is_minimized().unwrap_or(false) {
+        return;
+    }
+    let scale = parent.scale_factor().unwrap_or(1.0).max(0.1);
+    let bounds_map = match EMBED_LAST_BOUNDS.lock() {
+        Ok(m) => m,
+        Err(_) => return,
+    };
+    for (label, window) in app.webview_windows() {
+        if !label.starts_with("browser-embed-") {
+            continue;
+        }
+        let visible = window.is_visible().unwrap_or(false);
+        let expected = bounds_map.get(&label).copied();
+        let writer = EMBED_LAST_WRITER
+            .lock()
+            .ok()
+            .and_then(|m| m.get(&label).cloned())
+            .unwrap_or_else(|| "(unknown)".into());
+        match (visible, expected) {
+            (true, Some((ex, ey, ew, eh))) => {
+                // 不变量：可见窗口必须贴合登记槽位（屏幕坐标差 > 12px 即漂移）
+                let (sx, sy) = match client_to_screen(app, ex, ey) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                if let Ok(p) = window.outer_position() {
+                    let px = (p.x as f64) / scale;
+                    let py = (p.y as f64) / scale;
+                    if (px - sx).abs() > 12.0 || (py - sy).abs() > 12.0 {
+                        browser_cdp_server::log_line(&format!(
+                            "[browser-embed] ANOMALY: visible window off slot —                              expected=({sx:.0},{sy:.0}) actual=({px:.0},{py:.0})                              last_writer={writer} — snapping back"
+                        ));
+                        let _ = window.set_position(LogicalPosition::new(sx, sy));
+                        let _ = window.set_size(LogicalSize::new(ew.max(120.0), eh.max(80.0)));
+                    }
+                }
+            }
+            (true, None) => {
+                // 不变量：可见窗口必须有面板登记的槽位；没有 = 无面板裸奔
+                browser_cdp_server::log_line(&format!(
+                    "[browser-embed] ANOMALY: visible window without panel-managed bounds —                      last_writer={writer} (panel not open?)"
+                ));
+            }
+            _ => {}
+        }
+    }
 }
 #[cfg(target_os = "windows")]
 use super::browser_cdp_server;
@@ -740,9 +833,10 @@ fn create_embed_window(
     y: f64,
     width: f64,
     height: f64,
+    start_visible: bool,
 ) -> Result<(), String> {
     browser_cdp_server::log_line(&format!(
-        "[browser-embed] create_embed_window: label={} url={} pos=({},{}) size={}x{}",
+        "[browser-embed] create_embed_window: label={} url={} pos=({},{}) size={}x{} visible={start_visible}",
         label, target_url, x, y, width, height
     ));
     // Tauri docs (Windows): `WebviewWindow::build` deadlocks when run *inside*
@@ -834,7 +928,9 @@ fn create_embed_window(
         .resizable(false)
         .shadow(false)
         .skip_taskbar(true)
-        .visible(true)
+        // 面板触发的创建可见；估算边界（早处理器/引擎兜底）创建隐藏——
+        // 面板不开就不显示，set_bounds 接管时再 show。HTTP CDP 不依赖可见性。
+        .visible(start_visible)
         .focused(false)
         .position(x, y)
         .inner_size(width, height)
@@ -842,7 +938,9 @@ fn create_embed_window(
         .build()
         .map_err(|e| format!("create embedded browser failed: {e}"))?;
     log_window_state(&win, "create built off main thread");
-    if !win.is_visible().unwrap_or(false) {
+    // 仅可见创建需要 re-assert show；隐藏创建（估算路径）保持隐藏，
+    // 由面板的 set_bounds → show 接管显影。
+    if start_visible && !win.is_visible().unwrap_or(false) {
         let _ = win.show();
         let _ = win.unminimize();
         log_window_state(&win, "create after re-assert");
@@ -927,8 +1025,8 @@ pub fn ensure_webview_for_cdp(
         let key = sanitize_thread_key(thread_id);
         while std::time::Instant::now() < wait_deadline {
             if let Some(existing) = app.get_webview_window(&label) {
-                let _ = existing.show();
-                let _ = existing.unminimize();
+                // 只等窗口存在（早处理器可能创建隐藏窗口——面板不开就不显示）。
+                // 这里不再 show/unminimize：把隐藏窗口拉出来 = 悬浮窗复发。
                 let registered = app
                     .state::<BrowserEmbedState>()
                     .entries
@@ -937,7 +1035,8 @@ pub fn ensure_webview_for_cdp(
                     .map(|m| m.contains_key(&key))
                     .unwrap_or(false);
                 browser_cdp_server::log_line(&format!(
-                    "[browser-embed] ensure_webview panel ok label={label} registered={registered}"
+                    "[browser-embed] ensure_webview panel ok label={label} registered={registered} visible={}",
+                    existing.is_visible().unwrap_or(false)
                 ));
                 return Ok(());
             }
@@ -1012,6 +1111,8 @@ pub fn ensure_webview_for_cdp(
                 py,
                 pw,
                 ph,
+                // 引擎兜底创建：估算边界 → 隐藏窗口（面板接管时显影）
+                false,
             );
             let _ = tx.send(r);
         })
@@ -1068,10 +1169,11 @@ pub async fn browser_embed_upsert(
     y: f64,
     width: f64,
     height: f64,
+    managed_only: Option<bool>,
 ) -> Result<BrowserEmbedInfo, String> {
     #[cfg(not(target_os = "windows"))]
     {
-        let _ = (app, state, thread_id, url, x, y, width, height);
+        let _ = (app, state, thread_id, url, x, y, width, height, managed_only);
         return Err("Embedded browser panel is only supported on Windows WebView2 builds".into());
     }
     #[cfg(target_os = "windows")]
@@ -1120,19 +1222,56 @@ pub async fn browser_embed_upsert(
         // `create_embed_window` bakes `.visible(true)` into the builder, so the
         // fresh path never needed this. The reuse path did, and omitting it is
         // what left the stage permanently blank.
-        let _ = existing.show();
-        let _ = existing.unminimize();
-        existing
-            .set_position(LogicalPosition::new(screen_x, screen_y))
-            .map_err(|e| format!("position embedded browser failed: {e}"))?;
-        existing
-            .set_size(LogicalSize::new(width.max(120.0), height.max(80.0)))
-            .map_err(|e| format!("resize embedded browser failed: {e}"))?;
+        // 估算路径（managed_only=true）不显影：隐藏创建的窗口保持隐藏，
+        // 由面板的 set_bounds → show 接管显影；面板路径照常 show。
+        if !managed_only.unwrap_or(false) {
+            let _ = existing.show();
+            let _ = existing.unminimize();
+        }
+        // managed_only=true（早处理器/引擎兜底的估算边界调用）：面板已接管
+        // （EMBED_LAST_BOUNDS 有本窗口的实测槽位）时，估算边界**不得**移动窗口，
+        // 否则每次工具调用都把窗口从槽位拽到估算位置 = "悬浮在面板区域之上"。
+        // 面板自己的 upsert/set_bounds（managed_only=false）不受影响。
+        let skip_bounds = managed_only.unwrap_or(false)
+            && EMBED_LAST_BOUNDS
+                .lock()
+                .map(|m| m.contains_key(&label))
+                .unwrap_or(false);
+        if skip_bounds {
+            browser_cdp_server::log_line(&format!(
+                "[browser-embed] upsert: skip estimate bounds (panel-managed) label={label} \
+                 incoming=({x:.0},{y:.0} {width:.0}x{height:.0})"
+            ));
+        } else {
+            existing
+                .set_position(LogicalPosition::new(screen_x, screen_y))
+                .map_err(|e| format!("position embedded browser failed: {e}"))?;
+            existing
+                .set_size(LogicalSize::new(width.max(120.0), height.max(80.0)))
+                .map_err(|e| format!("resize embedded browser failed: {e}"))?;
+            note_writer(&label, if managed_only.unwrap_or(false) { "estimate-upsert" } else { "panel-upsert" });
+            // 面板驱动的贴位（managed_only=false）当场登记：否则面板挂载 upsert
+            // 挪了窗口但跟随表为空，下一次估算 upsert 仍会把窗口拽出槽位。
+            if !managed_only.unwrap_or(false) {
+                if let Some(main) = app.get_webview_window("main") {
+                    let scale = main.scale_factor().unwrap_or(1.0).max(0.1);
+                    if let Ok(origin) = main.outer_position() {
+                        let client_x = screen_x - (origin.x as f64) / scale;
+                        let client_y = screen_y - (origin.y as f64) / scale;
+                        if let Ok(mut map) = EMBED_LAST_BOUNDS.lock() {
+                            map.insert(
+                                label.clone(),
+                                (client_x, client_y, width.max(120.0), height.max(80.0)),
+                            );
+                        }
+                    }
+                }
+            }
+        }
         // Prove the reuse actually landed on screen. The bug this guards was
         // invisible: `show()` above can fail silently, and `set_size` is a
         // no-op on a dying HWND, so without this the operator only sees "ready".
-        log_window_state(&existing, "upsert/reuse after place+resize");
-        // tauri-agent / native_navigate path: use WebviewWindow::navigate —
+        log_window_state(&existing, "upsert/reuse after place+resize");        // tauri-agent / native_navigate path: use WebviewWindow::navigate —
         // never with_webview ExecuteScript (hangs on child embeds).
         if let Some(raw_url) = url.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
             match normalize_target_url(raw_url) {
@@ -1164,7 +1303,18 @@ pub async fn browser_embed_upsert(
             });
         }
     } else {
-        create_embed_window(&app, &parent, &label, &boot_url, screen_x, screen_y, width, height)?;
+        create_embed_window(
+            &app,
+            &parent,
+            &label,
+            &boot_url,
+            screen_x,
+            screen_y,
+            width,
+            height,
+            // 估算路径（managed_only）创建隐藏窗口；面板路径创建可见窗口。
+            !managed_only.unwrap_or(false),
+        )?;
     }
 
     browser_cdp_server::log_line(&format!(
@@ -1307,6 +1457,7 @@ pub async fn browser_embed_set_bounds(
         window
             .set_size(LogicalSize::new(width.max(120.0), height.max(80.0)))
             .map_err(|e| format!("resize embedded browser failed: {e}"))?;
+        note_writer(&label, "panel-set-bounds");
         if let Ok(mut map) = EMBED_LAST_BOUNDS.lock() {
             // 单窗口语义：只保留当前 label 的 embed，关闭其他线程遗留的悬浮窗口
             let stale: Vec<String> = map

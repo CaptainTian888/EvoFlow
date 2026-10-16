@@ -126,6 +126,8 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            // 浏览器 embed 看门狗：可见窗口偏离槽位即记 ANOMALY 并吸回（自愈+取证）。
+            commands::browser_embed::start_embed_watchdog(app.handle().clone());
             #[cfg(desktop)]
             {
                 app.handle()

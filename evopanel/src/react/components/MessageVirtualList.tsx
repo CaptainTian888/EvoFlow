@@ -1,4 +1,4 @@
-import {
+            import {
   memo,
   useRef,
   useEffect,
@@ -99,7 +99,7 @@ type SharedHistoryProps = {
   assistantAgent?: import('../lib/agent-avatar.js').AgentAvatarAgent | null
 }
 
-type HistoryMessageRowProps = SharedHistoryProps & {
+type HistoryMessageRowProps = Omit<SharedHistoryProps, 'isSending' | 'streamContinuedRowIndex'> & {
   item: HistoryItem
   /** 续流合并后的 row；仅传给续流目标行，避免击穿其余行 memo */
   continuedRow?: DisplayRow | null
@@ -108,9 +108,13 @@ type HistoryMessageRowProps = SharedHistoryProps & {
   style?: CSSProperties
   measureRef?: (node: HTMLDivElement | null) => void
   measureIndex?: number
+  /** 父层预算：该行是否为当前流式续写行。非流式行恒 false，不随 isSending 变化 → memo 不被击穿 */
+  isContinuedStream: boolean
 }
 
 // resolveShowToolTiming removed (unused)
+
+let memoDiagCount = 0
 
 const HistoryMessageRow = memo(function HistoryMessageRow({
   item,
@@ -119,8 +123,7 @@ const HistoryMessageRow = memo(function HistoryMessageRow({
   sessionKey,
   toolApprovalHost,
   streamToolApprovalHost,
-  streamContinuedRowIndex,
-  isSending,
+  isContinuedStream,
   toolApprovalUiDisabled,
   suppressPlanExecPromptNoise,
   hideSubagentInnerTools,
@@ -144,11 +147,6 @@ const HistoryMessageRow = memo(function HistoryMessageRow({
   streamPerfCountRender()
   const sk = String(sessionKey || 'default')
   const effectiveItem = continuedRow ? { ...item, row: continuedRow } : item
-  const isContinuedStream = resolveMessageRowIsStreaming(
-    effectiveItem.i,
-    streamContinuedRowIndex,
-    isSending,
-  )
   const approvalHost = isContinuedStream ? streamToolApprovalHost : toolApprovalHost
   return (
     <div
@@ -163,7 +161,7 @@ const HistoryMessageRow = memo(function HistoryMessageRow({
         isStreaming={isContinuedStream}
         // v5.10：threadBusy（齿轮兜底源）只给「当前活跃行」（续流合并目标），
         // 其余历史行恒 false —— 否则线程忙时每条旧 AI 回复都会挂一个齿轮。
-        threadBusy={effectiveItem.i === streamContinuedRowIndex ? isSending : false}
+        threadBusy={isContinuedStream}
         showToolTiming
         onOpenFile={onOpenFile}
         onOpenKnowledgeMap={onOpenKnowledgeMap}
@@ -173,7 +171,7 @@ const HistoryMessageRow = memo(function HistoryMessageRow({
           toolApprovalUiDisabled
             ? false
             : toolApprovalInteractiveForItem(approvalHost, effectiveItem, {
-                continuedStreamRowIndex: streamContinuedRowIndex,
+                continuedStreamRowIndex: isContinuedStream ? effectiveItem.i : -1,
               })
         }
         suppressPlanExecPromptNoise={suppressPlanExecPromptNoise}
@@ -190,27 +188,55 @@ const HistoryMessageRow = memo(function HistoryMessageRow({
       />
     </div>
   )
+}, (prev, next) => {
+  const keys = new Set([...Object.keys(prev), ...Object.keys(next)])
+  let equal = true
+  for (const k of keys) {
+    if (prev[k as keyof typeof prev] !== next[k as keyof typeof next]) {
+      equal = false
+      break
+    }
+  }
+  if (!equal && !next.isContinuedStream) {
+    memoDiagCount++
+    if (memoDiagCount <= 3) {
+      const changed: string[] = []
+      for (const k of keys) {
+        if (prev[k as keyof typeof prev] !== next[k as keyof typeof next]) changed.push(k)
+      }
+      console.warn(`[memo-diag] row=${next.historyIndex} 变化 prop: ${changed.join(', ')}`)
+    }
+  }
+  return equal
 })
 
 /** 普通文档流：浏览器原生滚动，读历史最稳 */
 const FlatHistoryBody = memo(function FlatHistoryBody(
   props: SharedHistoryProps & { historyItems: HistoryItem[]; streamContinuedRow?: DisplayRow | null },
 ) {
-  const { historyItems, streamContinuedRow, liveActivityDockLabel, liveTurnElapsedSec, ...rowProps } = props
+  const {
+    historyItems,
+    streamContinuedRow,
+    liveActivityDockLabel,
+    liveTurnElapsedSec,
+    isSending,
+    streamContinuedRowIndex,
+    ...rowProps
+  } = props
   const sk = String(props.sessionKey || 'default')
   return (
     <div className="react-vlist-inner react-vlist-inner--flat">
       {historyItems.map((item, historyIndex) => {
         const isContinuedStream = resolveMessageRowIsStreaming(
           item.i,
-          rowProps.streamContinuedRowIndex,
-          rowProps.isSending,
+          streamContinuedRowIndex,
+          isSending,
         )
         return (
           <HistoryMessageRow
             key={historyItemStableKey(sk, item.row, item.i)}
             item={item}
-            continuedRow={historyIndex === rowProps.streamContinuedRowIndex ? streamContinuedRow : undefined}
+            continuedRow={historyIndex === streamContinuedRowIndex ? streamContinuedRow : undefined}
             historyIndex={historyIndex}
             className={
               item.row.role === 'user'
@@ -218,6 +244,7 @@ const FlatHistoryBody = memo(function FlatHistoryBody(
                 : 'react-vlist-item react-vlist-item--turn'
             }
             {...rowProps}
+            isContinuedStream={isContinuedStream}
             // 仅流式续写行接收 dock 计时，避免每秒计时击穿其余行 memo
             liveActivityDockLabel={isContinuedStream ? liveActivityDockLabel : undefined}
             liveTurnElapsedSec={isContinuedStream ? liveTurnElapsedSec : undefined}
@@ -374,6 +401,11 @@ const VirtualHistoryBody = memo(function VirtualHistoryBody(
         const item = historyItems[vRow.index]
         if (!item) return null
         const isUser = item.row.role === 'user'
+        const isContinuedStream = resolveMessageRowIsStreaming(
+          item.i,
+          rowProps.streamContinuedRowIndex,
+          rowProps.isSending,
+        )
         return (
           <HistoryMessageRow
             key={vRow.key}
@@ -384,8 +416,7 @@ const VirtualHistoryBody = memo(function VirtualHistoryBody(
             historyLoading={rowProps.historyLoading}
             toolApprovalHost={rowProps.toolApprovalHost}
             streamToolApprovalHost={rowProps.streamToolApprovalHost}
-            streamContinuedRowIndex={rowProps.streamContinuedRowIndex}
-            isSending={rowProps.isSending}
+            isContinuedStream={isContinuedStream}
             lastAssistantRowIndex={rowProps.lastAssistantRowIndex}
             liveTurnAssistantRunId={rowProps.liveTurnAssistantRunId}
             liveTurnTimingActive={rowProps.liveTurnTimingActive}
@@ -400,20 +431,12 @@ const VirtualHistoryBody = memo(function VirtualHistoryBody(
             onToolApproval={rowProps.onToolApproval}
             toolApprovalBusy={rowProps.toolApprovalBusy}
             liveActivityDockLabel={
-              resolveMessageRowIsStreaming(
-                item.i,
-                rowProps.streamContinuedRowIndex,
-                rowProps.isSending,
-              )
+              isContinuedStream
                 ? rowProps.liveActivityDockLabel
                 : undefined
             }
             liveTurnElapsedSec={
-              resolveMessageRowIsStreaming(
-                item.i,
-                rowProps.streamContinuedRowIndex,
-                rowProps.isSending,
-              )
+              isContinuedStream
                 ? rowProps.liveTurnElapsedSec
                 : undefined
             }
@@ -1029,6 +1052,8 @@ export const MessageVirtualList = memo(function MessageVirtualList({
 
   // ★ 性能优化：拆分 baseHistoryItems 与流式合并，使流式 tick 期间非末行 item 引用保持稳定，
   // 避免所有 HistoryMessageRow 因 item prop 引用变化而打破 memo。
+  // 逐行比较 row 引用：只有 row 真变的行才创建新 item，其余行复用旧 item → memo 命中。
+  const baseHistoryItemsRef = useRef<HistoryItem[]>([])
   const baseHistoryItems = useMemo((): HistoryItem[] => {
     const ink = inlineSubagentTasks || {}
     const rawLast = rows[rows.length - 1]
@@ -1036,7 +1061,19 @@ export const MessageVirtualList = memo(function MessageVirtualList({
     if (rawLast?.role === 'assistant' && Object.keys(ink).length > 0) {
       displayRows = [...rows.slice(0, -1), { ...rawLast, subagentTasks: { ...ink } }]
     }
-    return displayRows.map((row, i) => ({ kind: 'row' as const, row, i }))
+    const prev = baseHistoryItemsRef.current
+    const next: HistoryItem[] = new Array(displayRows.length)
+    for (let i = 0; i < displayRows.length; i++) {
+      const row = displayRows[i]
+      const prevItem = prev[i]
+      if (prevItem && prevItem.row === row && prevItem.i === i) {
+        next[i] = prevItem
+      } else {
+        next[i] = { kind: 'row' as const, row, i }
+      }
+    }
+    baseHistoryItemsRef.current = next
+    return next
   }, [rows, inlineSubagentTasks])
 
   const streamContinuedRow = useMemo(() => {

@@ -90,6 +90,8 @@ if (isTauri) {
               y: vy,
               width: vw,
               height: vh,
+              // 估算边界：面板接管后不得移动窗口（Rust managed_only 守卫）
+              respectManagedBounds: true,
             })
             if (info?.cdpUrl) {
               await registerBrowserEmbedCdp(bridgeTid, info.cdpUrl)
@@ -743,6 +745,8 @@ async function boot() {
                 y: vy,
                 width: vw,
                 height: vh,
+                // 估算边界：面板接管后不得移动窗口（Rust managed_only 守卫）
+                respectManagedBounds: true,
               })
               if (info?.cdpUrl) {
                 await registerBrowserEmbedCdp(bridgeTid, info.cdpUrl)

@@ -229,6 +229,7 @@ import {
   clampBottomDockHeight,
   clampRightPanelWidth,
   defaultNarrowRightPanelWidth,
+  RIGHT_PANEL_NARROW_LEGACY_PX,
   defaultRightPanelWidth,
   defaultWideRightPanelWidth,
   loadChatLayoutPrefs,
@@ -4109,7 +4110,11 @@ export default function ChatApp() {
     let shouldPersist = false
     setRightPanelWidthPx((prev) => {
       if (prev != null && Number.isFinite(prev) && prev > 0) {
-        const clamped = clampRightPanelWidth(prev, bodyW)
+        // 仍停在旧摘要默认 340：抬到新窄栏，避免卡片继续贴边
+        const seed = prev === RIGHT_PANEL_NARROW_LEGACY_PX
+          ? defaultNarrowRightPanelWidth(bodyW)
+          : prev
+        const clamped = clampRightPanelWidth(seed, bodyW)
         if (clamped !== prev) {
           layoutSizesRef.current.rightPanelWidthPx = clamped
           shouldPersist = true

@@ -51,11 +51,13 @@ export async function browserEmbedUpsert(opts: {
   y: number
   width: number
   height: number
+  /** 早处理器/引擎兜底的估算边界调用必须置 true：面板接管后估算值不得移动窗口。 */
+  respectManagedBounds?: boolean
 }): Promise<BrowserEmbedInfo | null> {
   if (!isDesktopTauri()) return null
   blog(
     'info',
-    `[client] upsert tid=${opts.threadId} bounds=(${opts.x},${opts.y} ${opts.width}x${opts.height}) url=${opts.url || 'about:blank'}`,
+    `[client] upsert tid=${opts.threadId} bounds=(${opts.x},${opts.y} ${opts.width}x${opts.height}) url=${opts.url || 'about:blank'}${opts.respectManagedBounds ? ' managed-only' : ''}`,
   )
   try {
     return await invokeTauri<BrowserEmbedInfo>('browser_embed_upsert', {
@@ -68,6 +70,7 @@ export async function browserEmbedUpsert(opts: {
       y: opts.y,
       width: opts.width,
       height: opts.height,
+      managedOnly: opts.respectManagedBounds === true ? true : null,
     })
   } catch (err) {
     console.warn('[browser-embed] upsert failed', err)

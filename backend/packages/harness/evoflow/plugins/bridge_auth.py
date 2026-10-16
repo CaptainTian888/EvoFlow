@@ -31,9 +31,20 @@ _token_lock = threading.Lock()
 
 
 def _token_file_path() -> str:
+    # EVOFLOW_BRIDGE_TOKEN_FILE：测试/多实例部署显式指定 token 落盘位置。
+    override = os.environ.get("EVOFLOW_BRIDGE_TOKEN_FILE", "").strip()
+    if override:
+        return override
     from evoflow.config.data_paths import resolve_data_base_dir
 
     return os.path.join(str(resolve_data_base_dir()), _TOKEN_FILE_NAME)
+
+
+def reset_bridge_token_cache() -> None:
+    """清空进程内 token 缓存（测试隔离用；生产不需要）。"""
+    global _token_cache
+    with _token_lock:
+        _token_cache = None
 
 
 def get_bridge_token() -> str:

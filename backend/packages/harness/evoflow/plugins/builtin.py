@@ -221,6 +221,20 @@ def build_official_marketplace_manifest() -> dict[str, Any]:
     }
 
 
+def _cleanup_excluded_installed_plugins(storage_root: Path) -> None:
+    """Remove any installed plugins whose name is in EXCLUDED_OFFICIAL_PLUGINS."""
+    state = load_installed_plugins_state(storage_root)
+    original_count = len(state.plugins)
+    state.plugins = [p for p in state.plugins if p.name not in EXCLUDED_OFFICIAL_PLUGINS]
+    for pid in list(state.enabled_plugins):
+        name = pid.split("@", 1)[0]
+        if name in EXCLUDED_OFFICIAL_PLUGINS:
+            del state.enabled_plugins[pid]
+    if len(state.plugins) != original_count:
+        save_installed_plugins_state(storage_root, state)
+        logger.info("Cleaned up %d excluded installed plugin(s).", original_count - len(state.plugins))
+
+
 def seed_official_marketplace(storage_root: Path) -> dict[str, Any]:
     """Ensure the official marketplace manifest cache exists and default-enabled
     plugins are installed; returns the raw manifest."""
@@ -228,6 +242,7 @@ def seed_official_marketplace(storage_root: Path) -> dict[str, Any]:
 
     existing = load_marketplace_manifest_cached(storage_root, EVOFLOW_OFFICIAL_PLUGIN_MARKETPLACE)
     if existing is not None and existing.raw.get("__seededVersion") == SEED_MANIFEST_VERSION:
+        _cleanup_excluded_installed_plugins(storage_root)
         return existing.raw
     manifest = build_official_marketplace_manifest()
     manifest["__seededVersion"] = SEED_MANIFEST_VERSION
@@ -235,6 +250,7 @@ def seed_official_marketplace(storage_root: Path) -> dict[str, Any]:
     _seed_builtin_plugin_icons(storage_root, manifest)
     save_marketplace_manifest_cache(storage_root, manifest)
     _install_default_enabled_plugins(storage_root, manifest)
+    _cleanup_excluded_installed_plugins(storage_root)
     return manifest
 
 

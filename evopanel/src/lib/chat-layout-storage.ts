@@ -51,6 +51,7 @@ export {
   clampRightPanelWidth,
   isStaleNarrowRightPanelWidth,
   rightStageLayoutToPanelKind,
+  RIGHT_PANEL_NARROW_LEGACY_PX,
 } from './right-stage/right-stage-layout.js'
 
 export function clampBottomDockHeight(

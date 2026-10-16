@@ -237,9 +237,16 @@ class McpConnectionPool:
         if entry.stop_event is not None:
             entry.stop_event.set()
         host_task = entry.host_task
-        if host_task is not None and host_task is not asyncio.current_task():
-            with contextlib.suppress(Exception):
+        if host_task is not None and not host_task.done() and host_task is not asyncio.current_task():
+            try:
+                # 优雅退出：stop_event 置位让 host task 走 acm 正常 unwind。
                 await asyncio.wait_for(asyncio.shield(host_task), timeout=10)
+            except (TimeoutError, Exception):
+                # 优雅退出失败（transport 卡死等）→ 硬取消。cancel 的 unwind 仍
+                # 发生在 host task 自己的栈上，满足 anyio cancel scope 同 task 约束。
+                host_task.cancel()
+                with contextlib.suppress(BaseException):
+                    await host_task
         entry.session = None
         entry.host_task = None
         with contextlib.suppress(KeyError):
@@ -279,8 +286,27 @@ class McpConnectionPool:
 
     async def _invoke_tool(self, name: str, original: StructuredTool, kwargs: dict[str, Any]) -> Any:
         entry = self._entries.get(name)
+        timeout = call_timeout_sec()
         try:
-            return await original.coroutine(**kwargs)
+            coro = original.coroutine(**kwargs)
+            if timeout > 0:
+                # 超时在池侧计时：调用方取消不会让挂死调用泄漏在池 loop 上。
+                return await asyncio.wait_for(coro, timeout=timeout)
+            return await coro
+        except TimeoutError:
+            # 挂死的调用占用常驻 session；按连接级故障处理，下次调用重建会话。
+            if entry is not None:
+                logger.warning(
+                    "MCP call timeout on server %r after %.0fs; session marked stale",
+                    name,
+                    timeout,
+                )
+                with contextlib.suppress(Exception):
+                    await self._teardown_entry(entry)
+            raise RuntimeError(
+                f"MCP tool call timed out after {timeout:.0f}s "
+                f"(server may be hung; tune {_CALL_TIMEOUT_ENV})"
+            ) from None
         except Exception as exc:  # noqa: BLE001
             if looks_like_connection_error(exc) and entry is not None:
                 logger.warning(

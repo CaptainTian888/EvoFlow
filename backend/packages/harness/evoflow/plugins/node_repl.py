@@ -174,14 +174,20 @@ const __evoflowBridgeSymbol = Symbol.for("zcode.node-repl.browser-control-bridge
     },
     async execute(_browserId, _generation, command) {
       await __assert();
-      const name = command?.method || "";
-      const url = command?.url || "";
+      // ZCode 运行时（browser-client.mjs 的 BrowsersFacade）用 { method, params: {...} }
+      // 嵌套形状；EvoFlow 引擎契约是平铺字段。这里统一解包 params 再透传，
+      // 否则 navigate/screenshot 等全部报 "requires url"。
+      const cmd = command && typeof command.params === "object" && command.params !== null
+        ? { ...command, ...command.params }
+        : command;
+      const name = cmd?.method || "";
+      const url = cmd?.url || "";
       try {
         let result;
         if (__direct.has(name)) {
-          result = await __gwFetch("/api/browser/execute", { method: "POST", body: JSON.stringify({ command }) });
+          result = await __gwFetch("/api/browser/execute", { method: "POST", body: JSON.stringify({ command: cmd }) });
         } else if (__map[name]) {
-          const mapped = __map[name](command, _browserId);
+          const mapped = __map[name](cmd, _browserId);
           result = await __gwFetch("/api/browser/execute", { method: "POST", body: JSON.stringify({ command: mapped }) });
           if (mapped.__tab) result.tab = mapped.__tab;
           if ("__dialog" in mapped) result.dialog = mapped.__dialog;
