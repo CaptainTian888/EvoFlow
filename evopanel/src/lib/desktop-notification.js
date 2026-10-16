@@ -2,6 +2,7 @@
  * 桌面端（Tauri）系统通知：Windows/macOS 通知中心（如 Win11 右下角气泡）。
  * Web 模式无操作。
  */
+import { playTaskNotificationSound } from './task-notification-sound.js'
 
 const isTauri = typeof window !== 'undefined' && !!window.__TAURI_INTERNALS__
 
@@ -115,6 +116,9 @@ export async function notifyDesktopCompletion(opts) {
       payload.extra = opts.extra
     }
     sendNotification(payload)
+    // 通知已展示 → 播放气泡提示音。应用窗口在前台时跳过，保持“后台完成才响”的体验；
+    // 去重命中时上面已 return，音效天然继承同一去重窗口。
+    if (!document.hasFocus()) void playTaskNotificationSound()
   } catch (e) {
     console.warn('[desktop-notify] send failed', e)
   }

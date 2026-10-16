@@ -2554,9 +2554,9 @@ export default function ChatApp() {
   }, [collabExecPanelDismissKey])
 
   // ★ 性能优化：稳定化回调引用，避免每次 re-render 生成新函数破坏 HistoryMessageRow memo
-  const handleQuickPrompt = useCallback((text: string) => { void handleSend(text) }, [handleSend])
   const handleSendRef = useRef(handleSend)
   handleSendRef.current = handleSend
+  const handleQuickPrompt = useCallback((text: string) => { void handleSendRef.current(text) }, [])
   const startNewChatWithPresetAgentRef = useRef<(code: string) => Promise<void>>(async () => {})
   const setModelNameRef = useRef<(name: string) => void>(() => {})
   useEffect(() => {
@@ -2659,9 +2659,9 @@ export default function ChatApp() {
     const lastUserRow = [...rowsRef.current].reverse().find((r) => r.role === 'user')
     if (lastUserRow) {
       const { text } = resolveUserMessageSkillDisplay(lastUserRow)
-      void handleSend(String(text || ''))
+      void handleSendRef.current(String(text || ''))
     }
-  }, [handleSend])
+  }, [])
   const handleEditMessage = useCallback(
     (text: string, messageId?: string, images?: Array<{ mediaType: string; data?: string; url?: string }>) => {
       void handleEditMessageRef.current?.(text, messageId, images)

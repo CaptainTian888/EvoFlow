@@ -114,7 +114,6 @@ type HistoryMessageRowProps = Omit<SharedHistoryProps, 'isSending' | 'streamCont
 
 // resolveShowToolTiming removed (unused)
 
-let memoDiagCount = 0
 
 const HistoryMessageRow = memo(function HistoryMessageRow({
   item,
@@ -188,32 +187,14 @@ const HistoryMessageRow = memo(function HistoryMessageRow({
       />
     </div>
   )
-}, (prev, next) => {
-  const keys = new Set([...Object.keys(prev), ...Object.keys(next)])
-  let equal = true
-  for (const k of keys) {
-    if (prev[k as keyof typeof prev] !== next[k as keyof typeof next]) {
-      equal = false
-      break
-    }
-  }
-  if (!equal && !next.isContinuedStream) {
-    memoDiagCount++
-    if (memoDiagCount <= 3) {
-      const changed: string[] = []
-      for (const k of keys) {
-        if (prev[k as keyof typeof prev] !== next[k as keyof typeof next]) changed.push(k)
-      }
-      console.warn(`[memo-diag] row=${next.historyIndex} 变化 prop: ${changed.join(', ')}`)
-    }
-  }
-  return equal
+
 })
 
 /** 普通文档流：浏览器原生滚动，读历史最稳 */
 const FlatHistoryBody = memo(function FlatHistoryBody(
   props: SharedHistoryProps & { historyItems: HistoryItem[]; streamContinuedRow?: DisplayRow | null },
 ) {
+
   const {
     historyItems,
     streamContinuedRow,
@@ -224,6 +205,8 @@ const FlatHistoryBody = memo(function FlatHistoryBody(
     ...rowProps
   } = props
   const sk = String(props.sessionKey || 'default')
+
+
   return (
     <div className="react-vlist-inner react-vlist-inner--flat">
       {historyItems.map((item, historyIndex) => {
@@ -1097,30 +1080,34 @@ export const MessageVirtualList = memo(function MessageVirtualList({
   const sessionKeyRef = useRef(sessionKey)
   sessionKeyRef.current = sessionKey
 
-  const historyToolApprovalHost = useMemo(
-    () =>
-      resolveToolApprovalHost({
-        rows,
-        streamTools: undefined,
-        isSending: false,
-      }),
-    [rows],
-  )
+  const historyToolApprovalHostRef = useRef<ReturnType<typeof resolveToolApprovalHost> | null>(null)
+  const historyToolApprovalHost = useMemo(() => {
+    const next = resolveToolApprovalHost({ rows, streamTools: undefined, isSending: false })
+    const prev = historyToolApprovalHostRef.current
+    if (prev && prev.kind === next.kind && (prev as { index?: number }).index === (next as { index?: number }).index) {
+      return prev
+    }
+    historyToolApprovalHostRef.current = next
+    return next
+  }, [rows])
 
   // ★ 性能修复：原依赖含 streamDisplayTick，流式期间每 80-200ms 重算生成新对象引用，
   // 通过 SharedHistoryProps 传给所有 HistoryMessageRow 导致 memo 全部失效 → N 条消息每秒
   // 重渲染 5-12 次。改为依赖 streamRef.current?.turn.tools 实际快照引用：只有工具数组
   // 引用变化时才重算，文本 delta 期间保持稳定。
+  // ★ 引用稳定化：resolveToolApprovalHost 每次返回新对象，即使结果等价也会击穿全行 memo。
+  // 用 ref 缓存：kind + index 不变时复用旧引用。
   const streamToolsRaw = streamRef.current?.turn.tools as unknown[] | undefined
-  const streamToolApprovalHost = useMemo(
-    () =>
-      resolveToolApprovalHost({
-        rows,
-        streamTools: streamToolsRaw,
-        isSending,
-      }),
-    [rows, streamToolsRaw, isSending],
-  )
+  const streamToolApprovalHostRef = useRef<ReturnType<typeof resolveToolApprovalHost> | null>(null)
+  const streamToolApprovalHost = useMemo(() => {
+    const next = resolveToolApprovalHost({ rows, streamTools: streamToolsRaw, isSending })
+    const prev = streamToolApprovalHostRef.current
+    if (prev && prev.kind === next.kind && (prev as { index?: number }).index === (next as { index?: number }).index) {
+      return prev
+    }
+    streamToolApprovalHostRef.current = next
+    return next
+  }, [rows, streamToolsRaw, isSending])
 
   const showApprovalPauseHint =
     !toolApprovalUiDisabled && historyToolApprovalHost.kind !== 'none' && !isSending
