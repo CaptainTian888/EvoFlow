@@ -5,6 +5,7 @@
  * right-stage surface when the agent opens a page.
  */
 
+import { browserEmbedPark } from './browser-embed-client.js'
 import { parseBrowserLiveToolOutput } from './chat-normalize.js'
 import { rightStageStore } from './right-stage/right-stage-store.js'
 import type { BrowserStreamFrameMetadata } from './browser-stream-client.js'
@@ -317,6 +318,43 @@ function extractUrlFromNodeReplCode(code: string): string {
  *  stage opens — which happens on tool *start* — so waiting for the tool result to
  *  reveal the URL left the window sitting on `about:blank` for the whole time the
  *  agent was working. */
+/** 当前右栏激活页是不是「这一块浏览器区域」。外置 WebView 只在这时出现。 */
+export function activeBrowserStageId(): string {
+  const snap = rightStageStore.getSnapshot()
+  if (snap.collapsed || !snap.activeKey) return ''
+  const tab =
+    snap.tabs.find((t) => `${t.kind}:${t.id}` === snap.activeKey) || snap.surface
+  if (!tab) return ''
+  if (tab.kind === 'browser') return String(tab.id || 'primary')
+  if (tab.kind === 'web-embed') {
+    const data = tab.data || {}
+    const ext = String(data.extensionId || data.extension_id || '').trim()
+    if (!ext) return String(tab.id || 'primary')
+  }
+  return ''
+}
+
+let lastEmbedGate = ''
+
+/** 右栏缓存换页 / 切会话 / 折叠时的开关：不是当前浏览器 ID 就停靠外置窗。 */
+export function syncBrowserEmbedGate(reason = 'stage') {
+  const id = activeBrowserStageId()
+  const key = id ? `show:${id}` : 'hide'
+  if (key === lastEmbedGate) return
+  lastEmbedGate = key
+  dbgLog(
+    `[browser-embed-gate] ${key} reason=${reason} active=${rightStageStore.getSnapshot().activeKey || '(none)'}`,
+  )
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('browser-embed-gate', { detail: { show: Boolean(id), id, reason } }))
+  }
+  if (!id) void browserEmbedPark(NODE_REPL_BRIDGE_THREAD_ID)
+}
+
+rightStageStore.subscribe(() => {
+  syncBrowserEmbedGate('right-stage')
+})
+
 function parseBrowserToolArgs(argsText?: string | null): { action: string; url: string } {
   const raw = String(argsText || '').trim()
   if (!raw) return { action: '', url: '' }

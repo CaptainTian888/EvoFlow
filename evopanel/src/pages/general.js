@@ -157,7 +157,7 @@ const GENERAL_INNER_HTML = `
         <input id="general-task-sound-toggle" type="checkbox" />
         <span class="switch-slider"></span>
       </label>
-      <p class="form-hint">应用窗口在前台时不响，只有后台完成任务才播放提示音。</p>
+      <p class="form-hint">任务通知展示时播放提示音（气泡声），前台后台都会响；关闭系统通知后提示音一并停用。</p>
     </div>
   </div>
 

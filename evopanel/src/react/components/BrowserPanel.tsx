@@ -696,6 +696,8 @@ function BrowserEmbedHost({
   surfaceActiveRef.current = surfaceActive
   const pageUrlRef = useRef(pageUrl)
   pageUrlRef.current = pageUrl
+  const threadIdRef = useRef(threadId)
+  threadIdRef.current = threadId
   const onReadyRef = useRef(onReady)
   onReadyRef.current = onReady
   const onFailedRef = useRef(onFailed)
@@ -866,7 +868,9 @@ function BrowserEmbedHost({
       void syncBounds()
       return
     }
-    // set_bounds 在途时会把窗口拉回槽位；多停一次，保证切走后它不盖在摘要上。
+    // 切到其它右栏标签（通报/摘要等）：停靠 HWND，不能留在槽位上。
+    // set_bounds 在途时会把窗口拉回槽位；多停一次。
+    dbgLog(`[browser-embed] park (surface inactive) tid=${tid}`)
     void browserEmbedPark(tid)
     const again = window.setTimeout(() => {
       if (!surfaceActiveRef.current) void browserEmbedPark(tid)
@@ -874,21 +878,51 @@ function BrowserEmbedHost({
     return () => window.clearTimeout(again)
   }, [surfaceActive, ready, isOpen, threadId, syncBounds])
 
+  // 卸载 / 折叠右栏 / 切会话卸掉面板：必须停靠，否则 HWND 仍盖在聊天上。
+  useEffect(() => {
+    return () => {
+      const tid = String(threadIdRef.current || '').trim()
+      if (!tid) return
+      dbgLog(`[browser-embed] park (host unmount) tid=${tid}`)
+      void browserEmbedPark(tid)
+    }
+  }, [])
+
+  // 右栏缓存换到「这个浏览器 ID」时才贴回；切走由 gate 停靠。
+  useEffect(() => {
+    const onGate = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ show?: boolean; id?: string }>).detail
+      if (!detail?.show) return
+      if (!surfaceActiveRef.current) return
+      dbgLog(`[browser-embed] gate show id=${detail.id || '(none)'} → sync bounds`)
+      void syncBoundsRef.current()
+    }
+    window.addEventListener('browser-embed-gate', onGate)
+    return () => window.removeEventListener('browser-embed-gate', onGate)
+  }, [])
+
   useEffect(() => {
     if (!isOpen || !ready || !surfaceActive) return
-    const onResize = () => {
-      void syncBounds()
+    // 拖动/缩放时 resize 与 ResizeObserver 会一帧多次。每次都打到 Rust
+    // SetWindowPos，IPC 堆在 UI 线程上，整窗拖不动。
+    let timer = 0
+    const schedule = () => {
+      window.clearTimeout(timer)
+      timer = window.setTimeout(() => {
+        void syncBounds()
+      }, 80)
     }
-    window.addEventListener('resize', onResize)
+    window.addEventListener('resize', schedule)
     const ro =
       typeof ResizeObserver !== 'undefined' && slotRef.current
         ? new ResizeObserver(() => {
-            void syncBounds()
+            schedule()
           })
         : null
     if (slotRef.current) ro?.observe(slotRef.current)
     return () => {
-      window.removeEventListener('resize', onResize)
+      window.clearTimeout(timer)
+      window.removeEventListener('resize', schedule)
       ro?.disconnect()
     }
   }, [isOpen, ready, surfaceActive, syncBounds])

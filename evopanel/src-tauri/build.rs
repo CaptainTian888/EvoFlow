@@ -3,6 +3,8 @@ use std::fs;
 use std::path::PathBuf;
 
 fn main() {
+    // dist 变更必须重跑，否则 cargo 沿用旧前端，外置窗显隐开关进不了 exe。
+    println!("cargo:rerun-if-changed=../dist");
     tauri_build::build();
     // If a stale generated installer.nsi still references nsis-utils.nsh, provide the file for makensis.
     copy_nsis_utils_fallback();

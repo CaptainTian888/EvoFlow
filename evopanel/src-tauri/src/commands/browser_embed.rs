@@ -44,10 +44,32 @@ pub static EMBED_LAST_WRITER: std::sync::LazyLock<std::sync::Mutex<HashMap<Strin
 static EMBED_CREATE_LOCK: std::sync::LazyLock<Mutex<()>> =
     std::sync::LazyLock::new(|| Mutex::new(()));
 
+/// 切走浏览器标签 / 切会话后停靠中的 embed。跟位与看门狗必须跳过，
+/// 否则主窗口一动又把 HWND 贴回槽位（用户看到「切走了还在」）。
+static EMBED_PARKED: std::sync::LazyLock<Mutex<std::collections::HashSet<String>>> =
+    std::sync::LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
+
 fn note_writer(label: &str, writer: &str) {
     if let Ok(mut w) = EMBED_LAST_WRITER.lock() {
         w.insert(label.to_string(), format!("{writer}@{}", chrono_now_secs()));
     }
+}
+
+fn mark_parked(label: &str, parked: bool) {
+    if let Ok(mut set) = EMBED_PARKED.lock() {
+        if parked {
+            set.insert(label.to_string());
+        } else {
+            set.remove(label);
+        }
+    }
+}
+
+fn is_parked(label: &str) -> bool {
+    EMBED_PARKED
+        .lock()
+        .map(|s| s.contains(label))
+        .unwrap_or(false)
 }
 
 fn chrono_now_secs() -> u64 {
@@ -57,7 +79,11 @@ fn chrono_now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-/// 主窗口移动/缩放后，把所有 embed 窗口重新贴回面板槽位（ZCode "所见即所控" 对齐）。
+/// 主窗口移动/缩放后的兜底。
+///
+/// 已经是 `WS_CHILD` 的外置浏览器和主窗口是同一个 HWND 树：移动时 Windows
+/// 自己带着子窗口走，Z 序也跟主窗口一起（不会再浮成另一层）。这时再
+/// `SetWindowPos` 会重入拖动消息循环，整窗卡死。这里只处理还没嵌进去的弹窗。
 pub fn reposition_embeds_after_main_move(app: &tauri::AppHandle) {
     let Some(parent) = app.get_webview_window("main") else { return };
     if parent.is_minimized().unwrap_or(false) {
@@ -74,14 +100,45 @@ pub fn reposition_embeds_after_main_move(app: &tauri::AppHandle) {
             Ok(m) => m,
             Err(_) => return,
         };
-        // 已登记的：按相对边界重贴，并钳回主窗口内容区（窗口缩小后不能悬在外面）。
+        // 已登记且已是子窗口：什么都不做。槽位尺寸变化由前端 set_bounds 负责。
         for (label, (x, y, w, h)) in map.iter() {
+            if is_parked(label) {
+                continue;
+            }
             let Some(window) = app.get_webview_window(label) else { continue };
+            if embed_is_ws_child(&window) {
+                continue;
+            }
             let (cx, cy, cw, ch) = clamp_rect(*x, *y, *w, *h, iw, ih);
             let _ = nest_embed_into_main(&window, &parent);
             let _ = place_embed_client(&window, &parent, cx, cy, cw, ch);
-            log_region_diag("follow-main-move", label, &parent, &window, (cx, cy, cw, ch));
             note_writer(label, "follow-main-move");
+        }
+        // 全部已是子窗口时不要再枚举窗口。拖动时每个 WM_MOVE 都会进这里。
+        let any_popup = map.iter().any(|(label, _)| {
+            if is_parked(label) {
+                return false;
+            }
+            app.get_webview_window(label)
+                .map(|window| !embed_is_ws_child(&window))
+                .unwrap_or(false)
+        });
+        if !map.is_empty() && !any_popup {
+            return;
+        }
+        // 还没有登记槽位时，拖动会每个像素进一次。未登记扫描最多 2 次/秒。
+        {
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static LAST_UNTRACKED_MS: AtomicU64 = AtomicU64::new(0);
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            let prev = LAST_UNTRACKED_MS.load(Ordering::Relaxed);
+            if now.saturating_sub(prev) < 500 {
+                return;
+            }
+            LAST_UNTRACKED_MS.store(now, Ordering::Relaxed);
         }
         // 未登记的（早路径/引擎兜底创建后面板从未接管）：可见的贴到主窗口右侧
         // 停靠位并登记；隐藏的保持隐藏（面板不开就不显示），仅登记边界。
@@ -151,6 +208,9 @@ fn embed_watchdog_tick(app: &tauri::AppHandle) {
     };
     for (label, window) in app.webview_windows() {
         if !label.starts_with("browser-embed-") {
+            continue;
+        }
+        if is_parked(&label) {
             continue;
         }
         let visible = window.is_visible().unwrap_or(false);
@@ -1106,6 +1166,7 @@ fn create_embed_window(
             let parent = app
                 .get_webview_window("main")
                 .ok_or_else(|| "main window not found".to_string())?;
+            mark_parked(label, false);
             let _ = win.show();
             let _ = win.unminimize();
             nest_embed_into_main(&win, &parent)?;
@@ -1523,17 +1584,22 @@ pub async fn browser_embed_upsert(
         // （EMBED_LAST_BOUNDS 有本窗口的实测槽位）时，估算边界**不得**移动窗口，
         // 否则每次工具调用都把窗口从槽位拽到估算位置 = "悬浮在面板区域之上"。
         // 面板自己的 upsert/set_bounds（managed_only=false）不受影响。
-        let skip_bounds = managed_only.unwrap_or(false)
-            && EMBED_LAST_BOUNDS
-                .lock()
-                .map(|m| m.contains_key(&label))
-                .unwrap_or(false);
+        let panel_managed = EMBED_LAST_BOUNDS
+            .lock()
+            .map(|m| m.contains_key(&label))
+            .unwrap_or(false);
+        // 停靠中：估算路径不得把窗口拽回槽位；只有面板 set_bounds/upsert 才能解除停靠。
+        let skip_bounds = managed_only.unwrap_or(false) && (panel_managed || is_parked(&label));
         if skip_bounds {
             browser_cdp_server::log_line(&format!(
-                "[browser-embed] upsert: skip estimate bounds (panel-managed) label={label} \
-                 incoming=({x:.0},{y:.0} {width:.0}x{height:.0})"
+                "[browser-embed] upsert: skip estimate bounds (panel-managed/parked) label={label} \
+                 parked={} incoming=({x:.0},{y:.0} {width:.0}x{height:.0})",
+                is_parked(&label)
             ));
         } else {
+            if !managed_only.unwrap_or(false) {
+                mark_parked(&label, false);
+            }
             nest_embed_into_main(&existing, &parent)?;
             place_embed_client(&existing, &parent, x, y, width, height)?;
             log_region_diag(
@@ -1773,6 +1839,7 @@ pub async fn browser_embed_set_bounds(
             viewport_width.unwrap_or(0.0),
             viewport_height.unwrap_or(0.0),
         );
+        mark_parked(&label, false);
         let _ = window.show();
         let _ = window.unminimize();
         nest_embed_into_main(&window, &main)?;
@@ -1888,8 +1955,10 @@ fn client_origin_physical(parent: &WebviewWindow) -> Result<(i32, i32), String> 
     Ok((ip.x, ip.y))
 }
 
-/// 切走浏览器标签时把原生窗口挪出屏幕。
-/// 不能 `hide()`：WebView2 不可见时 CDP 回调经常停泵。窗口保持 visible，只是不在任何显示器上。
+/// 切走浏览器标签 / 切会话时把原生窗口挪出可视区。
+/// 不能 `hide()`：WebView2 不可见时 CDP 回调经常停泵。窗口保持 visible，坐标移出父客户区。
+/// WS_CHILD 的 SetWindowPos 是父客户区相对坐标，-32000 会被裁切而不绘制；
+/// 同时打 PARKED 标记，避免 follow/watchdog 又贴回槽位。
 #[tauri::command]
 pub async fn browser_embed_park(app: tauri::AppHandle, thread_id: String) -> Result<(), String> {
     #[cfg(not(target_os = "windows"))]
@@ -1899,14 +1968,34 @@ pub async fn browser_embed_park(app: tauri::AppHandle, thread_id: String) -> Res
     }
     #[cfg(target_os = "windows")]
     {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            SetWindowPos, HWND_BOTTOM, SWP_NOACTIVATE, SWP_NOSIZE,
+        };
         let label = webview_label_for_thread(&thread_id);
         let Some(window) = app.get_webview_window(&label) else {
             return Ok(());
         };
-        window
-            .set_position(tauri::PhysicalPosition::new(-32000, -32000))
-            .map_err(|e| format!("park embedded browser failed: {e}"))?;
-        browser_cdp_server::log_line(&format!("[browser-embed] park label={label}"));
+        mark_parked(&label, true);
+        note_writer(&label, "park");
+        if embed_is_ws_child(&window) {
+            let hwnd = window.hwnd().map_err(|e| format!("embed hwnd: {e}"))?;
+            unsafe {
+                let _ = SetWindowPos(
+                    hwnd,
+                    Some(HWND_BOTTOM),
+                    -10000,
+                    -10000,
+                    0,
+                    0,
+                    SWP_NOACTIVATE | SWP_NOSIZE,
+                );
+            }
+        } else {
+            window
+                .set_position(tauri::PhysicalPosition::new(-32000, -32000))
+                .map_err(|e| format!("park embedded browser failed: {e}"))?;
+        }
+        browser_cdp_server::log_line(&format!("[browser-embed] park label={label} child={}", embed_is_ws_child(&window)));
         Ok(())
     }
 }

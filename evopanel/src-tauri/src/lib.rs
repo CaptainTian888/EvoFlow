@@ -42,8 +42,8 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_notification::init())
         .on_window_event(|window, event| {
-            // 主窗口移动/缩放时，把嵌入浏览器窗口重新贴回面板槽位 ——
-            // 原生覆盖窗口不会自动跟随主窗口，拖动后会漂在屏幕原位置。
+            // 仅给还没嵌成子窗口的弹窗兜底。WS_CHILD 跟随父窗口，
+            // 在 Moved 里 SetWindowPos 会重入拖动循环，把整个客户端卡死。
             if let WindowEvent::Moved(_) | WindowEvent::Resized(_) = event {
                 if window.label() == "main" {
                     commands::browser_embed::reposition_embeds_after_main_move(

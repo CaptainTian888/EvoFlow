@@ -106,6 +106,11 @@ export async function notifyDesktopCompletion(opts) {
   const body = String(opts?.body || '').trim()
   const tag = opts?.tag ? String(opts.tag) : ''
   if (!shouldSend(tag)) return
+  // 通知已通过去重、即将展示 → 立即播放气泡提示音。
+  // 故意不等权限/sendNotification 的结果：音效是用户可感知的兜底信号，
+  // 通知链路（权限、插件）出问题时仍要响；也不按窗口焦点静音，
+  // EvoFlow 的通知本身就是前台也发，这里保持一致。
+  void playTaskNotificationSound()
   try {
     const granted = await ensurePermission()
     if (!granted) return
@@ -116,9 +121,6 @@ export async function notifyDesktopCompletion(opts) {
       payload.extra = opts.extra
     }
     sendNotification(payload)
-    // 通知已展示 → 播放气泡提示音。应用窗口在前台时跳过，保持“后台完成才响”的体验；
-    // 去重命中时上面已 return，音效天然继承同一去重窗口。
-    if (!document.hasFocus()) void playTaskNotificationSound()
   } catch (e) {
     console.warn('[desktop-notify] send failed', e)
   }
