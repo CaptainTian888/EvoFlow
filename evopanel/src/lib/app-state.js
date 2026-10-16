@@ -43,8 +43,40 @@ let _pollTimer = null
 let _restartInFlight = false
 let _execHoldFailureSince = null
 let _deferToastShown = false
+let _externalDownToastShown = false
+let _externalGatewayCached = null
 
 const GATEWAY_POLL_MS = 15000
+
+/** Operator-owned Gateway (EVOFLOW_GATEWAY_URL) — reload_gateway is a no-op. */
+async function _isExternalGateway() {
+  if (_externalGatewayCached != null) return _externalGatewayCached
+  try {
+    const { invoke } = await import('@tauri-apps/api/core')
+    const info = await invoke('get_profile_info')
+    if (info && typeof info.externalGateway === 'boolean') {
+      _externalGatewayCached = !!info.externalGateway
+      return _externalGatewayCached
+    }
+    // Soft detect (pre-rebuild): resolved port ≠ profile hash port → external.
+    const resolved = String(info?.resolvedBaseUrl || '')
+    const expected = Number(info?.expectedPort)
+    try {
+      const u = new URL(resolved)
+      const rp = Number(u.port) || (u.protocol === 'https:' ? 443 : 80)
+      if (rp > 0 && Number.isFinite(expected) && expected > 0 && rp !== expected) {
+        _externalGatewayCached = true
+        return true
+      }
+    } catch {
+      /* ignore */
+    }
+    _externalGatewayCached = false
+  } catch {
+    _externalGatewayCached = false
+  }
+  return _externalGatewayCached
+}
 
 /** evoflow 是否就绪（CLI 已安装 + 配置文件存在） */
 export function isEvoflowReady() {
@@ -192,12 +224,69 @@ async function _tryAutoRestart(options = {}) {
 
   try {
     const { invoke } = await import('@tauri-apps/api/core')
+    // External uvicorn: reload_gateway intentionally skips stop/spawn. Calling
+    // markGatewayReloadInProgress() here used to reset the warm latch and make
+    // the UI look "unstable" while 8070 was simply down or still warming.
+    if (await _isExternalGateway()) {
+      const { markGatewayColdStartHold } = await import('./gateway-guardian-busy.js')
+      markGatewayColdStartHold(90_000)
+      void import('./gateway-watch.js')
+        .then((m) =>
+          m.noteGatewayWatch?.(
+            'guardian_external_wait',
+            { attempt: _autoRestartCount, forceAfterHold },
+            { level: 'warn', forceFile: true },
+          ),
+        )
+        .catch(() => {})
+      console.warn(
+        '[gateway-guardian] external Gateway unreachable — skip reload (operator-owned). Waiting for /health/ready…',
+        forceAfterHold ? '(after hold)' : '',
+      )
+      if (!_externalDownToastShown) {
+        _externalDownToastShown = true
+        try {
+          window.dispatchEvent(
+            new CustomEvent('evoflow:gateway-external-down', {
+              detail: { attempt: _autoRestartCount },
+            }),
+          )
+        } catch {
+          /* ignore */
+        }
+      }
+      for (let i = 0; i < 45; i++) {
+        await new Promise((r) => setTimeout(r, 2000))
+        if (await checkBackendReady()) {
+          _consecutiveFailures = 0
+          _execHoldFailureSince = null
+          _deferToastShown = false
+          _externalDownToastShown = false
+          _setGatewayRunning(true)
+          _runningSince = Date.now()
+          console.info('[gateway-guardian] external Gateway recovered (/health/ready)')
+          return
+        }
+      }
+      console.warn('[gateway-guardian] external Gateway still down after wait — check uvicorn on 8070')
+      return
+    }
+
     console.warn(
       '[gateway-guardian] Gateway unhealthy, restarting sidecar silently (attempt',
       _autoRestartCount,
       forceAfterHold ? ', after hold expired' : '',
       ')',
     )
+    void import('./gateway-watch.js')
+      .then((m) =>
+        m.noteGatewayWatch?.(
+          'guardian_reload',
+          { attempt: _autoRestartCount, forceAfterHold },
+          { level: 'warn', forceFile: true },
+        ),
+      )
+      .catch(() => {})
     markGatewayReloadInProgress()
     await invoke('reload_gateway')
     for (let i = 0; i < 20; i++) {
@@ -238,6 +327,16 @@ async function _pollGatewayOnce() {
   const ok = await checkBackendHealth()
   const hasHold = isPlanExecutionHoldActive()
   const hasBusyHold = isGatewayGuardianHoldActive()
+
+  try {
+    const { noteGatewayProbeResult } = await import('./gateway-watch.js')
+    noteGatewayProbeResult(!!ok, {
+      source: 'guardian-poll',
+      hold: !!(hasHold || hasBusyHold),
+    })
+  } catch {
+    /* ignore */
+  }
 
   if (ok) {
     _consecutiveFailures = 0

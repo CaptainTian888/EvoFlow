@@ -3650,9 +3650,9 @@ html.dark .browser-panel-url-text {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  padding: 10px 12px 12px;
+  padding: 0;
   overflow: hidden;
-  background: var(--bg-secondary, #f1f5f9);
+  background: var(--bg-primary, #ffffff);
 }
 
 .browser-panel-shared-hint {
@@ -3710,7 +3710,38 @@ html.dark .browser-panel-shared-hint-text {
 
 html[data-theme='dark'] .browser-panel-body-live,
 html.dark .browser-panel-body-live {
-  background: #0a0f16;
+  background: var(--bg-primary, #0b1220);
+}
+
+.browser-panel-iframe-host {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  align-self: stretch;
+  border-radius: 0;
+  overflow: hidden;
+  background: var(--bg-primary, #fff);
+  border: 0;
+}
+
+.browser-panel-iframe {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: var(--bg, #fff);
+}
+
+html[data-theme='dark'] .browser-panel-iframe-host,
+html.dark .browser-panel-iframe-host {
+  background: var(--bg-primary, #0b1220);
+}
+
+html[data-theme='dark'] .browser-panel-iframe,
+html.dark .browser-panel-iframe {
+  background: #0b1220;
 }
 
 .browser-panel-embed-host {
@@ -3735,7 +3766,7 @@ html.dark .browser-panel-embed-slot {
   border-color: color-mix(in srgb, #60a5fa 30%, #334155);
 }
 
-.browser-panel-embed-host .browser-panel-spinner {
+.browser-panel-spinner-anchor {
   position: absolute;
   left: 50%;
   top: 50%;
@@ -3788,6 +3819,50 @@ html.dark .browser-panel-stage {
 .browser-panel-stage-empty {
   align-items: center;
   justify-content: center;
+}
+
+/* ZCode BrowserEmptyState：全幅居中地球 + 标题 + 提示 */
+.browser-panel-empty {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 24px;
+  background: var(--bg-primary, #ffffff);
+}
+html[data-theme='dark'] .browser-panel-empty,
+html.dark .browser-panel-empty {
+  background: var(--bg-primary, #0b1220);
+}
+.browser-panel-empty-inner {
+  display: flex;
+  max-width: 24rem;
+  flex-direction: column;
+  align-items: center;
+  padding-bottom: 2.5rem;
+  text-align: center;
+}
+.browser-panel-empty-icon {
+  width: 64px;
+  height: 64px;
+  margin-bottom: 1.5rem;
+  color: var(--text-primary, #1f2329);
+  opacity: 0.3;
+}
+.browser-panel-empty-title {
+  margin: 0;
+  font-size: var(--ef-text-base, 13.5px);
+  font-weight: 500;
+  color: var(--text-primary, #1f2329);
+}
+.browser-panel-empty-hint {
+  margin: 8px 0 0;
+  font-size: var(--ef-text-base, 13.5px);
+  line-height: 1.45;
+  color: var(--text-secondary, #64748b);
 }
 
 /* ===== Arc 风格浏览器 "首页" (subtabs 下方的入口卡) ===== */
@@ -4152,7 +4227,7 @@ html.dark .browser-panel-debug-pane {
 
 @keyframes browser-panel-spin {
   to {
-    transform: rotate(360deg);
+    rotate: 360deg;
   }
 }
 
@@ -28256,7 +28331,8 @@ html.dark .react-chat-header-win-sep {
 .react-chat-header--tauri-chrome .react-chat-header-product-actions .react-chat-stage-apps-toggle-btn.is-menu-open,
 .react-chat-header--tauri-chrome .react-chat-header-product-actions .react-chat-stage-extensions-toggle-btn.is-active,
 .react-chat-header--tauri-chrome .react-chat-header-product-actions .react-chat-stage-extensions-toggle-btn.is-menu-open,
-.react-chat-header--tauri-chrome .react-chat-header-product-actions .react-chat-workspace-folder-btn.is-active {
+.react-chat-header--tauri-chrome .react-chat-header-product-actions .react-chat-workspace-folder-btn.is-active,
+.react-chat-header--tauri-chrome .react-chat-header-product-actions .react-chat-browser-stage-toggle-btn.is-active {
   background: var(--accent-muted, #eef0ff);
   color: var(--accent);
   border-color: transparent;
@@ -29677,7 +29753,8 @@ html.evopanel-macos-titlebar .react-chat-header {
 .react-chat-header-product-actions .react-chat-stage-apps-toggle-btn.is-menu-open,
 .react-chat-header-product-actions .react-chat-stage-extensions-toggle-btn.is-active,
 .react-chat-header-product-actions .react-chat-stage-extensions-toggle-btn.is-menu-open,
-.react-chat-header-product-actions .react-chat-workspace-folder-btn.is-active {
+.react-chat-header-product-actions .react-chat-workspace-folder-btn.is-active,
+.react-chat-header-product-actions .react-chat-browser-stage-toggle-btn.is-active {
   background: #fff;
   color: var(--accent);
   box-shadow: 0 1px 2px color-mix(in srgb, var(--accent) 18%, transparent);
@@ -29893,7 +29970,9 @@ html.dark .react-chat-header-product-actions .react-chat-stage-extensions-toggle
 html[data-theme='dark'] .react-chat-header-product-actions .react-chat-stage-extensions-toggle-btn.is-menu-open,
 html.dark .react-chat-header-product-actions .react-chat-stage-extensions-toggle-btn.is-menu-open,
 html[data-theme='dark'] .react-chat-header-product-actions .react-chat-workspace-folder-btn.is-active,
-html.dark .react-chat-header-product-actions .react-chat-workspace-folder-btn.is-active {
+html.dark .react-chat-header-product-actions .react-chat-workspace-folder-btn.is-active,
+html[data-theme='dark'] .react-chat-header-product-actions .react-chat-browser-stage-toggle-btn.is-active,
+html.dark .react-chat-header-product-actions .react-chat-browser-stage-toggle-btn.is-active {
   background: var(--accent-muted, rgba(255, 255, 255, 0.1));
   color: var(--accent, #a5b4fc);
 }
@@ -31281,22 +31360,23 @@ html[data-theme='dark'] .react-chat-browser-panel .browser-panel-viewport-dim:fo
   color: var(--text-primary, #1f2329);
 }
 
-/* ===== 浏览器工具栏（ZCode browser-use 形态：主 h-12 + 副 h-8） ===== */
+/* ===== 浏览器工具栏（ZCode：主 h-12 无底边；响应式副条 h-8 + border-y） ===== */
 .react-chat-browser-panel .browser-panel-toolbar {
+  position: relative;
   flex-shrink: 0;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   height: 48px;
-  padding: 0 10px;
+  padding: 0 12px;
   background: var(--bg-primary, #ffffff);
-  border-bottom: 1px solid var(--border);
+  border-bottom: 0;
 }
 .react-chat-browser-panel .browser-panel-tb-btn {
   flex-shrink: 0;
   display: inline-flex;
-  width: 28px;
-  height: 28px;
+  width: 32px;
+  height: 32px;
   align-items: center;
   justify-content: center;
   padding: 0;
@@ -31342,12 +31422,56 @@ html[data-theme='dark'] .react-chat-browser-panel .browser-panel-viewport-dim:fo
   flex-shrink: 0;
   display: flex;
   align-items: center;
-  gap: 6px;
-  height: 30px;
-  padding: 0 10px;
-  background: var(--bg-secondary, rgba(127, 127, 127, 0.04));
+  justify-content: center;
+  gap: 4px;
+  height: 32px;
+  padding: 0 8px;
+  background: var(--bg-primary, #ffffff);
+  border-top: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.react-chat-browser-panel .browser-panel-toolbar-sub .browser-panel-viewport-dim {
+  width: 56px;
+  height: 28px;
+  text-align: center;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  font: inherit;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+.react-chat-browser-panel .browser-panel-toolbar-sub .browser-panel-viewport-dim:hover,
+.react-chat-browser-panel .browser-panel-toolbar-sub .browser-panel-viewport-dim:focus {
+  border-color: var(--border);
+  background: var(--bg-hover, rgba(127, 127, 127, 0.06));
+  outline: none;
+}
+.react-chat-browser-panel .browser-panel-toolbar-sub .browser-panel-viewport-dim-x {
+  color: var(--text-secondary, #94a3b8);
+  font-size: 12.5px;
+}
+.react-chat-browser-panel .browser-panel-toolbar-sub .browser-panel-zoom {
+  min-width: 6rem;
+  height: 28px;
+  margin-left: 4px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  font: inherit;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.react-chat-browser-panel .browser-panel-toolbar-sub .browser-panel-zoom:hover,
+.react-chat-browser-panel .browser-panel-toolbar-sub .browser-panel-zoom:focus {
+  border-color: var(--border);
+  background: var(--bg-hover, rgba(127, 127, 127, 0.06));
+  outline: none;
 }
 
 /* ==========================================================================
@@ -31973,7 +32097,6 @@ html[data-theme="dark"] .group\/user-row .msg-user-context-file-pill {
 /* 注：close 按钮的最终 opacity 由下方 Stage 5 段控制（默认 0.8 / active 1 / hover 1），
    这块不再重复声明，避免和 Stage 5 形成顺序耦合的死代码。 */
 .react-chat-browser-panel .browser-panel-tabstrip-spring { flex: 1 1 auto; }
-.react-chat-browser-panel .browser-panel-toolbar { position: relative; }
 
 /* 第 1 行：顶 tab (Cursor 风格) — 4 个固定面板入口全常驻 */
 .react-chat-browser-panel .browser-panel-toptabs {
@@ -32176,6 +32299,12 @@ html[data-theme='dark'] .react-chat-browser-panel .browser-panel-nav-error {
   color: var(--text-primary);
   cursor: pointer;
   text-align: left;
+  text-decoration: none;
+  box-sizing: border-box;
+}
+.react-chat-browser-panel .browser-panel-menu-item:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 .react-chat-browser-panel .browser-panel-menu-item:hover { background: var(--bg-hover, rgba(127, 127, 127, 0.1)); }
 .react-chat-browser-panel .browser-panel-op-float {
@@ -32319,6 +32448,133 @@ html[data-theme='dark'] .react-chat-browser-panel .browser-panel-nav-error {
 /* ===== ZCode 式侧栏标签条（多面板共存） =====
  * 高度对齐 zcode h-12（48px）；tab 走「基准 156px 等宽弹性 → 60px 下限」，
  * 空间不足时平均收缩而非让长标题独占宽度；再不足才出现横向滚动。 */
+/* 右栏外壳：标签条 + 内容区（ZCode side pane 同构） */
+.react-chat-right-stage-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+  background: var(--bg-primary, var(--background, #fff));
+  border-left: 1px solid var(--border, #e5e7eb);
+}
+.react-chat-stage-open-tab-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--bg-primary, var(--background, #fff));
+}
+.react-chat-stage-open-tab-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow-y: auto;
+  padding: 2.5rem 1.25rem;
+}
+.react-chat-stage-open-tab-content {
+  display: flex;
+  width: 100%;
+  max-width: 20rem;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+.react-chat-stage-open-tab-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  text-align: center;
+}
+.react-chat-stage-open-tab-title {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 600;
+  line-height: 1.75rem;
+  color: var(--text-primary, inherit);
+}
+.react-chat-stage-open-tab-desc {
+  margin: 0;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  color: var(--text-secondary, #6b7280);
+}
+.react-chat-stage-open-tab-list {
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.react-chat-stage-open-tab-button,
+.react-chat-stage-add-item {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-width: 0;
+  height: 3rem;
+  padding: 0 0.75rem;
+  border: none;
+  border-radius: 0.75rem;
+  background: var(--bg-secondary, #f1f5f9);
+  color: var(--text-primary, inherit);
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.12s ease;
+}
+.react-chat-stage-add-item {
+  height: 2.25rem;
+  border-radius: 0.5rem;
+  background: transparent;
+}
+.react-chat-stage-open-tab-button:hover,
+.react-chat-stage-add-item:hover {
+  background: var(--bg-hover, rgba(127, 127, 127, 0.12));
+}
+.react-chat-stage-open-tab-button:focus-visible,
+.react-chat-stage-add-item:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--accent, #3b82f6);
+}
+.react-chat-right-stage-bodies {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+}
+.react-chat-right-stage-body {
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+}
+.react-chat-right-stage-body[hidden] {
+  display: none !important;
+}
+.react-chat-right-stage-body > .react-chat-browser-panel-content,
+.react-chat-right-stage-body > .react-chat-right-stage-panel,
+.react-chat-right-stage-body > .react-chat-workspace-panel,
+.react-chat-right-stage-body > .react-chat-collab-exec-panel {
+  height: 100%;
+  min-height: 0;
+}
+
+/* BrowserPanel 现在是标签内容，不再是右栏外壳。
+   旧的 collab-exec / right-stage 宽度（50%）会把它缩成半栏卡片。 */
+.react-chat-right-stage-body > .react-chat-browser-panel.react-chat-collab-exec-panel {
+  flex: 1 1 auto;
+  width: 100%;
+  max-width: none;
+  min-width: 0;
+  align-self: stretch;
+  border-left: 0;
+  background: var(--bg-primary, #ffffff);
+}
+html[data-theme='dark'] .react-chat-right-stage-body > .react-chat-browser-panel.react-chat-collab-exec-panel,
+html.dark .react-chat-right-stage-body > .react-chat-browser-panel.react-chat-collab-exec-panel {
+  background: var(--bg-primary, #0b1220);
+}
+
 .react-chat-stage-tabs {
   flex-shrink: 0;
   display: flex;
@@ -32326,16 +32582,12 @@ html[data-theme='dark'] .react-chat-browser-panel .browser-panel-nav-error {
   height: 48px;
   padding: 0 8px;
   gap: 4px;
-  background: var(--bg-secondary, #f8fafc);
-  border-bottom: 1px solid var(--border, #e5e7eb);
+  background: transparent;
+  border-bottom: 1px solid color-mix(in srgb, var(--border, #e5e7eb) 50%, transparent);
   overflow: hidden;
   /* Tauri 无边框：标签条兼作窗口拖拽区，可交互子节点各自打 data-tauri-no-drag */
   user-select: none;
   -webkit-user-select: none;
-}
-html[data-theme='dark'] .react-chat-stage-tabs,
-html.dark .react-chat-stage-tabs {
-  background: var(--bg-secondary, #111827);
 }
 .react-chat-stage-tabs-viewport {
   display: flex;
@@ -32370,13 +32622,13 @@ html.dark .react-chat-stage-tabs {
 }
 .react-chat-stage-tab:hover { color: var(--text-primary, inherit); }
 .react-chat-stage-tab.is-active {
-  background: var(--bg-selected, var(--bg-secondary, rgba(127, 127, 127, 0.1)));
+  background: var(--bg-selected, rgba(127, 127, 127, 0.1));
   color: var(--text-primary, inherit);
-  border-color: var(--border);
+  border-color: transparent;
 }
 html.dark .react-chat-stage-tab.is-active,
 html[data-theme='dark'] .react-chat-stage-tab.is-active {
-  border-color: var(--border-default, var(--border));
+  border-color: transparent;
   background: var(--bg-active, rgba(255, 255, 255, 0.08));
 }
 .react-chat-stage-tab-icon {

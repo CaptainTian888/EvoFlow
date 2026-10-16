@@ -25,7 +25,13 @@
 import { isTauri, LOGIN_LOGO_SVG as _logoSvg } from '../lib/panel-login.js'
 import { removeBootSplash } from '../router.js'
 import { bootMark } from '../lib/startup-trace.js'
-import { checkBackendHealth, checkBackendReady, kickAppServerPrewarm } from '../lib/tauri-api.js'
+import {
+  checkBackendHealth,
+  checkBackendReady,
+  isBackendReady,
+  kickAppServerPrewarm,
+  onBackendReadyChange,
+} from '../lib/tauri-api.js'
 import { version as APP_VERSION } from '../../package.json'
 
 // 内部 timer 句柄 —— 不 export,所有重启/清理都走模块内部
@@ -69,26 +75,41 @@ export function startBackendReadyPoll() {
   setTimeout(tryShow, 400)
   let attempts = 0
   let everHealthy = false
+  let finishedReady = false
   const maxAttempts = 240 // ~120s at 500ms
   const WARMING_TIMEOUT_ATTEMPTS = 180 // ~90s at 500ms
+  const finishReady = (source) => {
+    hideBackendWarmingBanner()
+    if (finishedReady) return
+    finishedReady = true
+    everHealthy = true
+    try {
+      removeBootSplash()
+    } catch {
+      /* ignore */
+    }
+    if (_backendReadyPollTimer) {
+      clearInterval(_backendReadyPollTimer)
+      _backendReadyPollTimer = null
+    }
+    bootMark(`backend ready ok (${source})`)
+    void import('../lib/startup-trace.js')
+      .then((m) => m.bootMarkEngineReady?.({ source }))
+      .catch(() => {})
+  }
+  // Home / evidence path may flip ready without this poll's checkBackendReady succeeding.
+  onBackendReadyChange((v) => {
+    if (v) finishReady('ready-listener')
+  })
   const tick = async () => {
     attempts += 1
+    // Already unlocked (HTTP evidence / sticky) — clear「引擎加载中…」immediately.
+    if (isBackendReady() === true) {
+      finishReady('ready-sticky')
+      return
+    }
     if (await checkBackendReady()) {
-      everHealthy = true
-      hideBackendWarmingBanner()
-      try {
-        removeBootSplash()
-      } catch {
-        /* ignore */
-      }
-      if (_backendReadyPollTimer) {
-        clearInterval(_backendReadyPollTimer)
-        _backendReadyPollTimer = null
-      }
-      bootMark('backend ready ok (async poll)')
-      void import('../lib/startup-trace.js')
-        .then((m) => m.bootMarkEngineReady?.({ source: 'ready-poll' }))
-        .catch(() => {})
+      finishReady('ready-poll')
       return
     }
     const healthOk = await checkBackendHealth()

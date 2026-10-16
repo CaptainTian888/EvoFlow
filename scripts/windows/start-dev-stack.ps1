@@ -20,7 +20,7 @@ param(
     # -KeepViteCache 跳过检测; -CleanViteCache 无条件清理。
     [switch] $CleanViteCache,
     [switch] $KeepViteCache,
-    [int] $FrontendPort = 1421,
+    [int] $FrontendPort = 1521,
     [switch] $AutoFrontendPort = $true,
     [int] $GatewayPort = 0
 )
@@ -293,7 +293,7 @@ if ($WebOnly) {
     Write-Host "    Frontend URL: http://localhost:$resolvedPort" -ForegroundColor Green
 } else {
     Write-Host "    Mode: Tauri desktop (tauri dev)" -ForegroundColor Green
-    $vitePortHint = if ($env:EVOFLOW_VITE_PORT -and $env:EVOFLOW_VITE_PORT.Trim()) { $env:EVOFLOW_VITE_PORT.Trim() } else { "1421" }
+    $vitePortHint = if ($env:EVOFLOW_VITE_PORT -and $env:EVOFLOW_VITE_PORT.Trim()) { $env:EVOFLOW_VITE_PORT.Trim() } else { "1521" }
     Write-Host "    Vite port (EVOFLOW_VITE_PORT): $vitePortHint" -ForegroundColor DarkGray
     if ($env:EVOFLOW_TAURI_DEV_CONFIG -and $env:EVOFLOW_TAURI_DEV_CONFIG.Trim()) {
         Write-Host "    Tauri devUrl merge: $($env:EVOFLOW_TAURI_DEV_CONFIG.Trim()) (must match Vite port)" -ForegroundColor DarkGray

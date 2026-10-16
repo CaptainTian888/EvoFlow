@@ -90,7 +90,7 @@ def _resolve_turn_skills(request: ModelRequest) -> tuple[list, list[str], str, d
         if plugin_refs:
             from evoflow.plugins.runtime import build_plugin_injection_block
 
-            plugin_block = build_plugin_injection_block(plugin_refs)
+            plugin_block = build_plugin_injection_block(plugin_refs, user_message=user_message)
     except Exception:
         logger.warning("Plugin injection block failed", exc_info=True)
         plugin_block = ""

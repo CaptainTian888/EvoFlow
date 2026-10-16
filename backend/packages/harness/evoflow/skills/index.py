@@ -72,23 +72,29 @@ def _iter_skill_md_files(root: Path, *, max_depth: int = _MAX_SCAN_DEPTH) -> lis
 
 
 def _dedupe_skills(skills: list[Skill]) -> list[Skill]:
-    """Keep the highest-precedence skill per ``name``."""
+    """Keep one skill per ``(name, scope)`` — the highest-precedence per scope.
+
+    Same-named skills from *different* scopes are all kept: shadowing across
+    scopes (user-defined over system plugin) is decided after enablement in
+    ``loader.load_skills`` — a disabled user instance must not permanently hide
+    an enabled plugin instance.
+    """
     if len(skills) < 2:
         return skills
 
-    def rank(s: Skill) -> tuple[int, int, int, str]:
-        scope_val = int(getattr(s, "scope", SkillScope.PUBLIC))
+    def rank(s: Skill) -> tuple[int, int, str]:
         depth = len(s.skill_dir.parts)
         path = str(s.skill_dir.resolve()).replace("\\", "/")
         in_mbb = 1 if "mbb-skills" in path else 0
-        return (-scope_val, in_mbb, depth, path)
+        return (in_mbb, depth, path)
 
-    buckets: dict[str, list[Skill]] = {}
+    buckets: dict[tuple[str, int], list[Skill]] = {}
     for skill in skills:
-        buckets.setdefault(skill.name, []).append(skill)
+        scope_val = int(getattr(skill, "scope", SkillScope.PUBLIC))
+        buckets.setdefault((skill.name, scope_val), []).append(skill)
 
     out: list[Skill] = []
-    for name, group in buckets.items():
+    for (_name, _scope_val), group in buckets.items():
         if len(group) == 1:
             out.append(group[0])
             continue
@@ -96,7 +102,7 @@ def _dedupe_skills(skills: list[Skill]) -> list[Skill]:
         out.append(chosen)
         dropped = [g.skill_dir for g in group if g is not chosen]
         if dropped:
-            logger.debug("SkillIndex deduped %r: kept %s dropped %s", name, chosen.skill_dir, dropped)
+            logger.debug("SkillIndex deduped %r: kept %s dropped %s", chosen.name, chosen.skill_dir, dropped)
     return out
 
 
@@ -171,6 +177,10 @@ def discover_skills_from_roots(roots: list[SkillRootSpec]) -> list[Skill]:
                 cat = "personal" if category not in ("public", "custom") else category
             elif scope == SkillScope.GROUP:
                 cat = "group" if category not in ("public", "custom") else category
+            elif scope == SkillScope.PUBLIC and category == "custom":
+                # User-defined skills under the primary root outrank plugin
+                # add-ons; they must not share PUBLIC's (system-seeded) rank.
+                scope = SkillScope.CUSTOM
             skills.append(
                 Skill(
                     name=parsed.name,
@@ -197,7 +207,14 @@ class SkillIndex:
         self._by_name: dict[str, Skill] = {}
         for skill in self._skills:
             key = skill.name.strip().lower()
-            if key and key not in self._by_name:
+            if not key:
+                continue
+            current = self._by_name.get(key)
+            # Cross-scope candidates all survive the index dedupe; hand back
+            # the highest-precedence scope (user-defined > plugin > system).
+            if current is None or int(getattr(skill, "scope", SkillScope.PUBLIC)) > int(
+                getattr(current, "scope", SkillScope.PUBLIC)
+            ):
                 self._by_name[key] = skill
 
     @property

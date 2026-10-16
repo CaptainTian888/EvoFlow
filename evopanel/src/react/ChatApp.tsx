@@ -18,7 +18,7 @@ import {
   startTransition,
 } from 'react'
 import { createPortal, flushSync } from 'react-dom'
-import { ChevronDown, Folder, FolderOpen, PanelRightClose, PanelRightOpen, Share } from 'lucide-react'
+import { ChevronDown, Folder, FolderOpen, Globe, PanelRightClose, PanelRightOpen, Share } from 'lucide-react'
 import {
   wsClient,
   enqueuePendingInject,
@@ -127,7 +127,8 @@ import { GoalProposalDock } from './components/GoalProposalDock.js'
 import { SkillPickerModal, type SkillSelection } from './components/SkillPickerModal.js'
 import { PluginQuickPanel } from './components/PluginQuickPanel.js'
 import type { PluginSelection } from './components/PluginPickerModal.js'
-import { resolvePluginIconSource } from '../zcode-ui/lib/pluginIconSource.js'
+
+import { PluginPillIcon } from './components/PluginPillIcon.js'
 import { ShareSessionModal } from './components/ShareSessionModal.js'
 import { AgentPickerModal } from './components/AgentPickerModal.js'
 import { PlanExecConfirm } from './components/PlanExecConfirmDock.js'
@@ -167,7 +168,11 @@ import {
   logToolApprovalUserAction,
 } from '../lib/tool-approval-trace.js'
 import { CollabExecutionPanel } from './components/CollabExecutionPanel.js'
-import { BrowserPanel } from './components/BrowserPanel.js'
+import {
+  RightStagePanel,
+  buildDefaultRightStageLauncherItems,
+} from './components/RightStagePanel.js'
+import { switchRightStageSession } from '../lib/right-stage/right-stage-session-memory.js'
 import { KnowledgeMapPanel } from './components/KnowledgeMapPanel.js'
 import { ChatSummaryPanel } from './components/ChatSummaryPanel.js'
 import {
@@ -183,7 +188,6 @@ import {
   type ChatSummaryDisplayMode,
 } from './lib/chat-summary-panel-prefs.js'
 import type { ProcessItem } from './lib/chat-summary-panel-model.js'
-import { RightStageExtensionsToolbar } from './components/RightStageExtensionsToolbar.js'
 import { SidePanelBootShell } from './components/SidePanelBootShell.js'
 import { applyRightStageAgUiCustom, applyStageSetFromToolCall, STAGE_SET_APPLIED_EVENT, type StageSetPayload } from '../lib/right-stage/right-stage-agui.js'
 import { syncBrowserPanelFromAgUiEvent, isBrowserToolWireName } from '../lib/browser-panel-agui.js'
@@ -2339,10 +2343,29 @@ export default function ChatApp() {
     closeStream: closeRightStageStream,
     surface: rightStageSurface,
     snapshot: rightStageSnapshot,
+    tabs: rightStageTabs,
+    activeKey: rightStageActiveKey,
+    recentClosed: rightStageRecentClosed,
+    activateTab: activateRightStageTab,
+    closeTab: closeRightStageTab,
+    reorderTab: reorderRightStageTab,
+    reopenClosedTab: reopenRightStageTab,
+    expand: expandRightStage,
+    collapse: collapseRightStage,
+    toggleCollapsed: toggleRightStageCollapsed,
     rightPanelLayoutKind: rightStageLayoutKind,
     mainBodyStageClasses,
     isOpen: rightStageOpen,
   } = useRightStageChatBridge()
+  const rightStageSessionKeyRef = useRef(String(selectedSessionKey || '').trim())
+  // 切会话时冻结 / 恢复右栏 tabs（浏览器标签式缓存）
+  useEffect(() => {
+    const nextKey = String(selectedSessionKey || '').trim()
+    const prevKey = rightStageSessionKeyRef.current
+    if (prevKey === nextKey) return
+    switchRightStageSession(prevKey, nextKey)
+    rightStageSessionKeyRef.current = nextKey
+  }, [selectedSessionKey])
   const [knowledgeMapRefreshKey, setKnowledgeMapRefreshKey] = useState(0)
   const bumpKnowledgeMapRefresh = useCallback(() => {
     setKnowledgeMapRefreshKey((k) => k + 1)
@@ -2508,26 +2531,18 @@ export default function ChatApp() {
   const openCollabExecPanel = useCallback(
     (opts?: { clearDismiss?: boolean }) => {
       cancelPendingStreamUiBumpsRef.current()
-      setChatOverlayDefer('workspace', false)
-      setChatOverlayDefer('knowledge-map', false)
       setChatOverlayDefer('workflow', true)
       if (opts?.clearDismiss !== false) {
         const key = collabExecPanelDismissKey()
         if (key) collabExecDismissedKeysRef.current.delete(key)
       }
       flushSync(() => {
-        setWorkspacePanelOpen(false)
-        setWorkspaceTreePinned(false)
-        setStreamingWritePreview(null)
-        lastStreamWritePathRef.current = null
-        setFilePreviewModal(null)
-        setKnowledgeMapPanelOpen(false)
         bumpSubtasksApiRefresh()
         rightStageUserPinnedRef.current = 'collab-workflow'
         setCollabExecPanelOpen(true)
       })
     },
-    [collabExecPanelDismissKey, bumpSubtasksApiRefresh],
+    [collabExecPanelDismissKey, bumpSubtasksApiRefresh, setCollabExecPanelOpen],
   )
 
   const closeCollabExecPanel = useCallback(() => {
@@ -2553,6 +2568,7 @@ export default function ChatApp() {
         text?: string
         agentCode?: string
         skills?: SkillSelection[]
+        plugins?: PluginSelection[]
         modelName?: string
         attachments?: ChatAttachment[]
         contextFiles?: ContextFileEntry[]
@@ -2565,6 +2581,7 @@ export default function ChatApp() {
       if (!text && !attachments?.length && !homeCtx.length) return
       void (async () => {
         if (Array.isArray(detail?.skills)) setSelectedSkills(detail.skills)
+        if (Array.isArray(detail?.plugins)) setSelectedPlugins(detail.plugins)
         const modelName = String(detail?.modelName || '').trim()
         if (modelName) {
           setModelNameRef.current(modelName)
@@ -2597,6 +2614,7 @@ export default function ChatApp() {
         if (homeCtx.length) attachContextFilesRef.current?.(homeCtx)
         await handleSendRef.current(text, attachments, homeCtx.length ? homeCtx : undefined, {
           skillsOverride: Array.isArray(detail?.skills) ? detail.skills : undefined,
+          pluginsOverride: Array.isArray(detail?.plugins) ? detail.plugins : undefined,
         })
       })()
     }
@@ -2681,21 +2699,13 @@ export default function ChatApp() {
   const openKnowledgeMapPanel = useCallback(() => {
     if (!knowledgeMapEnabled) return
     cancelPendingStreamUiBumpsRef.current()
-    setChatOverlayDefer('workspace', false)
-    setChatOverlayDefer('workflow', false)
     setChatOverlayDefer('knowledge-map', true)
     flushSync(() => {
-      setWorkspacePanelOpen(false)
-      setWorkspaceTreePinned(false)
-      setStreamingWritePreview(null)
-      lastStreamWritePathRef.current = null
-      setFilePreviewModal(null)
-      setCollabExecPanelOpen(false)
       setKnowledgeMapRefreshKey((k) => k + 1)
       rightStageUserPinnedRef.current = 'mind-map'
       setKnowledgeMapPanelOpen(true)
     })
-  }, [knowledgeMapEnabled])
+  }, [knowledgeMapEnabled, setKnowledgeMapPanelOpen])
 
   const closeKnowledgeMapPanel = useCallback(() => {
     setChatOverlayDefer('knowledge-map', false)
@@ -2988,42 +2998,46 @@ export default function ChatApp() {
   }, [knowledgeMapEnabled, knowledgeMapPanelOpen, closeKnowledgeMapPanel])
 
   const toggleWorkspacePanel = useCallback(() => {
-    const next = !workspacePanelOpenRef.current
-    if (next) {
-      cancelPendingStreamUiBumpsRef.current()
-      setChatOverlayDefer('knowledge-map', false)
-      setChatOverlayDefer('workflow', false)
-      setChatOverlayDefer('workspace', true)
-    } else {
-      setChatOverlayDefer('workspace', false)
-    }
-    flushSync(() => {
-      syncShellAsideForWorkspacePanel(next)
-      if (next) {
-        rightStageUserPinnedRef.current = 'workspace-browse'
-        setWorkspacePanelOpen(true)
-        setCollabExecPanelOpen(false)
-        setKnowledgeMapPanelOpen(false)
-        setWorkspaceTreePinned(true)
-        // 点文件夹浏览：结束 Agent 写入预览，恢复文件树
-        if (!streamingWritePreviewRef.current?.streaming) {
-          setFilePreviewModal(null)
+    const snap = rightStageStore.getSnapshot()
+    const existing = snap.tabs.find((t) => {
+      const k = normalizeRightStageKind(t.kind)
+      return k === 'workspace-browse' || k === 'write'
+    })
+    if (existing) {
+      const key = `${normalizeRightStageKind(existing.kind)}:${existing.id}`
+      if (snap.activeKey === key) {
+        setChatOverlayDefer('workspace', false)
+        flushSync(() => {
+          rightStageUserPinnedRef.current = null
+          hideRightStageIfKind('workspace-browse', 'write')
           setStreamingWritePreview(null)
           lastStreamWritePathRef.current = null
+          setFilePreviewModal(null)
+          setWorkspaceTreePinned(false)
+          syncShellAsideForWorkspacePanel(false)
+        })
+        if (!isChatOverlayDeferActive()) {
+          scheduleBumpRef.current?.({ immediate: true })
         }
-      } else {
-        rightStageUserPinnedRef.current = null
-        hideRightStageIfKind('workspace-browse', 'write')
+        return
+      }
+      rightStageStore.activateTab(key)
+      return
+    }
+    cancelPendingStreamUiBumpsRef.current()
+    setChatOverlayDefer('workspace', true)
+    flushSync(() => {
+      syncShellAsideForWorkspacePanel(true)
+      rightStageUserPinnedRef.current = 'workspace-browse'
+      setWorkspacePanelOpen(true)
+      setWorkspaceTreePinned(true)
+      if (!streamingWritePreviewRef.current?.streaming) {
+        setFilePreviewModal(null)
         setStreamingWritePreview(null)
         lastStreamWritePathRef.current = null
-        setFilePreviewModal(null)
-        setWorkspaceTreePinned(false)
       }
     })
-    if (!next && !isChatOverlayDeferActive()) {
-      scheduleBumpRef.current?.({ immediate: true })
-    }
-  }, [syncShellAsideForWorkspacePanel])
+  }, [setWorkspacePanelOpen, syncShellAsideForWorkspacePanel])
 
   useEffect(() => {
     syncShellAsideForWorkspacePanel(workspacePanelOpen)
@@ -4778,7 +4792,7 @@ useEffect(() => {
     },
     [persistSelectedSkills, selectedSessionKey],
   )
-  /** 插件选择 pill（ZCode 插件语义：选中插件的 commands/skills 本轮生效） */
+  /** 插件选择 pill（ZCode 插件语义：选中插件仅注入组件元数据；技能经 skill: URI 按需读取，命令按 /命令名 调用时才注入正文） */
   /** + 号一键直达：锚定插件/添加快捷面板（ZCode ChatPromptActionMenu 交互复刻） */
   const [bottomPluginPanelOpen, setBottomPluginPanelOpen] = useState(false)
   const [pluginPanelStyle, setPluginPanelStyle] = useState<CSSProperties | null>(null)
@@ -6979,6 +6993,13 @@ useEffect(() => {
       return dirty ? next : prev
     })
   }, [pluginList])
+
+  /** 刷新后粘性恢复的 selectedPlugins 只有 id 没有 iconUrl，而 pluginList
+   * 仅在打开插件面板时才拉取——不自动补齐，pill 图标会一直退到 🧩 兜底。 */
+  useEffect(() => {
+    if (selectedPlugins.length === 0 || pluginList.length > 0 || pluginListLoading) return
+    void loadPluginCatalog()
+  }, [selectedPlugins.length, pluginList.length, pluginListLoading, loadPluginCatalog])
 
   useEffect(() => {
     if (!bottomPluginPanelOpen) return
@@ -12006,6 +12027,7 @@ useEffect(() => {
           dispatchSessionTurnEvent(targetSk, { type: 'SESSION_EVENT', at: Date.now() })
           return
         }
+        if (rawErr) console.error('[ChatApp] stream error', rawErr, payload)
         const errMsg = toUserFacingError(rawErr || '未知错误')
         if (!errMsg) {
           scheduleBump({ immediate: true })
@@ -12324,14 +12346,6 @@ useEffect(() => {
     return snap
   }, [selectedSessionKey, contextUsageBySession, sessions, modelCatalog, effectiveModelName])
 
-  /** 顶栏只留一个入口；Agent / 产物等在侧栏内切换，避免与侧栏 tab 重复 */
-  const toggleInfoRail = useCallback(() => {
-    // 在 updater 外记录用户意图，避免 React StrictMode 下 updater 二次执行导致 ref 抖动。
-    setInfoRailOpen((open) => !open)
-    // 由 true→false 时标记为「已手动关」，由 false→true 时复位 ref。
-    userClosedInfoRailRef.current = !infoRailOpen
-  }, [infoRailOpen])
-
   const [assetQuickBusy, setAssetQuickBusy] = useState(false)
   const handleAssetQuickAction = useCallback(
     async (kind: 'episode' | 'craft' | 'journal') => {
@@ -12395,34 +12409,7 @@ useEffect(() => {
     [isProactiveEmployeeSession, employeeSessionAgentCode, selectedTurnBusy, getApi],
   )
 
-  const infoRailHeaderToggle = (
-    <button
-      type="button"
-      className={`react-chat-header-icon-btn${infoRailOpen ? ' is-active' : ''}`}
-      title={
-        isProactiveEmployeeSession
-          ? obsEnabled
-            ? '任务 / 岗位 / 产物 / 平台 / 调试 / 运行'
-            : '任务 / 岗位 / 产物 / 平台 / 运行'
-          : obsEnabled
-            ? 'Agent / 产物 / 平台 / 调试'
-            : 'Agent / 产物 / 平台'
-      }
-      aria-pressed={infoRailOpen}
-      aria-label={infoRailOpen ? '关闭侧栏' : '打开侧栏'}
-      data-info-rail-open={infoRailOpen ? 'true' : 'false'}
-      onClick={toggleInfoRail}
-    >
-      {infoRailOpen ? (
-        <PanelRightClose className="react-chat-header-icon" aria-hidden />
-      ) : (
-        <PanelRightOpen className="react-chat-header-icon" aria-hidden />
-      )}
-    </button>
-  )
-
-  // Right Stage 与侧栏互斥：Right Stage 打开时收起侧栏；Right Stage 关闭不强制恢复
-  // （用户的开关意图必须被尊重，否则会与顶栏切换按钮抢状态）。
+  // Right Stage 与 Info Rail 互斥：右栏展开时收起摘要轨。
   useEffect(() => {
     if (rightStageOpen) setInfoRailOpen(false)
   }, [rightStageOpen])
@@ -12846,18 +12833,178 @@ useEffect(() => {
 
   
 
-  // 浏览器面板头部开关（暂时禁用，CDP 路由修复中）
-  // const browserStageOpen = rightStageOpen && rightStageSurface?.kind === 'browser'
-  // const browserToggleButton = (...) // 代码保留以便将来恢复
-  const browserToggleButton = null
+  // 浏览器面板头部开关：存在则激活，再点一次关掉这一页（不关整栏其它标签）
+  const browserStageOpen = rightStageTabs.some(
+    (t) => normalizeRightStageKind(t.kind) === 'browser',
+  )
+  const browserStageActive =
+    normalizeRightStageKind(rightStageSurface?.kind || '') === 'browser'
+  const toggleBrowserStage = useCallback(() => {
+    const snap = rightStageStore.getSnapshot()
+    const existing = snap.tabs.find((t) => normalizeRightStageKind(t.kind) === 'browser')
+    if (existing) {
+      const key = `${normalizeRightStageKind(existing.kind)}:${existing.id}`
+      if (snap.activeKey === key) {
+        closeBrowserStage()
+        return
+      }
+      rightStageStore.activateTab(key)
+      return
+    }
+    const manualTid = String(wsClient.getSessionThreadId(selectedSessionKey || '') || '').trim()
+    if (manualTid) setBrowserPanelThreadId(manualTid)
+    ensureBrowserStage()
+    if (!isChatOverlayDeferActive()) {
+      scheduleBumpRef.current?.({ immediate: true })
+    }
+  }, [selectedSessionKey])
+  const browserToggleTitle = browserStageOpen ? '隐藏浏览器' : '打开浏览器'
+  const browserToggleButton = (
+    <button
+      type="button"
+      className={`react-chat-header-icon-btn react-chat-browser-stage-toggle-btn${
+        browserStageActive ? ' is-active' : ''
+      }`}
+      title={browserToggleTitle}
+      aria-label={browserToggleTitle}
+      aria-pressed={browserStageOpen}
+      onClick={toggleBrowserStage}
+    >
+      <Globe className="react-chat-header-icon" aria-hidden />
+    </button>
+  )
 
+  /** 折叠侧栏：保留 tabs 缓存，对齐 ZCode collapse（不是 hideAll）。 */
+  const handleCollapseRightStage = useCallback(() => {
+    rightStageUserPinnedRef.current = null
+    collapseRightStage()
+    setChatOverlayDefer('workspace', false)
+    setChatOverlayDefer('workflow', false)
+    setChatOverlayDefer('knowledge-map', false)
+    syncShellAsideForWorkspacePanel(false)
+    if (!isChatOverlayDeferActive()) {
+      scheduleBumpRef.current?.({ immediate: true })
+    }
+  }, [collapseRightStage, syncShellAsideForWorkspacePanel])
+
+  const handleExpandRightStage = useCallback(() => {
+    expandRightStage()
+    setInfoRailOpen(false)
+    if (!isChatOverlayDeferActive()) {
+      scheduleBumpRef.current?.({ immediate: true })
+    }
+  }, [expandRightStage])
+
+  /**
+   * 顶栏 PanelRight：对齐 ZCode 侧栏开关。
+   * 展开 → 右侧壳（无标签时显示「打开标签」首页）；折叠 → 只藏面板，tabs 缓存保留。
+   */
+  const toggleInfoRail = useCallback(() => {
+    if (rightStageOpen) {
+      handleCollapseRightStage()
+      userClosedInfoRailRef.current = false
+      return
+    }
+    handleExpandRightStage()
+    userClosedInfoRailRef.current = true
+  }, [rightStageOpen, handleCollapseRightStage, handleExpandRightStage])
+
+  const infoRailHeaderToggle = (
+    <button
+      type="button"
+      className={`react-chat-header-icon-btn${rightStageOpen ? ' is-active' : ''}`}
+      title={rightStageOpen ? '收起右侧面板' : '打开右侧面板'}
+      aria-pressed={rightStageOpen}
+      aria-label={rightStageOpen ? '收起右侧面板' : '打开右侧面板'}
+      data-info-rail-open={rightStageOpen ? 'true' : 'false'}
+      data-right-stage-open={rightStageOpen ? 'true' : 'false'}
+      onClick={toggleInfoRail}
+    >
+      {rightStageOpen ? (
+        <PanelRightClose className="react-chat-header-icon" aria-hidden />
+      ) : (
+        <PanelRightOpen className="react-chat-header-icon" aria-hidden />
+      )}
+    </button>
+  )
+
+  const rightStageLauncherItems = useMemo(
+    () =>
+      buildDefaultRightStageLauncherItems({
+        onOpenBrowser: () => {
+          const manualTid = String(wsClient.getSessionThreadId(selectedSessionKey || '') || '').trim()
+          if (manualTid) setBrowserPanelThreadId(manualTid)
+          ensureBrowserStage()
+        },
+        onOpenWorkspace: () => {
+          rightStageUserPinnedRef.current = 'workspace-browse'
+          setWorkspacePanelOpen(true)
+          setWorkspaceTreePinned(true)
+          syncShellAsideForWorkspacePanel(true)
+        },
+        onOpenWorkflow: () => {
+          openCollabExecPanel()
+        },
+        mindMapEnabled: knowledgeMapEnabled,
+        onOpenMindMap: () => {
+          openKnowledgeMapPanel()
+        },
+      }),
+    [
+      selectedSessionKey,
+      setWorkspacePanelOpen,
+      syncShellAsideForWorkspacePanel,
+      openCollabExecPanel,
+      knowledgeMapEnabled,
+      openKnowledgeMapPanel,
+    ],
+  )
+
+  /** 标签 ×：按 kind 走既有清理，再 closeTab；不能只删列表项丢掉 write/dismiss 状态。 */
+  const handleCloseRightStageTab = useCallback(
+    (key: string) => {
+      const tab = rightStageStore.getSnapshot().tabs.find((t) => `${normalizeRightStageKind(t.kind)}:${t.id}` === key)
+      const kind = normalizeRightStageKind(tab?.kind || key.split(':')[0] || '')
+      if (kind) dismissedRightStageKindsRef.current.add(kind)
+      if (kind === 'workspace-browse' || kind === 'write') {
+        closeWorkspacePanel()
+        return
+      }
+      if (kind === 'collab-workflow') {
+        closeCollabExecPanel()
+        return
+      }
+      if (kind === 'mind-map') {
+        closeKnowledgeMapPanel()
+        return
+      }
+      if (kind === 'browser') {
+        closeBrowserStage()
+        return
+      }
+      closeRightStageTab(key)
+      if (rightStageUserPinnedRef.current === kind) {
+        rightStageUserPinnedRef.current = null
+      }
+    },
+    [
+      closeWorkspacePanel,
+      closeCollabExecPanel,
+      closeKnowledgeMapPanel,
+      closeRightStageTab,
+    ],
+  )
+
+  const workspaceStageActive =
+    normalizeRightStageKind(rightStageSurface?.kind || '') === 'workspace-browse' ||
+    normalizeRightStageKind(rightStageSurface?.kind || '') === 'write'
   const workspaceFolderToggleTitle = workspacePanelOpen ? '隐藏工作区文件' : '显示工作区文件'
 
   const workspaceFolderToggleButton = (
     <button
       type="button"
       className={`react-chat-header-icon-btn react-chat-workspace-folder-btn${
-        workspacePanelOpen ? ' is-active' : ''
+        workspaceStageActive ? ' is-active' : ''
       }`}
       title={workspaceFolderToggleTitle}
       aria-label={workspaceFolderToggleTitle}
@@ -13389,7 +13536,7 @@ useEffect(() => {
       }))
       void persistSelectedSkills(sessionKey, activeSkills)
     }
-    // 选中插件时：run context 传 preferred_plugins，后端按轮注入插件 commands/skills
+    // 选中插件时：run context 传 preferred_plugins，后端按轮注入组件元数据；仅本轮消息 /命令名 调用的命令才注入正文
     let preferredPluginIds: string[] = []
     const activePlugins = opts?.pluginsOverride ?? selectedPlugins
     if (activePlugins.length > 0 && userMessage.trim()) {
@@ -13876,6 +14023,7 @@ useEffect(() => {
         voiceSessionKeyRef.current = ''
         voiceStreamingStartedRef.current = false
         void setVoiceTrayState('idle')
+        console.error('[ChatApp] send failed', e)
         toast(toUserFacingError((e as Error)?.message || e), 'error')
         rtSend.rows = preSendRows
         rtSend.stream = emptyStream()
@@ -15723,19 +15871,7 @@ useEffect(() => {
                         aria-hidden
                         style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}
                       >
-                        {(() => {
-                          const iconSrc = resolvePluginIconSource(pl.id, pl.iconUrl)
-                          return iconSrc ? (
-                            <img
-                              src={iconSrc}
-                              alt=""
-                              className="react-chat-skill-composer-pill-icon-img"
-                              draggable={false}
-                            />
-                          ) : (
-                            '🧩'
-                          )
-                        })()}
+                        <PluginPillIcon pluginId={pl.id} iconUrl={pl.iconUrl} />
                       </span>
                       <span className="react-chat-skill-composer-pill-label">{pl.label}</span>
                       <span className="react-chat-skill-composer-pill-remove" aria-hidden>
@@ -16176,19 +16312,17 @@ useEffect(() => {
               />
             ) : null}
             {rightStageOpen ? (
-              <BrowserPanel
-                isOpen
-                onClose={closeBrowserStage}
-                bodySlot={(activeKind) => {
-                  if (activeKind === 'browser') return null
-                  return renderRightStageBody({
-                    id: rightStageSurface?.id || 'primary',
-                    kind: activeKind as RightStageSurface['kind'],
-                    title: rightStageSurface?.title || activeKind,
-                    layout: 'wide',
-                    data: {},
-                  })
-                }}
+              <RightStagePanel
+                tabs={rightStageTabs}
+                activeKey={rightStageActiveKey}
+                recentClosed={rightStageRecentClosed}
+                onActivateTab={activateRightStageTab}
+                onCloseTab={handleCloseRightStageTab}
+                onReorderTab={reorderRightStageTab}
+                onReopenClosedTab={reopenRightStageTab}
+                onCollapse={handleCollapseRightStage}
+                launcherItems={rightStageLauncherItems}
+                renderContent={renderRightStageBody}
               />
             ) : infoRailOpen && !isHomeSurface && selectedSessionKey && !isMobileChat ? (
               <ChatSummaryPanel

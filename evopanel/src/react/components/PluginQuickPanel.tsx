@@ -15,9 +15,16 @@ import type { PluginPickerItem } from './PluginPickerModal.js'
 interface RowAction {
   key: string
   label: string
-  icon: ReactNode
+  /** 可省略：省略时不渲染图标占位（用于纯文案行，如「创意」提示词） */
+  icon?: ReactNode
   run: () => void
   trailing?: ReactNode
+}
+
+/** 额外能力/区段：宿主（如工作台首页）注入自身特有行；主对话不传即完全不变 */
+export interface PluginQuickPanelExtraSection {
+  title: string
+  rows: RowAction[]
 }
 
 export function PluginQuickPanel({
@@ -38,6 +45,12 @@ export function PluginQuickPanel({
   showVoice,
   voiceOn,
   onToggleVoice,
+  showRole = true,
+  showLegacyMenu = true,
+  showHintBar = true,
+  onPickEmployee,
+  extraAbilityRows,
+  extraSections,
 }: {
   open: boolean
   onClose: () => void
@@ -56,6 +69,18 @@ export function PluginQuickPanel({
   showVoice: boolean
   voiceOn: boolean
   onToggleVoice: () => void
+  /** 「预设角色」行开关（首页无角色概念时隐藏） */
+  showRole?: boolean
+  /** 「Agent 模式与思考…」行开关（首页无会话模式时隐藏） */
+  showLegacyMenu?: boolean
+  /** 底部 @ / / / $ 提示条开关（首页输入框无这些触发器时隐藏） */
+  showHintBar?: boolean
+  /** 提供「员工」行的自定义行为（默认向输入框插入 @）；首页传打开智能体选择 */
+  onPickEmployee?: () => void
+  /** 追加进「能力」节的行（如首页的「记忆」开关） */
+  extraAbilityRows?: RowAction[]
+  /** 「能力」之后追加的独立区段（如首页的「创意」提示词） */
+  extraSections?: PluginQuickPanelExtraSection[]
 }) {
   useEffect(() => {
     if (!open) return
@@ -138,19 +163,27 @@ export function PluginQuickPanel({
           <circle cx="9" cy="7" r="4" />
         </svg>
       ),
-      run: () => { onClose(); onInsertText('@') },
+      run: () => {
+        onClose()
+        if (onPickEmployee) onPickEmployee()
+        else onInsertText('@')
+      },
     },
-    {
-      key: 'role',
-      label: '预设角色',
-      icon: (
-        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <circle cx="12" cy="8" r="4" />
-          <path d="M4 21v-1a6 6 0 0 1 6-6h4a6 6 0 0 1 6 6v1" />
-        </svg>
-      ),
-      run: () => { onClose(); onOpenRolePicker() },
-    },
+    ...(showRole
+      ? [
+          {
+            key: 'role',
+            label: '预设角色',
+            icon: (
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <circle cx="12" cy="8" r="4" />
+                <path d="M4 21v-1a6 6 0 0 1 6-6h4a6 6 0 0 1 6 6v1" />
+              </svg>
+            ),
+            run: () => { onClose(); onOpenRolePicker() },
+          } as RowAction,
+        ]
+      : []),
     ...(showVoice
       ? [
           {
@@ -169,18 +202,23 @@ export function PluginQuickPanel({
           } as RowAction,
         ]
       : []),
-    {
-      key: 'legacy',
-      label: 'Agent 模式与思考…',
-      icon: (
-        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
-          <circle cx="5" cy="12" r="1" />
-          <circle cx="12" cy="12" r="1" />
-          <circle cx="19" cy="12" r="1" />
-        </svg>
-      ),
-      run: () => { onClose(); onOpenLegacyMenu() },
-    },
+    ...(showLegacyMenu
+      ? [
+          {
+            key: 'legacy',
+            label: 'Agent 模式与思考…',
+            icon: (
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
+                <circle cx="5" cy="12" r="1" />
+                <circle cx="12" cy="12" r="1" />
+                <circle cx="19" cy="12" r="1" />
+              </svg>
+            ),
+            run: () => { onClose(); onOpenLegacyMenu() },
+          } as RowAction,
+        ]
+      : []),
+    ...(extraAbilityRows || []),
   ]
 
   const renderSection = (title: string, rows: Array<{ key: string; node: ReactNode }>) => (
@@ -192,6 +230,22 @@ export function PluginQuickPanel({
         <div key={row.key}>{row.node}</div>
       ))}
     </div>
+  )
+
+  const renderAbilityRow = (row: RowAction) => (
+    <button
+      type="button"
+      className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-[7px] text-left transition-colors duration-100 hover:bg-hover"
+      onClick={row.run}
+    >
+      {row.icon ? (
+        <span className="flex-none text-foreground-subtle" aria-hidden>
+          {row.icon}
+        </span>
+      ) : null}
+      <span className="text-ui-sm font-medium text-foreground">{row.label}</span>
+      {row.trailing}
+    </button>
   )
 
   return createPortal(
@@ -290,24 +344,21 @@ export function PluginQuickPanel({
           '能力',
           abilityRows.map((row) => ({
             key: row.key,
-            node: (
-              <button
-                type="button"
-                className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-[7px] text-left transition-colors duration-100 hover:bg-hover"
-                onClick={row.run}
-              >
-                <span className="flex-none text-foreground-subtle" aria-hidden>
-                  {row.icon}
-                </span>
-                <span className="text-ui-sm font-medium text-foreground">{row.label}</span>
-                {row.trailing}
-              </button>
-            ),
+            node: renderAbilityRow(row),
           })),
+        )}
+
+        {/* ── 宿主注入区段（如首页「创意」） ── */}
+        {(extraSections || []).map((section) =>
+          renderSection(
+            section.title,
+            section.rows.map((row) => ({ key: row.key, node: renderAbilityRow(row) })),
+          ),
         )}
       </div>
 
       {/* ── 底部提示条 ── */}
+      {showHintBar ? (
       <div className="flex items-center gap-4 border-t border-border/70 px-3.5 py-2 text-ui-sm text-foreground-subtle">
         <button
           type="button"
@@ -338,6 +389,7 @@ export function PluginQuickPanel({
           <span className="hidden lg:inline">主框输入 / 搜索</span>
         </span>
       </div>
+      ) : null}
     </div>,
     document.body,
   )

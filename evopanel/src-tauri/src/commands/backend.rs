@@ -1555,6 +1555,7 @@ pub fn get_profile_info() -> serde_json::Value {
     let runtime_path = runtime_state_path();
     let home = super::runtime_data_dir();
     let base_url = resolved_gateway_base_url();
+    let external = env_gateway_base_url().is_some();
     json!({
         "profileId": id,
         "profileDir": profile_path.to_string_lossy().to_string(),
@@ -1562,6 +1563,9 @@ pub fn get_profile_info() -> serde_json::Value {
         "evoflowHome": home.to_string_lossy().to_string(),
         "expectedPort": port,
         "resolvedBaseUrl": base_url,
+        // EVOFLOW_GATEWAY_URL set → operator owns uvicorn; guardian must not
+        // pretend reload_gateway restarts it (that only resets warm latch).
+        "externalGateway": external,
     })
 }
 

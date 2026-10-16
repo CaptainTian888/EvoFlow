@@ -123,12 +123,21 @@ const __evoflowBridgeSymbol = Symbol.for("zcode.node-repl.browser-control-bridge
     ok: false,
     error: { code: "unsupported", message: `EvoFlow browser bridge v1 不支持命令: ${name}（录屏/桌面控制属后续平台集成）`, sideEffect: "none" },
   });
+  // 命令日志：每次浏览器命令的 method/url/结果状态，供工具结果回传给模型与排查
+  globalThis.__evoflowBrowserLog = [];
+  const __logCmd = (entry) => {
+    try {
+      globalThis.__evoflowBrowserLog.push({ ts: Date.now(), ...entry });
+      if (globalThis.__evoflowBrowserLog.length > 50) globalThis.__evoflowBrowserLog.shift();
+    } catch {}
+  };
   globalThis[__evoflowBridgeSymbol] = {
     documentationRoot: __docsRoot,
     assertAvailable: __assert,
     async list() {
       const body = await __gwFetch("/api/browser/tabs");
       const tab = (body.tabs || [])[0] || {};
+      __logCmd({ kind: "list", url: tab.url, ok: true });
       return [{
         id: "evoflow-webview",
         type: "iab",
@@ -140,17 +149,25 @@ const __evoflowBridgeSymbol = Symbol.for("zcode.node-repl.browser-control-bridge
     async execute(_browserId, _generation, command) {
       await __assert();
       const name = command?.method || "";
-      if (__direct.has(name)) {
-        return __gwFetch("/api/browser/execute", { method: "POST", body: JSON.stringify({ command }) });
-      }
-      if (__map[name]) {
-        const mapped = __map[name](command, _browserId);
-        const result = await __gwFetch("/api/browser/execute", { method: "POST", body: JSON.stringify({ command: mapped }) });
-        if (mapped.__tab) result.tab = mapped.__tab;
-        if ("__dialog" in mapped) result.dialog = mapped.__dialog;
+      const url = command?.url || "";
+      try {
+        let result;
+        if (__direct.has(name)) {
+          result = await __gwFetch("/api/browser/execute", { method: "POST", body: JSON.stringify({ command }) });
+        } else if (__map[name]) {
+          const mapped = __map[name](command, _browserId);
+          result = await __gwFetch("/api/browser/execute", { method: "POST", body: JSON.stringify({ command: mapped }) });
+          if (mapped.__tab) result.tab = mapped.__tab;
+          if ("__dialog" in mapped) result.dialog = mapped.__dialog;
+        } else {
+          result = __unsupported(name);
+        }
+        __logCmd({ kind: name, url, ok: result?.ok !== false });
         return result;
+      } catch (err) {
+        __logCmd({ kind: name, url, ok: false, error: String(err).slice(0, 160) });
+        throw err;
       }
-      return __unsupported(name);
     },
   };
   // ── CUA 桥（computer-use 插件）：覆盖宿主自带的死桥（本构建 CUA fail-closed）──
@@ -159,11 +176,17 @@ const __evoflowBridgeSymbol = Symbol.for("zcode.node-repl.browser-control-bridge
     documentationRoot: __docsRoot,
     assertAvailable: async () => {},
     call: async (method, methodInput) => {
-      const resp = await __gwFetch("/api/cua/execute", {
-        method: "POST",
-        body: JSON.stringify({ method, input: methodInput || {} }),
-      });
-      return resp; // CallToolResult 形状（content / isError）
+      try {
+        const resp = await __gwFetch("/api/cua/execute", {
+          method: "POST",
+          body: JSON.stringify({ method, input: methodInput || {} }),
+        });
+        __logCmd({ kind: `cua:${method}`, ok: resp?.ok !== false });
+        return resp; // CallToolResult 形状（content / isError）
+      } catch (err) {
+        __logCmd({ kind: `cua:${method}`, ok: false, error: String(err).slice(0, 160) });
+        throw err;
+      }
     },
   };
 }
@@ -380,7 +403,8 @@ def call_node_repl_js(code: str, timeout_ms: int = 120_000) -> str:
         for part in result.get("content") or []
         if isinstance(part, dict)
     ]
-    return "\n".join(parts)
+    text = "\n".join(parts)
+    return text
 
 
 def shutdown() -> None:

@@ -42,6 +42,15 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_notification::init())
         .on_window_event(|window, event| {
+            // 主窗口移动/缩放时，把嵌入浏览器窗口重新贴回面板槽位 ——
+            // 原生覆盖窗口不会自动跟随主窗口，拖动后会漂在屏幕原位置。
+            if let WindowEvent::Moved(_) | WindowEvent::Resized(_) = event {
+                if window.label() == "main" {
+                    commands::browser_embed::reposition_embeds_after_main_move(
+                        &window.app_handle(),
+                    );
+                }
+            }
             if let WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() != "main" {
                     return;

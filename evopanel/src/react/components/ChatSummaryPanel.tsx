@@ -401,8 +401,31 @@ function ChatSummaryPanelInner({
   const pickPolicy = useCallback((next: ChatSummaryExpandPolicy) => {
     setPolicy(next)
     saveChatSummaryExpandPolicy(next)
+    setUserCollapsed(false)
     setPolicyOpen(false)
   }, [])
+
+  // 手动收起标记：auto-expand 策略下用户手动收起后，运行中不再强制撑开，
+  // 直到新进程启动（running 0→>0）或用户手动展开才恢复自动展开语义。
+  // 用 state 而非 ref：displayMode 已是 capsule 时点击收起，父级 setState 值不变
+  // 不触发重渲染，必须靠本组件自身 state 变化驱动 effectiveMode 重算。
+  const [userCollapsed, setUserCollapsed] = useState(false)
+  const prevRunningRef = useRef(summary.running)
+
+  const goPanel = useCallback(() => {
+    setUserCollapsed(false)
+    onDisplayModeChange('panel')
+  }, [onDisplayModeChange])
+  const goCapsule = useCallback(() => {
+    setUserCollapsed(true)
+    onDisplayModeChange('capsule')
+  }, [onDisplayModeChange])
+
+  // 新进程启动时清除手动收起标记，恢复 auto-expand 自动展开语义
+  useEffect(() => {
+    if (summary.running > 0 && prevRunningRef.current === 0) setUserCollapsed(false)
+    prevRunningRef.current = summary.running
+  }, [summary.running])
 
   // 实时跳转：平台条目 / 产物发布时（ChatApp 侧 publishPlatformEntries /
   // publishArtifacts 会更新 focus id），面板自动切到对应 tab 并撑开。
@@ -412,8 +435,8 @@ function ChatSummaryPanelInner({
     if (!focus || focus === prevPlatformFocusRef.current) return
     prevPlatformFocusRef.current = focus
     setPanelTab('platform')
-    if (displayMode === 'capsule') onDisplayModeChange('panel')
-  }, [platformFocusEntryId, displayMode, onDisplayModeChange])
+    if (displayMode === 'capsule') goPanel()
+  }, [platformFocusEntryId, displayMode, goPanel])
 
   const prevArtifactFocusRef = useRef('')
   useEffect(() => {
@@ -421,19 +444,16 @@ function ChatSummaryPanelInner({
     if (!focus || focus === prevArtifactFocusRef.current) return
     prevArtifactFocusRef.current = focus
     setPanelTab('artifacts')
-    if (displayMode === 'capsule') onDisplayModeChange('panel')
-  }, [artifactFocusId, displayMode, onDisplayModeChange])
+    if (displayMode === 'capsule') goPanel()
+  }, [artifactFocusId, displayMode, goPanel])
 
-  // 展开策略：胶囊态 + 有进程在跑时自动撑成面板
+  // 展开策略：胶囊态 + 有进程在跑时自动撑成面板（用户手动收起后尊重选择）
   const effectiveMode = useMemo<ChatSummaryDisplayMode>(() => {
     if (displayMode === 'hidden') return 'hidden'
     if (displayMode === 'panel') return 'panel'
-    if (policy === 'auto-expand' && (summary.running > 0 || isRunning)) return 'panel'
+    if (policy === 'auto-expand' && !userCollapsed && (summary.running > 0 || isRunning)) return 'panel'
     return 'capsule'
-  }, [displayMode, policy, summary.running, isRunning])
-
-  const goPanel = useCallback(() => onDisplayModeChange('panel'), [onDisplayModeChange])
-  const goCapsule = useCallback(() => onDisplayModeChange('capsule'), [onDisplayModeChange])
+  }, [displayMode, policy, userCollapsed, summary.running, isRunning])
 
   // 面板 tab：智能体固定在最前，产物 / 平台带计数，
   // 岗位 / 任务仅在员工会话且对应 pane 存在时出现，调试仅在观测开启时出现。

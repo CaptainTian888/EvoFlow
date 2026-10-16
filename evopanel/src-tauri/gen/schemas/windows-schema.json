@@ -387,6 +387,12 @@
       "description": "Permission identifier",
       "oneOf": [
         {
+          "description": "Allow all application commands from the main window. Required because the app defines its own permissions (browser-embed.toml), which turns on the application ACL and denies any command not explicitly listed in a capability.",
+          "type": "string",
+          "const": "allow-app-commands",
+          "markdownDescription": "Allow all application commands from the main window. Required because the app defines its own permissions (browser-embed.toml), which turns on the application ACL and denies any command not explicitly listed in a capability."
+        },
+        {
           "description": "Lets the embed guest answer Runtime.evaluate via invoke.",
           "type": "string",
           "const": "allow-browser-embed-bridge-response",

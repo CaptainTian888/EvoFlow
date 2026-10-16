@@ -92,6 +92,11 @@ def _log_flush_interval_s() -> float:
         return 1.0
 
 
+def _show_langgraph_logs() -> bool:
+    """EVOFLOW_SHOW_LANGGRAPH_LOGS=1 restores full LangGraph runtime/api logging (no CRITICAL silencing, no poll filtering)."""
+    return os.getenv("EVOFLOW_SHOW_LANGGRAPH_LOGS", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 class DailyNamedFileHandler(Handler):
     """Append to ``{log_dir}/{base_name}-YYYY-MM-DD.log`` (one file per calendar day)."""
 
@@ -211,6 +216,8 @@ _QUIET_LOGGER_LEVELS: dict[str, int] = {
 
 class LangGraphPollNoiseFilter(Filter):
     def filter(self, record: LogRecord) -> bool:
+        if _show_langgraph_logs():
+            return True
         if os.getenv("EVOFLOW_SHOW_LANGGRAPH_POLL_LOGS", "").strip().lower() in {"1", "true", "yes", "on"}:
             return True
         if record.name != "langgraph_api.server" or record.levelno > logging.INFO:
@@ -257,7 +264,10 @@ def _has_filter(handler: Handler, filter_type: type[Filter]) -> bool:
 
 
 def _quiet_noisy_loggers() -> None:
+    show_lg = _show_langgraph_logs()
     for name, lvl in _QUIET_LOGGER_LEVELS.items():
+        if show_lg and name.startswith("langgraph"):
+            continue
         logging.getLogger(name).setLevel(lvl)
 
 
@@ -293,7 +303,7 @@ def _wire_logger_tree(root: logging.Logger, level: int) -> None:
     ):
         lg = logging.getLogger(name)
         # Do not bump quiet loggers (e.g. uvicorn.error WARNING) back to root INFO.
-        if name not in _QUIET_LOGGER_LEVELS:
+        if name not in _QUIET_LOGGER_LEVELS or _show_langgraph_logs():
             lg.setLevel(level)
         lg.propagate = True
     _quiet_noisy_loggers()

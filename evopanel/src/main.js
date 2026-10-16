@@ -1037,6 +1037,18 @@ async function checkWebuiRemoteAuth() {
         .catch(() => {})
       startBackendReadyPoll()
       startGatewayPoll()
+      // External Gateway (8070) died: guardian no longer fake-reloads; tell the user once.
+      window.addEventListener('evoflow:gateway-external-down', () => {
+        void import('./components/toast.js')
+          .then((m) =>
+            m.toast?.(
+              '本地 Gateway（8070）暂时无响应。对话可能中断；请确认 uvicorn 仍在运行，就绪后会自动恢复。',
+              'warning',
+              8000,
+            ),
+          )
+          .catch(() => {})
+      })
       bootMark('ui-first boot (immediate, liveness async)')
       await boot()
       bootMark('boot() done')

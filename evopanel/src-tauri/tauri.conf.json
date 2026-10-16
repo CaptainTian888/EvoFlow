@@ -5,8 +5,8 @@
   "identifier": "com.evovex.evoflow",
   "build": {
     "frontendDist": "../dist",
-    "devUrl": "http://127.0.0.1:1421",
-    "beforeDevCommand": "npm run dev -- --host 127.0.0.1 --port 1421 --strictPort",
+    "devUrl": "http://127.0.0.1:1521",
+    "beforeDevCommand": "npm run dev -- --host 127.0.0.1 --port 1521 --strictPort",
     "beforeBuildCommand": "npm run build"
   },
   "app": {

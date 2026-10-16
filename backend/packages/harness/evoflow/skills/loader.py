@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .parser import parse_skill_file
+from .skill_scope import SkillScope
 from .types import Skill
 
 logger = logging.getLogger(__name__)
@@ -449,23 +450,38 @@ def load_skills(
         except Exception:
             plugin_root_strings = set()
         for skill in skills:
-            reg = registry.get(skill.name)
-            if reg is not None:
-                skill.enabled = bool(reg.get("enabled", True))
-            elif (
-                plugin_root_strings
+            from_plugin = (
+                bool(plugin_root_strings)
                 and skill.source_root is not None
                 and str(Path(skill.source_root).resolve()) in plugin_root_strings
-            ):
+            )
+            if from_plugin:
                 # Plugin-contributed skills: installing + enabling the plugin
-                # (plugin store semantics) is the enablement authority.
+                # (plugin store semantics) is the enablement authority. A stale
+                # registry row for a same-named skill from another root (e.g. a
+                # removed custom skill) must not disable the plugin instance —
+                # otherwise ``skill:<name>`` URIs fail with "exists but is
+                # disabled" while the plugin is switched on.
                 skill.enabled = True
+            elif (reg := registry.get(skill.name)) is not None:
+                skill.enabled = bool(reg.get("enabled", True))
             else:
                 from evoflow.config.extensions_config import ExtensionsConfig
 
                 skill.enabled = ExtensionsConfig.from_db().is_skill_enabled(skill.name, skill.category)
     except Exception as e:
         logger.warning("Failed to load skill enablement from SQLite: %s", e)
+
+    # ── Cross-scope shadowing (after enablement) ──────────────────────
+    # SkillIndex only dedupes within the same scope, so same-named instances
+    # from different scopes (user custom vs plugin vs system) all arrive here.
+    # Resolve each name to ONE instance: the highest-precedence *enabled* one
+    # (user-defined > plugin > system). A disabled user instance must not
+    # permanently hide an enabled plugin instance; when every instance is
+    # disabled, keep the highest-precedence one so existence/errors stay
+    # accurate. Plugin-sourced instances are gated by the plugin switch itself
+    # (see enablement above), not by same-named registry rows.
+    skills = _resolve_scope_shadowing(skills)
 
     # Sort by name for consistent ordering (cache stores the full list).
     skills.sort(key=lambda s: s.name)
@@ -481,6 +497,52 @@ def load_skills(
     if enabled_only:
         return [skill for skill in skills if skill.enabled]
     return skills
+
+
+def _resolve_scope_shadowing(skills: list[Skill]) -> list[Skill]:
+    """Collapse same-named instances across scopes to one survivor per name.
+
+    Precedence (highest first): user-defined scopes (personal/custom/...) >
+    plugin (EXTERNAL) > system (public/system). Within that order an *enabled*
+    instance always beats a disabled one, so a disabled user skill falls
+    through to an enabled plugin instance instead of dead-ending the name.
+    """
+    if not skills:
+        return skills
+    if len(skills) == 1:
+        return skills
+
+    def rank(s: Skill) -> tuple[int, int, int, str]:
+        scope_val = int(getattr(s, "scope", SkillScope.PUBLIC))
+        enabled_rank = 0 if s.enabled else 1
+        depth = len(s.skill_dir.parts)
+        path = str(s.skill_dir.resolve()).replace("\\", "/")
+        return (enabled_rank, -scope_val, depth, path)
+
+    buckets: dict[str, list[Skill]] = {}
+    for skill in skills:
+        buckets.setdefault(skill.name, []).append(skill)
+
+    if all(len(group) == 1 for group in buckets.values()):
+        return skills
+
+    out: list[Skill] = []
+    for _name, group in buckets.items():
+        if len(group) == 1:
+            out.append(group[0])
+            continue
+        chosen = sorted(group, key=rank)[0]
+        dropped = [g.skill_dir for g in group if g is not chosen]
+        if dropped:
+            logger.debug(
+                "Scope shadowing %r: kept %s (enabled=%s) dropped %s",
+                chosen.name,
+                chosen.skill_dir,
+                chosen.enabled,
+                dropped,
+            )
+        out.append(chosen)
+    return out
 
 
 def _legacy_scan_skills(skills_path: Path) -> list[Skill]:
@@ -511,12 +573,20 @@ def find_skill_directory(skill_key: str, *, require_enabled: bool = False) -> Pa
     if not key:
         return None
 
+    # Same-named skills can exist in multiple roots (e.g. a stale custom skill
+    # plus an enabled plugin skill). Prefer an enabled instance; only fall back
+    # to a disabled one when ``require_enabled`` is False (existence checks).
     all_skills = load_skills(enabled_only=False, use_config=True)
+    fallback_dir: Path | None = None
     for skill in all_skills:
-        if skill.name.strip().lower() == key:
-            if require_enabled and not skill.enabled:
-                return None
+        if skill.name.strip().lower() != key:
+            continue
+        if skill.enabled:
             return skill.skill_dir
+        if fallback_dir is None:
+            fallback_dir = skill.skill_dir
+    if fallback_dir is not None and not require_enabled:
+        return fallback_dir
 
     try:
         from evoflow.skills.index import SkillIndex

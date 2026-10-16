@@ -81,7 +81,7 @@ export default defineConfig(({ mode }) => {
     String(fileEnv.EVOFLOW_VITE_PORT || process.env.EVOFLOW_VITE_PORT || '').trim(),
     10,
   )
-  const viteDevPort = Number.isFinite(_evoVitePort) && _evoVitePort > 0 ? _evoVitePort : 1421
+  const viteDevPort = Number.isFinite(_evoVitePort) && _evoVitePort > 0 ? _evoVitePort : 1521
   const viteStrictPort = Number.isFinite(_evoVitePort) && _evoVitePort > 0
   // Tauri dev health-check on Windows: bind/check 127.0.0.1 (localhost may resolve to ::1).
   const _evoViteHost = String(fileEnv.EVOFLOW_VITE_HOST || process.env.EVOFLOW_VITE_HOST || '').trim()

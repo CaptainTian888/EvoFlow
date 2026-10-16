@@ -170,6 +170,7 @@ export default defineConfig({
       'tests/markdown-document-view.test.js',
       'tests/decide-right-stage.test.js',
       'tests/right-stage-tab-layout.test.ts',
+      'tests/right-stage-store-tabs.test.ts',
       'tests/platform-feedback.test.js',
       'tests/permission-tier.test.js',
       'tests/chat-host-route-toggle.test.js',

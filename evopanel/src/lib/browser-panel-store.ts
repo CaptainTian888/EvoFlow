@@ -6,7 +6,7 @@
  */
 
 import { parseBrowserLiveToolOutput } from './chat-normalize.js'
-import { rightStageStore, hideRightStageIfKind } from './right-stage/right-stage-store.js'
+import { rightStageStore } from './right-stage/right-stage-store.js'
 import type { BrowserStreamFrameMetadata } from './browser-stream-client.js'
 import type { BrowserTabSummary } from './browser-viewport-client.js'
 import { dbgLog, dbgWarn } from './browser-debug-log.js'
@@ -102,19 +102,14 @@ export function acceptThreadId(tid: string | null | undefined): string {
   return raw
 }
 
-/** Show the browser right-stage surface (keeps existing data if already open). */
+/** 打开或激活浏览器标签（不关掉其它 kind）。 */
 export function ensureBrowserStage() {
-  const surface = rightStageStore.getSnapshot().surface
-  if (surface?.kind === 'browser') {
-    rightStageStore.applyRemote({
-      action: 'update',
-      surface: { id: 'primary', kind: 'browser', title: '浏览器', layout: 'wide', data: {} },
-    })
-    return
-  }
-  rightStageStore.applyRemote({
-    action: 'show',
-    surface: { id: 'primary', kind: 'browser', title: '浏览器', layout: 'wide', data: {} },
+  rightStageStore.show({
+    kind: 'browser',
+    id: 'primary',
+    title: '浏览器',
+    layout: 'wide',
+    data: {},
   })
 }
 
@@ -123,13 +118,9 @@ export function setBrowserTabs(tabs: BrowserTabSummary[]) {
   patch({ tabs: Array.isArray(tabs) ? tabs : [] })
 }
 
-/** User-initiated close (panel X button). */
+/** 只关浏览器这一页，其它 right-stage 标签保留。 */
 export function closeBrowserStage() {
-  // eslint-disable-next-line no-console
-  console.log('[diag][collapse-panel] closeBrowserStage() called')
-  // 直接关闭当前激活的 surface（不管 kind 是什么），而不依赖 tabs 列表匹配。
-  // surface 来自 rightStageStore.surface，hide() 无参数时关闭 activeKey。
-  rightStageStore.hide()
+  rightStageStore.closeTab('browser:primary')
 }
 
 /** Publish the panel's *real* thread id (from the chat session) so the browser

@@ -147,8 +147,19 @@ async function getProfileScopedProbePorts() {
   try {
     const { invoke } = await import('@tauri-apps/api/core')
     const info = await invoke('get_profile_info')
+    const ports = []
     const p = Number(info && info.expectedPort)
-    if (Number.isFinite(p) && p > 0 && p < 65536) return [p]
+    if (Number.isFinite(p) && p > 0 && p < 65536) ports.push(p)
+    // External / runtime gateway may sit on 8070 while expectedPort is hashed.
+    const resolved = String(info && info.resolvedBaseUrl || '').trim()
+    try {
+      const u = new URL(resolved)
+      const rp = Number(u.port) || (u.protocol === 'https:' ? 443 : 80)
+      if (Number.isFinite(rp) && rp > 0 && rp < 65536 && !ports.includes(rp)) ports.push(rp)
+    } catch {
+      /* ignore */
+    }
+    if (ports.length) return ports
   } catch {
     /* older desktop builds without get_profile_info */
   }
@@ -220,26 +231,41 @@ export async function getGatewayBaseUrl() {
       /* ignore — older desktop builds may not have this command */
     }
     let base = String((await invoke('get_gateway_base_url')) || '').trim().replace(/\/+$/, '')
-    if (base && (await gatewayBaseLooksAlive(base, 500))) {
+    // Prefer a live probe, but NEVER discard Rust's resolved URL (external
+    // EVOFLOW_GATEWAY_URL / runtime file). A 500ms miss used to drop 8070 and
+    // fall through to the hashed profile port (8100..8999) — warm latch then
+    // never released and home stayed on「正在加载工作台数据…」.
+    if (base) {
+      const alive = await gatewayBaseLooksAlive(base, 2000).catch(() => false)
+      if (!alive) {
+        console.warn('[evoflow] get_gateway_base_url probe miss; trusting resolved URL', base)
+      }
       _cachedGatewayUrl = base
       return base
     }
-    // Per-profile fallback: ask Rust for the *expected* port for this
-    // profile (FNV-1a hash → 8100..8999) and probe *only that port*. We
-    // never probe other profiles' ports; that's how two clients used to
-    // accidentally route into each other.
-    let expectedPort = null
+    // Per-profile fallback: expected hash port + resolvedBaseUrl port (external).
+    const probePorts = []
     try {
       const info = await invoke('get_profile_info')
       const p = Number(info && info.expectedPort)
-      if (Number.isFinite(p) && p > 0 && p < 65536) expectedPort = p
+      if (Number.isFinite(p) && p > 0 && p < 65536) probePorts.push(p)
+      const resolved = String(info && info.resolvedBaseUrl || '').trim()
+      try {
+        const u = new URL(resolved)
+        const rp = Number(u.port) || (u.protocol === 'https:' ? 443 : 80)
+        if (Number.isFinite(rp) && rp > 0 && rp < 65536 && !probePorts.includes(rp)) {
+          probePorts.push(rp)
+        }
+      } catch {
+        /* ignore */
+      }
     } catch {
       /* older desktop builds: fall through */
     }
-    if (expectedPort != null) {
+    if (probePorts.length) {
       const probed = await probeGatewayBaseUrl({
-        ports: [expectedPort],
-        timeoutMs: 500,
+        ports: probePorts,
+        timeoutMs: 800,
       })
       if (probed) {
         setGatewayBaseUrlOverride(probed)
@@ -1153,8 +1179,10 @@ export function isGatewayWarming() {
 }
 
 /** 网关预热队列：若 liveness 未通过，挂起请求直到通过或超时（同 key 复用同一 Promise）。 */
-function _gatewayWarmQueue(method, path, body, _query, _options) {
+function _gatewayWarmQueue(method, path, body, _query, options) {
   if (!isTauri || !warmLatchIsWarming(_warmLatch)) return null
+  // Home dashboard / diagnostics: do not sit another 90s after an explicit ready wait.
+  if (options && options.skipWarmLatch) return null
   const key = `${method}:${path}:${body ? JSON.stringify(body).slice(0, 80) : ''}`
   return enqueueWarmWait(_warmLatch, key)
 }
@@ -1262,6 +1290,20 @@ async function _tauriHealthProbe(kind = 'liveness', timeoutMs = 2500, baseUrl = 
   return !!result
 }
 
+/**
+ * HTTP /health/ready with full payload check (phase + extended_routers).
+ * Used by browser and as desktop fallback when invoke probe is flaky —
+ * DEV desktop already talks to Gateway via fetch, so this matches the real path.
+ */
+async function _httpReadyProbe(baseUrl = '', timeoutMs = 5000) {
+  const base = String(baseUrl || '').trim().replace(/\/+$/, '')
+  const url = base ? `${base}/health/ready` : '/health/ready'
+  const resp = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) })
+  if (!resp.ok) return false
+  const body = await resp.json().catch(() => null)
+  return isFullyReadyPayload(body).ok
+}
+
 /** Core API readiness (Codex-style handshake analogue).
  *  Desktop + Web: wait for /health/ready (core routers mounted).
  *  Process-alive checks stay on checkBackendHealth → /health/liveness.
@@ -1269,9 +1311,22 @@ async function _tauriHealthProbe(kind = 'liveness', timeoutMs = 2500, baseUrl = 
 export async function checkBackendReady() {
   if (isTauri) {
     try {
-      let ok = await _tauriHealthProbe('ready', LIVENESS_TIMEOUT_MS)
+      const READY_PROBE_MS = Math.max(LIVENESS_TIMEOUT_MS, 2500)
+      // 1) Probe the resolved URL first (env / runtime / cache) — do NOT discard it
+      //    on a single miss (that used to clear 8070 and leave「引擎加载中」stuck).
+      const resolved = String((await getGatewayBaseUrl().catch(() => '')) || '').trim()
+      let ok = false
+      if (resolved) {
+        ok = await _tauriHealthProbe('ready', READY_PROBE_MS, resolved).catch(() => false)
+        if (!ok) {
+          // Same transport as DEV gatewayProxy (fetch) — unlock composer when Invoke probe lags.
+          ok = await _httpReadyProbe(resolved, READY_PROBE_MS).catch(() => false)
+        }
+      }
       if (!ok) {
-        clearGatewayBaseUrlCache()
+        ok = await _tauriHealthProbe('ready', READY_PROBE_MS).catch(() => false)
+      }
+      if (!ok) {
         const probePorts = await getProfileScopedProbePorts()
         const probed = await probeGatewayBaseUrl({
           ports: probePorts,
@@ -1280,7 +1335,8 @@ export async function checkBackendReady() {
         })
         if (probed) {
           setGatewayBaseUrlOverride(probed)
-          ok = await _tauriHealthProbe('ready', LIVENESS_TIMEOUT_MS, probed)
+          ok = await _tauriHealthProbe('ready', READY_PROBE_MS, probed).catch(() => false)
+          if (!ok) ok = await _httpReadyProbe(probed, READY_PROBE_MS).catch(() => false)
         }
       }
       // Sticky: once unlocked, treat transient probe failures as still ready.
@@ -1296,6 +1352,14 @@ export async function checkBackendReady() {
       } else {
         noteGatewayLiveness(false)
       }
+      void import('./gateway-watch.js')
+        .then((m) =>
+          m.noteGatewayProbeResult?.(!!ok, {
+            source: 'checkBackendReady',
+            resolved: resolved || '',
+          }),
+        )
+        .catch(() => {})
       return ok || (_backendReady === true && Date.now() < _engineReadyStickyUntil)
     } catch {
       if (_backendReady === true && Date.now() < _engineReadyStickyUntil) return true
@@ -1307,24 +1371,28 @@ export async function checkBackendReady() {
   try {
     // Codex-style ready: 必须 phase !== "initializing" 且 extended_routers 已挂载，
     // 否则即便 HTTP 200 也不能信任（用户发消息会 503/失败）。
-    const resp = await fetch('/health/ready', { signal: AbortSignal.timeout(5000) })
-    if (!resp.ok) {
-      _setBackendReady(false)
-      return false
-    }
-    const body = await resp.json().catch(() => null)
-    const fullyReady = isFullyReadyPayload(body)
-    if (!fullyReady.ok) {
-      _setBackendReady(false)
-      // 表面 ok 但 phase=initializing → 视为 not ready（与 health probe 状态一致）
-      return false
-    }
-    _setBackendReady(true)
-    return true
+    const ok = await _httpReadyProbe('', 5000)
+    _setBackendReady(ok)
+    return ok
   } catch {
     _setBackendReady(false)
     return false
   }
+}
+
+/**
+ * Mark Gateway control-plane ready from positive evidence (e.g. home APIs succeeded).
+ * Clears top「引擎加载中…」banner gate + chat header badge without waiting on probe.
+ */
+export function markBackendReadyFromEvidence(reason = 'evidence') {
+  try {
+    transportLog('markBackendReadyFromEvidence', reason)
+  } catch {
+    /* ignore */
+  }
+  noteGatewayLiveness(true)
+  _setBackendReady(true)
+  kickAppServerPrewarm(`evidence:${reason}`)
 }
 
 /**

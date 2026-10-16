@@ -28,6 +28,26 @@ use tauri::WebviewUrl;
 use super::browser_cdp;
 #[cfg(target_os = "windows")]
 pub use super::browser_cdp::CdpBrokerState;
+
+/// 每个 embed 窗口最后已知的客户端相对边界 (x, y, w, h)（逻辑 px）。
+/// 主窗口拖动/缩放时据此重新定位 —— 原生覆盖窗口不会自动跟随主窗口移动。
+pub static EMBED_LAST_BOUNDS: std::sync::LazyLock<std::sync::Mutex<HashMap<String, (f64, f64, f64, f64)>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
+/// 主窗口移动/缩放后，把所有 embed 窗口重新贴回面板槽位（ZCode "所见即所控" 对齐）。
+pub fn reposition_embeds_after_main_move(app: &tauri::AppHandle) {
+    let Ok(map) = EMBED_LAST_BOUNDS.lock() else { return };
+    for (label, (x, y, w, h)) in map.iter() {
+        let Some(window) = app.get_webview_window(label) else { continue };
+        match client_to_screen(app, *x, *y) {
+            Ok((sx, sy)) => {
+                let _ = window.set_position(LogicalPosition::new(sx, sy));
+                let _ = window.set_size(LogicalSize::new(w.max(120.0), h.max(80.0)));
+            }
+            Err(_) => continue,
+        }
+    }
+}
 #[cfg(target_os = "windows")]
 use super::browser_cdp_server;
 
@@ -144,8 +164,16 @@ fn sanitize_thread_key(thread_id: &str) -> String {
 }
 
 /// Derive the WebView2 window label for a given thread.
-pub(crate) fn webview_label_for_thread(thread_id: &str) -> String {
-    format!("browser-embed-{}", sanitize_thread_key(thread_id))
+///
+/// 单例窗口：所有 thread 共用同一个原生 WebView2。thread_id 只是引擎侧的会话键
+/// （refs/history 记账），而可见的浏览器区域在 UI 上只有一个——按 thread 派生
+/// label 会让「面板 upsert 的线程」和「引擎 early-create 的线程」各建一个
+/// EvoFlow Browser 窗口，重叠或悬浮在客户端之外（面板不在线时无人回收）。
+/// 固定 label 后，upsert/set_bounds/CDP 分发/ensure/close 全部收敛到同一个
+/// HWND：面板挂载后 set_bounds 会把它吸进槽位，未挂载时它也只是客户端右侧
+/// 的预估位置，不再产生第二个窗口。
+pub(crate) fn webview_label_for_thread(_thread_id: &str) -> String {
+    "browser-embed-primary".to_string()
 }
 
 /// Turn whatever the panel reported into something loadable by the webview.
@@ -758,113 +786,6 @@ fn create_embed_window(
     Ok(())
 }
 
-/// Probe whether a webview's UI thread still dispatches `with_webview` closures.
-///
-/// A half-torn-down / permanently-hidden HWND can linger after `close()` and
-/// still be returned by `get_webview_window`, while every CDP call times out
-/// waiting for the UI thread. Detect that in a few seconds so the ensure path
-/// can destroy and recreate instead of returning a false "ok".
-///
-/// Must run the wait on the Tauri main thread with a Win32 message pump — the
-/// same pattern as `browser_cdp::native_execute_script`. Sleeping on a worker
-/// while tao is paused never delivers the PostMessage, so every probe looked
-/// like a dead HWND even for healthy windows.
-/// Public probe used by `browser_cdp_command` to detect zombie HWNDs before
-/// skipping `ensure_webview_for_cdp`.
-#[cfg(target_os = "windows")]
-pub fn probe_webview_dispatch_pub(
-    app: &tauri::AppHandle,
-    win: &WebviewWindow,
-    label: &str,
-    budget_ms: u64,
-) -> bool {
-    probe_webview_dispatch(app, win, label, budget_ms)
-}
-
-#[cfg(target_os = "windows")]
-fn probe_webview_dispatch(
-    app: &tauri::AppHandle,
-    win: &WebviewWindow,
-    label: &str,
-    budget_ms: u64,
-) -> bool {
-    let (tx, rx) = std::sync::mpsc::channel::<bool>();
-    let window = win.clone();
-    let label_owned = label.to_string();
-    if app
-        .run_on_main_thread(move || {
-            let cell: Arc<Mutex<Option<()>>> = Arc::new(Mutex::new(None));
-            let cell_inner = cell.clone();
-            if window
-                .with_webview(move |_platform| {
-                    if let Ok(mut guard) = cell_inner.lock() {
-                        *guard = Some(());
-                    }
-                })
-                .is_err()
-            {
-                eprintln!("[browser-embed] probe_webview_dispatch {label_owned}: enqueue failed");
-                let _ = tx.send(false);
-                return;
-            }
-            let deadline = std::time::Instant::now() + Duration::from_millis(budget_ms);
-            while std::time::Instant::now() < deadline {
-                if cell.lock().ok().and_then(|mut g| g.take()).is_some() {
-                    let _ = tx.send(true);
-                    return;
-                }
-                browser_cdp::pump_win32_messages_once();
-                std::thread::sleep(Duration::from_millis(2));
-            }
-            eprintln!(
-                "[browser-embed] probe_webview_dispatch {label_owned}: no dispatch in {budget_ms}ms"
-            );
-            let _ = tx.send(false);
-        })
-        .is_err()
-    {
-        eprintln!("[browser-embed] probe_webview_dispatch {label}: run_on_main_thread failed");
-        return false;
-    }
-    rx.recv_timeout(Duration::from_millis(budget_ms.saturating_add(2000)))
-        .unwrap_or(false)
-}
-
-/// Destroy a stuck embed webview so the next ensure can create a live one.
-///
-/// Close runs on the Tauri main thread (same constraint as create).
-/// `WebviewWindow::close()` is async on Windows — poll until the label is gone.
-#[cfg(target_os = "windows")]
-pub fn destroy_webview_for_thread(app: &tauri::AppHandle, thread_id: &str) {
-    let label = webview_label_for_thread(thread_id);
-    let key = sanitize_thread_key(thread_id);
-    if let Ok(mut map) = app.state::<BrowserEmbedState>().entries.lock() {
-        map.remove(&key);
-    }
-    let (tx, rx) = std::sync::mpsc::channel::<()>();
-    let app_for_main = app.clone();
-    let label_for_main = label.clone();
-    let _ = app.run_on_main_thread(move || {
-        if let Some(win) = app_for_main.get_webview_window(&label_for_main) {
-            eprintln!("[browser-embed] destroying stuck webview label={label_for_main}");
-            let _ = win.hide();
-            let _ = win.close();
-        }
-        let _ = tx.send(());
-    });
-    let _ = rx.recv_timeout(Duration::from_secs(5));
-    let deadline = std::time::Instant::now() + Duration::from_secs(2);
-    while app.get_webview_window(&label).is_some() {
-        if std::time::Instant::now() >= deadline {
-            eprintln!(
-                "[browser-embed] destroy_webview_for_thread {label}: label still present after 2s"
-            );
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-}
-
 /// Auto-create a WebView2 child window for a thread that has none yet.
 ///
 /// ZCode parity: in ZCode the Electron main process owns a `webContents` per
@@ -1303,6 +1224,22 @@ pub async fn browser_embed_set_bounds(
         window
             .set_size(LogicalSize::new(width.max(120.0), height.max(80.0)))
             .map_err(|e| format!("resize embedded browser failed: {e}"))?;
+        if let Ok(mut map) = EMBED_LAST_BOUNDS.lock() {
+            // 单窗口语义：只保留当前 label 的 embed，关闭其他线程遗留的悬浮窗口
+            let stale: Vec<String> = map
+                .keys()
+                .filter(|k| k.as_str() != label)
+                .cloned()
+                .collect();
+            for other in stale {
+                if let Some(w) = app.get_webview_window(&other) {
+                    eprintln!("[browser-embed] closing stale embed window: {other}");
+                    let _ = w.close();
+                }
+                map.remove(&other);
+            }
+            map.insert(label.clone(), (x, y, width.max(120.0), height.max(80.0)));
+        }
         // Bounds tracking runs on every pointer move, so reporting state each time
         // would bury everything else. Only speak up when the outcome is wrong or
         // when the window did not take the size it was just given — the second case
@@ -1329,120 +1266,6 @@ pub async fn browser_embed_set_bounds(
     } // cfg(target_os = "windows") for browser_embed_set_bounds body
 }
 
-/// Poll `WebviewWindow::with_webview` until its closure runs, indicating the
-/// WebView2 COM controller is actually initialised.
-///
-/// Must hop onto the Tauri main thread and pump Win32 messages — same pattern
-/// as `browser_cdp::native_execute_script`. Sleeping on a worker while tao is
-/// paused never delivers the PostMessage, so the old probe falsely timed out
-/// every time and `ensure_webview_for_cdp` destroyed healthy HWNDs / fell back
-/// to Edge (which the node-repl bridge then rejects).
-///
-/// On a fresh window this typically takes 1–5 s; 60 s is the upper bound.
-///
-/// Returns `Err` on timeout — callers must not treat a silent give-up as ready.
-#[cfg(target_os = "windows")]
-fn wait_webview2_ready(
-    app: &tauri::AppHandle,
-    win: &WebviewWindow,
-    label: &str,
-) -> Result<(), String> {
-    let deadline = std::time::Instant::now() + Duration::from_secs(60);
-    let mut last_progress = std::time::Instant::now();
-    let mut attempts: u32 = 0;
-    loop {
-        attempts += 1;
-        let (tx, rx) = std::sync::mpsc::channel::<Result<(), String>>();
-        let window = win.clone();
-        let label_owned = label.to_string();
-        let attempt_n = attempts;
-        if let Err(e) = app.run_on_main_thread(move || {
-            let cell: Arc<Mutex<Option<Result<(), String>>>> = Arc::new(Mutex::new(None));
-            let cell_inner = cell.clone();
-            let entered = Arc::new(AtomicBool::new(false));
-            let entered_flag = entered.clone();
-            if let Err(e) = window.with_webview(move |_platform| {
-                entered_flag.store(true, Ordering::SeqCst);
-                if let Ok(mut guard) = cell_inner.lock() {
-                    *guard = Some(Ok(()));
-                }
-            }) {
-                let _ = tx.send(Err(format!(
-                    "wait_webview2_ready {label_owned} with_webview enqueue failed: {e}"
-                )));
-                return;
-            }
-            let cell_deadline = std::time::Instant::now() + Duration::from_secs(2);
-            loop {
-                if let Some(outcome) = cell.lock().ok().and_then(|mut g| g.take()) {
-                    if outcome.is_ok() {
-                        eprintln!(
-                            "[browser-embed] wait_webview2_ready {label_owned} OK after {attempt_n} attempt(s)"
-                        );
-                    }
-                    let _ = tx.send(outcome);
-                    return;
-                }
-                if std::time::Instant::now() >= cell_deadline {
-                    let entered_ok = entered.load(Ordering::SeqCst);
-                    let _ = tx.send(Err(if entered_ok {
-                        format!(
-                            "wait_webview2_ready {label_owned} entered but cell empty"
-                        )
-                    } else {
-                        format!(
-                            "wait_webview2_ready {label_owned} no dispatch yet (attempt {attempt_n})"
-                        )
-                    }));
-                    return;
-                }
-                browser_cdp::pump_win32_messages_once();
-                std::thread::sleep(Duration::from_millis(2));
-            }
-        }) {
-            if std::time::Instant::now() >= deadline {
-                let msg = format!(
-                    "wait_webview2_ready {label} run_on_main_thread failed after 60s: {e}"
-                );
-                eprintln!("[browser-embed] {msg}");
-                return Err(msg);
-            }
-            std::thread::sleep(Duration::from_millis(200));
-            continue;
-        }
-        match rx.recv_timeout(Duration::from_secs(5)) {
-            Ok(Ok(())) => return Ok(()),
-            Ok(Err(e)) => {
-                if std::time::Instant::now() >= deadline {
-                    let msg = format!(
-                        "wait_webview2_ready {label} TIMED OUT after 60s, {attempts} attempt(s): {e}"
-                    );
-                    eprintln!("[browser-embed] {msg}");
-                    return Err(msg);
-                }
-                if last_progress.elapsed() >= Duration::from_secs(5) {
-                    eprintln!(
-                        "[browser-embed] wait_webview2_ready {label} still waiting ({attempts} attempt(s)): {e}"
-                    );
-                    last_progress = std::time::Instant::now();
-                }
-                std::thread::sleep(Duration::from_millis(100));
-            }
-            Err(_) => {
-                if std::time::Instant::now() >= deadline {
-                    let msg = format!(
-                        "wait_webview2_ready {label} TIMED OUT after 60s, {attempts} attempt(s) (channel)"
-                    );
-                    eprintln!("[browser-embed] {msg}");
-                    return Err(msg);
-                }
-                std::thread::sleep(Duration::from_millis(100));
-            }
-        }
-    }
-}
-
-/// Report what the embed window actually looks like *right now*, after an
 /// operation ran.
 ///
 /// Every other log line in this file narrates intent — "upsert: window ready",
@@ -1609,8 +1432,13 @@ mod tests {
     }
 
     #[test]
-    fn label_is_stable_and_prefixed() {
-        let tid = "71254177-d872-4fcb-96b7-01c43db11231";
-        assert_eq!(webview_label_for_thread(tid), format!("browser-embed-{tid}"));
+    fn label_is_singleton_across_threads() {
+        // 单例窗口：不同 thread 必须映射到同一个 label，否则引擎 early-create
+        // 与面板 upsert 会产生两个重叠/悬浮的 EvoFlow Browser 窗口。
+        assert_eq!(
+            webview_label_for_thread("evoflow-node-repl-bridge"),
+            webview_label_for_thread("71254177-d872-4fcb-96b7-01c43db11231")
+        );
+        assert_eq!(webview_label_for_thread("anything"), "browser-embed-primary");
     }
 }

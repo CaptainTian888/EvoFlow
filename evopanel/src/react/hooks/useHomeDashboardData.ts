@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { api, isGatewayWarming, waitForBackendReady } from '../../lib/tauri-api.js'
+import {
+  api,
+  isGatewayWarming,
+  markBackendReadyFromEvidence,
+  noteGatewayLiveness,
+  waitForBackendReady,
+} from '../../lib/tauri-api.js'
 import { formatTaskSourceZh, normalizeTaskSource } from '../../lib/task-source.js'
 import {
   formatTaskStatusZh,
@@ -90,6 +96,8 @@ export type HomeAutoStats = {
 
 export type HomeDashboardData = {
   loading: boolean
+  /** 加载阶段文案（卡住时直接显示在横幅，便于对照网关日志） */
+  loadPhase: string | null
   error: string | null
   kpis: HomeKpi[]
   trendData: HomeTrendPoint[]
@@ -376,6 +384,9 @@ export function useHomeDashboardData(opts?: { rangeDays?: number }): HomeDashboa
   const rangeDays = opts?.rangeDays ?? 7
   const initialCache = peekHomeDashboardCache()
   const [loading, setLoading] = useState(() => !initialCache)
+  const [loadPhase, setLoadPhase] = useState<string | null>(() =>
+    initialCache ? null : '准备加载…',
+  )
   const [error, setError] = useState<string | null>(null)
   const [tasks, setTasks] = useState<any[]>(() => initialCache?.tasks ?? [])
   const [userItems, setUserItems] = useState<any[]>(() => initialCache?.userItems ?? [])
@@ -388,6 +399,13 @@ export function useHomeDashboardData(opts?: { rangeDays?: number }): HomeDashboa
 
   useEffect(() => {
     let cancelled = false
+    const t0 = Date.now()
+    const phase = (msg: string) => {
+      if (cancelled) return
+      const line = `${msg} (+${Date.now() - t0}ms)`
+      setLoadPhase(line)
+      console.info('[home-dashboard]', line)
+    }
     ;(async () => {
       const cachedHit = peekHomeDashboardCache()
       const soft = !!cachedHit
@@ -398,25 +416,60 @@ export function useHomeDashboardData(opts?: { rangeDays?: number }): HomeDashboa
         setAppsRaw(cachedHit.appsRaw)
         setRoles(cachedHit.roles)
         setLoading(false)
+        setLoadPhase(null)
         setError(null)
       } else {
         setLoading(true)
         setError(null)
+        phase('开始加载工作台')
       }
       try {
         if (isGatewayWarming()) {
-          // With cache: keep showing KPIs while warming; without: must wait.
-          await waitForBackendReady(90_000)
+          phase('等待 Gateway /health/ready（warm latch）')
+          // Cap wait — previously 90s with no UI detail; latch bug looked like infinite load.
+          const ready = await waitForBackendReady(12_000)
+          if (ready) {
+            phase('Gateway ready')
+          } else {
+            // Release latch so listAllTasks etc. do not sit another 90s in warm queue.
+            phase('Gateway 未在 12s 内 ready — 放开 latch 直连拉数')
+            noteGatewayLiveness(true)
+          }
+        } else {
+          phase('Gateway latch 已放行')
         }
         if (cancelled) return
-        const [tasksRes, itemsRes, autoRes, appsRes, rolesRes] = await Promise.all([
-          api.listAllTasks(),
-          api.listUserItems({ include_done: false }).catch(() => ({ items: [] })),
-          api.automationList().catch(() => ({ automations: [] })),
-          api.listApps().catch(() => []),
-          api.proactiveListRoles('active').catch(() => []),
+        phase('请求 tasks / items / automation / apps / roles')
+        // Cap task payload — unbounded /api/tasks can be >1MB and freeze the
+        // home surface on「正在加载工作台数据…」while JSON.parse runs.
+        const settled = await Promise.allSettled([
+          api.listAllTasks({ page_size: 200 }),
+          api.listUserItems({ include_done: false }),
+          api.automationList(),
+          api.listApps(),
+          api.proactiveListRoles('active'),
         ])
         if (cancelled) return
+        const label = ['tasks', 'items', 'automation', 'apps', 'roles']
+        const fails = settled
+          .map((r, i) =>
+            r.status === 'rejected'
+              ? `${label[i]}:${r.reason instanceof Error ? r.reason.message : String(r.reason || 'fail')}`
+              : null,
+          )
+          .filter(Boolean)
+        phase(
+          fails.length
+            ? `拉数完成（部分失败: ${fails.join(' | ')}）`
+            : '拉数完成',
+        )
+        const tasksRes = settled[0].status === 'fulfilled' ? settled[0].value : []
+        const itemsRes =
+          settled[1].status === 'fulfilled' ? settled[1].value : { items: [] }
+        const autoRes =
+          settled[2].status === 'fulfilled' ? settled[2].value : { automations: [] }
+        const appsRes = settled[3].status === 'fulfilled' ? settled[3].value : []
+        const rolesRes = settled[4].status === 'fulfilled' ? settled[4].value : []
         const nextTasks = asArray(tasksRes)
         const nextItems = Array.isArray(itemsRes?.items) ? itemsRes.items : asArray(itemsRes)
         const nextAutos = Array.isArray(autoRes?.automations) ? autoRes.automations : asArray(autoRes)
@@ -438,13 +491,25 @@ export function useHomeDashboardData(opts?: { rangeDays?: number }): HomeDashboa
           appsRaw: nextApps,
           roles: nextRoles,
         })
+        // APIs returned → engine is usable; clear top「引擎加载中」even if probe lagged.
+        if (settled.some((r) => r.status === 'fulfilled')) {
+          markBackendReadyFromEvidence('home-dashboard')
+        }
+        if (fails.length && !soft) {
+          setError(`部分接口失败：${fails.join('；')}`)
+        }
       } catch (e) {
         if (!cancelled) {
           // Soft remount: keep stale KPIs if network fails.
-          if (!soft) setError(e instanceof Error ? e.message : String(e || '加载失败'))
+          const msg = e instanceof Error ? e.message : String(e || '加载失败')
+          phase(`失败: ${msg}`)
+          if (!soft) setError(msg)
         }
       } finally {
-        if (!cancelled) setLoading(false)
+        if (!cancelled) {
+          setLoading(false)
+          setLoadPhase(null)
+        }
       }
     })()
     return () => {
@@ -755,6 +820,7 @@ export function useHomeDashboardData(opts?: { rangeDays?: number }): HomeDashboa
 
     return {
       loading,
+      loadPhase,
       error,
       kpis,
       trendData: buildTrend(tasks, rangeDays),
@@ -767,5 +833,5 @@ export function useHomeDashboardData(opts?: { rangeDays?: number }): HomeDashboa
       autoStats,
       refresh,
     }
-  }, [appsRaw, automations, error, loading, rangeDays, refresh, roles, tasks, userItems])
+  }, [appsRaw, automations, error, loadPhase, loading, rangeDays, refresh, roles, tasks, userItems])
 }

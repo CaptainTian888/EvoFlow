@@ -107,6 +107,26 @@ export function messageForNetworkErrorCode(code) {
 }
 
 /**
+ * Always log the raw error so DevTools shows the real cause even when the
+ * toast is sanitized (「服务连接异常…」used to hide every ``*gateway*`` string).
+ * @param {unknown} raw
+ * @param {string} facing
+ */
+function logRawUserFacingError(raw, facing) {
+  try {
+    const rawText = String(raw ?? '').trim()
+    if (!rawText) return
+    if (rawText === facing) return
+    console.error('[evoflow-error]', facing, '| raw:', rawText.slice(0, 500))
+    if (typeof window !== 'undefined') {
+      window.__EVOFLOW_LAST_ERROR__ = { facing, raw: rawText.slice(0, 800), at: Date.now() }
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
  * @param {unknown} raw
  * @param {string} [fallback]
  * @returns {string}
@@ -117,38 +137,56 @@ export function toUserFacingError(raw, fallback = DEFAULT_FALLBACK) {
   if (looksUserFriendly(msg)) return msg
 
   const lower = msg.toLowerCase()
+  const isDev =
+    typeof import.meta !== 'undefined' &&
+    import.meta.env &&
+    (import.meta.env.DEV || import.meta.env.MODE === 'development')
 
   // 优先用网络错误分类，确保 502 与客户端网络错误文案区分
   const netCode = classifyNetworkError(raw)
   if (netCode) {
     const netMsg = messageForNetworkErrorCode(netCode)
-    if (netMsg) return netMsg
+    if (netMsg) {
+      const out = isDev ? `${netMsg}（${msg.slice(0, 120)}）` : netMsg
+      logRawUserFacingError(raw, out)
+      return out
+    }
   }
 
-  if (/thread_id|thread id/.test(lower)) return '会话尚未就绪，请稍后重试'
-  if (/supports_vision|config\.yaml/.test(lower)) {
-    return '当前模型不支持图片，请切换支持图片的模型后再试'
+  let facing = null
+  if (/thread_id|thread id/.test(lower)) facing = '会话尚未就绪，请稍后重试'
+  else if (/supports_vision|config\.yaml/.test(lower)) {
+    facing = '当前模型不支持图片，请切换支持图片的模型后再试'
+  } else if (/gateway warming|warming timeout|warm latch/i.test(lower)) {
+    facing = '服务正在启动，请稍候再试'
+  } else if (/failed to fetch|networkerror|err_connection_refused/i.test(lower)) {
+    facing = '无法连接本地服务，请确认 Gateway（8070）与前端已启动'
+  } else if (/gateway|evoflow gateway/.test(lower)) {
+    // Keep a short Chinese tip; in DEV append a snippet so toast ≠ black box.
+    facing = isDev
+      ? `服务连接异常：${msg.replace(/\s+/g, ' ').slice(0, 140)}`
+      : '服务连接异常，请确认服务已启动后重试'
+  } else if (/plan_goal|plan_steps|落库|boundplan/.test(lower)) facing = '计划暂不可用，请稍后重试'
+  else if (/protect_first_n|should_compress|contextcompaction/.test(lower)) {
+    facing = '对话整理失败，请稍后重试'
+  } else if (/not found|404/.test(lower) && /优化|enhance|prompt/.test(lower)) {
+    facing = '提示词优化功能暂不可用，请稍后重试'
+  } else if (/超时|timeout/.test(lower)) facing = '请求超时，请稍后重试'
+  else if (/get live-run failed|live-run/.test(lower)) facing = '暂时无法加载对话，请刷新后重试'
+  else if (/origin not allowed|not_paired|pairing_required|auth/.test(lower)) {
+    facing = '连接未授权，请检查配对或登录状态'
+  } else if (/userinterrupt|user interrupt/.test(lower)) facing = ''
+  else if (/^[A-Z][a-zA-Z0-9_]*(?:Error|Exception):/.test(msg)) facing = fallback
+  else if (DEV_JARGON.test(msg)) {
+    facing = isDev ? `${fallback}（${msg.replace(/\s+/g, ' ').slice(0, 140)}）` : fallback
+  } else if (!hasCjk(msg) && msg.length > 60) {
+    facing = isDev ? `${fallback}（${msg.slice(0, 140)}）` : fallback
+  } else {
+    facing = msg
   }
-  if (/gateway|evoflow gateway/.test(lower)) return '服务连接异常，请确认服务已启动后重试'
-  if (/plan_goal|plan_steps|落库|boundplan/.test(lower)) return '计划暂不可用，请稍后重试'
-  if (/protect_first_n|should_compress|contextcompaction/.test(lower)) {
-    return '对话整理失败，请稍后重试'
-  }
-  if (/not found|404/.test(lower) && /优化|enhance|prompt/.test(lower)) {
-    return '提示词优化功能暂不可用，请稍后重试'
-  }
-  if (/超时|timeout/.test(lower)) return '请求超时，请稍后重试'
-  if (/get live-run failed|live-run/.test(lower)) return '暂时无法加载对话，请刷新后重试'
-  if (/origin not allowed|not_paired|pairing_required|auth/.test(lower)) {
-    return '连接未授权，请检查配对或登录状态'
-  }
-  if (/userinterrupt|user interrupt/.test(lower)) return ''
 
-  if (/^[A-Z][a-zA-Z0-9_]*(?:Error|Exception):/.test(msg)) return fallback
-  if (DEV_JARGON.test(msg)) return fallback
-  if (!hasCjk(msg) && msg.length > 60) return fallback
-
-  return msg
+  if (facing) logRawUserFacingError(raw, facing)
+  return facing
 }
 
 export { DEFAULT_FALLBACK as USER_FACING_ERROR_FALLBACK }

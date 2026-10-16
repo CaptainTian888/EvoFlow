@@ -8,18 +8,23 @@ service) and the conversation runtime:
   skills behave exactly like native skills: ``<available_skills>`` directory,
   ``$skill-name`` mentions, ``skill:<name>`` URIs in read/terminal tools.
 - ``build_plugin_injection_block`` renders the per-turn ``<plugin_injection>``
-  message for plugins picked in the chat composer (``preferred_plugins``
-  run context), including the plugin's command markdown bodies — the ZCode
-  "select a plugin in the composer, its capabilities apply to this turn" flow.
+  message for plugins picked in the chat composer (``preferred_plugins``).
+  It ships metadata only — command names/descriptions and skill
+  name/description/location — plus the markdown body of a command **only when
+  the user actually invokes it via ``/name`` in the current message**
+  (ZCode-style on-demand loading). SKILL.md bodies are never injected here:
+  they stay on disk and are reached through ``skill:<name>`` URIs.
 """
 
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Any
 from xml.sax import saxutils
 
+from evoflow.assets.injection_budget import cap_text_chars
 from evoflow.plugins.components import enumerate_plugin_components
 from evoflow.plugins.manifest import PluginManifestError, read_plugin_manifest_from_root
 from evoflow.plugins.storage import (
@@ -30,6 +35,17 @@ from evoflow.plugins.storage import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Whole-block budget. Metadata entries are tiny; the only heavy payload is an
+# actually-invoked command body, capped per command. Overflow degrades to
+# metadata lines instead of shipping half-cut prose.
+_PLUGIN_INJECTION_MAX_CHARS = 8_000
+_INVOKED_COMMAND_BODY_MAX_CHARS = 4_000
+_PLUGIN_METADATA_DESC_CHARS = 200
+
+# ``/command-name`` token in the user message — same shape as the ``$skill``
+# mention regex in skills/selection.py.
+_COMMAND_INVOCATION_RE = re.compile(r"(?<![\w/\\-])/([a-zA-Z0-9][a-zA-Z0-9_-]{0,63})")
 
 
 def _iter_enabled_plugins(storage_root: Path | None = None):
@@ -121,14 +137,26 @@ def resolve_plugin_id(plugin_ref: str, state: InstalledPluginsState) -> str | No
     return None
 
 
+def _extract_invoked_commands(user_message: str) -> set[str]:
+    """``/name`` tokens from the current user message, lowercased."""
+    if not user_message:
+        return set()
+    return {match.group(1).lower() for match in _COMMAND_INVOCATION_RE.finditer(user_message)}
+
+
 def build_plugin_injection_block(
     plugin_refs: list[str] | None,
     storage_root: Path | None = None,
+    *,
+    user_message: str = "",
 ) -> str:
     """Render the ``<plugin_injection>`` block for composer-selected plugins.
 
-    Includes each plugin's command markdown bodies and skill SKILL.md bodies so
-    the model can act on them this turn (ZCode composer plugin semantics).
+    Metadata-only by default: command names/descriptions and skill
+    name/description/location lines. A command's markdown body is inlined only
+    when the user invokes it via ``/name`` in the current message. SKILL.md
+    bodies are never injected — enabled plugin skills are already listed in
+    ``<available_skills>`` and reachable via ``skill:<name>`` URIs.
     """
     refs = [str(ref or "").strip() for ref in (plugin_refs or []) if str(ref or "").strip()]
     if not refs:
@@ -155,59 +183,100 @@ def build_plugin_injection_block(
     if not resolved:
         return ""
 
+    invoked = _extract_invoked_commands(user_message)
+    used = 0
     sections: list[str] = []
+    truncated = False
     for plugin_id, plugin_root in resolved:
-        summary = _plugin_summary(plugin_root)
-        lines: list[str] = [f'<plugin id="{saxutils.escape(plugin_id, {chr(34): "&quot;"})}">']
-        if summary["description"]:
-            lines.append(f"  <description>{saxutils.escape(summary['description'])}</description>")
-        commands_body: list[str] = []
-        skills_body: list[str] = []
-        for group in summary["components"]:
-            if group["kind"] == "command":
-                commands_dir = plugin_root / "commands"
-                for item in group["items"]:
-                    command_file = commands_dir / f"{item['name']}.md"
-                    body = _frontmatter_body(_read_text(command_file))
-                    if body:
-                        commands_body.append(
-                            f'    <command name="{saxutils.escape(item["name"])}">\n'
-                            f"{_indent(body, 6)}\n"
-                            f"    </command>"
-                        )
-            elif group["kind"] == "skill":
-                skills_dir = plugin_root / "skills"
-                for item in group["items"]:
-                    skill_file = skills_dir / item["name"] / "SKILL.md"
-                    body = _read_text(skill_file)
-                    if body:
-                        skills_body.append(
-                            f'    <skill name="{saxutils.escape(item["name"])}" location="skill:{saxutils.escape(item["name"])}">\n'
-                            f"{_indent(body, 6)}\n"
-                            f"    </skill>"
-                        )
-        if commands_body:
-            lines.append("  <plugin_commands>")
-            lines.extend(commands_body)
-            lines.append("  </plugin_commands>")
-        if skills_body:
-            lines.append("  <plugin_skills>")
-            lines.extend(skills_body)
-            lines.append("  </plugin_skills>")
-        lines.append("</plugin>")
-        sections.append("\n".join(lines))
+        section, section_used = _render_plugin_section(plugin_id, plugin_root, invoked)
+        if not section:
+            continue
+        if section_used > _PLUGIN_INJECTION_MAX_CHARS - used:
+            truncated = True
+            break
+        sections.append(section)
+        used += section_used
 
     if not sections:
         return ""
     intro = (
         "<plugin_injection>\n"
-        "The following EvoFlow plugins are activated by the user for this turn. Follow their\n"
-        "command instructions when the user invokes a listed command (e.g. \"/name\"), and apply\n"
-        "the skill guidance when relevant. Skill files are also reachable via \"skill:<name>\" URIs.\n"
-        "用户本轮启用了以下 EvoFlow 插件：用户输入 /<命令名> 时按对应 command 的指令执行；\n"
-        "相关任务请应用其 skill 指引；技能文件可用 \"skill:<名称>\" URI 读取。\n"
+        "The following EvoFlow plugins are activated by the user. Only their component\n"
+        "metadata is listed here: read a skill via \"skill:<name>\" (read/terminal) when its\n"
+        "steps are needed; command markdown bodies are inlined only for commands the user\n"
+        "invokes via \"/name\" in this turn's message.\n"
+        "用户启用了以下 EvoFlow 插件，此处仅列出组件元数据：需要技能步骤时用 "
+        "\"skill:<名称>\" 读取 SKILL.md；仅当用户本轮消息以 \"/命令名\" 调用某命令时，"
+        "该命令的正文才会内联给出。\n"
     )
-    return intro + "\n".join(sections) + "\n</plugin_injection>"
+    body = intro + "\n".join(sections)
+    if truncated:
+        body += "\n<!-- plugin_injection truncated: remaining plugins/components exceed the budget; use skill:/commands metadata above -->"
+    return body + "\n</plugin_injection>"
+
+
+def _render_plugin_section(
+    plugin_id: str,
+    plugin_root: Path,
+    invoked: set[str],
+) -> tuple[str, int]:
+    """Render one plugin's metadata section; returns ``(section, chars_used)``.
+
+    ``chars_used`` may exceed the caller's remaining budget when the section
+    alone cannot fit — the caller drops such sections entirely instead of
+    shipping half-cut ones.
+    """
+    summary = _plugin_summary(plugin_root)
+    lines: list[str] = [f'<plugin id="{saxutils.escape(plugin_id, {chr(34): "&quot;"})}">']
+    if summary["description"]:
+        lines.append(
+            f"  <description>{saxutils.escape(_cap(summary['description']))}</description>"
+        )
+    commands: list[str] = []
+    skills: list[str] = []
+    for group in summary["components"]:
+        if group["kind"] == "command":
+            commands_dir = plugin_root / "commands"
+            for item in group["items"]:
+                name = str(item["name"])
+                if name.lower() in invoked:
+                    body = _frontmatter_body(_read_text(commands_dir / f"{name}.md", _INVOKED_COMMAND_BODY_MAX_CHARS))
+                    if body:
+                        commands.append(
+                            f'    <command name="{saxutils.escape(name)}" invoked="true">\n'
+                            f"{_indent(body, 6)}\n"
+                            f"    </command>"
+                        )
+                        continue
+                commands.append(_metadata_line("command", name, item.get("description")))
+        elif group["kind"] == "skill":
+            for item in group["items"]:
+                name = str(item["name"])
+                skills.append(
+                    f'    <skill name="{saxutils.escape(name)}" location="skill:{saxutils.escape(name)}"'
+                    + (f' description="{saxutils.escape(_cap(item["description"]))}"' if item.get("description") else "")
+                    + " />"
+                )
+    if commands:
+        lines.append("  <plugin_commands>")
+        lines.extend(commands)
+        lines.append("  </plugin_commands>")
+    if skills:
+        lines.append("  <plugin_skills>")
+        lines.extend(skills)
+        lines.append("  </plugin_skills>")
+    lines.append("</plugin>")
+    section = "\n".join(lines)
+    return section, len(section)
+
+
+def _metadata_line(kind: str, name: str, description: str | None) -> str:
+    desc = f' description="{saxutils.escape(_cap(description or ""))}"' if (description or "").strip() else ""
+    return f'    <{kind} name="{saxutils.escape(name)}"{desc} />'
+
+
+def _cap(text: str) -> str:
+    return cap_text_chars(text, _PLUGIN_METADATA_DESC_CHARS)
 
 
 def _indent(text: str, spaces: int) -> str:

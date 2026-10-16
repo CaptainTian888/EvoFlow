@@ -21,9 +21,22 @@ export type RightStageSnapshot = {
   /** 打开的标签（有序）；标签条 UI 直接消费。 */
   tabs: RightStageSurface[]
   activeKey: string | null
+  /**
+   * ZCode 同构：折叠只藏面板，不丢 tabs。
+   * 展开且 tabs 为空时显示「打开标签」首页。
+   */
+  collapsed: boolean
   rev: number
   streams: Map<string, RightStageStreamSession>
   /** 最近关闭的标签（倒序，最新在前）。 */
+  recentClosed: RecentClosedRightStageTab[]
+}
+
+/** 按会话冻结的侧栏快照（切会话时换出 / 换回）。 */
+export type RightStageSessionMemory = {
+  tabs: RightStageSurface[]
+  activeKey: string | null
+  collapsed: boolean
   recentClosed: RecentClosedRightStageTab[]
 }
 
@@ -39,6 +52,7 @@ function emptySnapshot(): RightStageSnapshot {
     surface: null,
     tabs: [],
     activeKey: null,
+    collapsed: true,
     rev: 0,
     streams: new Map(),
     recentClosed: [],
@@ -58,6 +72,8 @@ export class RightStageStore {
   /** 打开的标签（有序）。ZCode 式：多面板共存，激活者投影为 surface。 */
   private tabs: RightStageSurface[] = []
   private activeKey: string | null = null
+  /** 默认折叠；用户点侧栏按钮或 show() 时展开。 */
+  private collapsed = true
   private rev = 0
   private streams = new Map<string, RightStageStreamSession>()
   private recentClosed: RecentClosedRightStageTab[] = []
@@ -96,9 +112,13 @@ export class RightStageStore {
       surface: active ? { ...active, data: { ...active.data } } : null,
       tabs: this.tabs.map((t) => ({ ...t, data: { ...t.data } })),
       activeKey: this.activeKey,
+      collapsed: this.collapsed,
       rev: this.rev,
       streams,
-      recentClosed: this.recentClosed,
+      recentClosed: this.recentClosed.map((e) => ({
+        ...e,
+        tab: { ...e.tab, data: { ...e.tab.data } },
+      })),
     }
   }
 
@@ -106,8 +126,64 @@ export class RightStageStore {
     return this.cachedSnapshot
   }
 
+  /** 面板是否占布局宽度（与 tabs 是否为空无关）。 */
   get isOpen(): boolean {
-    return this.tabs.length > 0
+    return !this.collapsed
+  }
+
+  setCollapsed(collapsed: boolean) {
+    if (this.collapsed === collapsed) return
+    this.collapsed = collapsed
+    this.bump()
+  }
+
+  expand() {
+    this.setCollapsed(false)
+  }
+
+  collapse() {
+    this.setCollapsed(true)
+  }
+
+  toggleCollapsed() {
+    this.setCollapsed(!this.collapsed)
+  }
+
+  /** 导出当前会话可冻结的侧栏状态（不含 streams）。 */
+  exportSessionMemory(): RightStageSessionMemory {
+    return {
+      tabs: this.tabs.map((t) => ({ ...t, data: { ...t.data } })),
+      activeKey: this.activeKey,
+      collapsed: this.collapsed,
+      recentClosed: this.recentClosed.map((e) => ({
+        ...e,
+        tab: { ...e.tab, data: { ...e.tab.data } },
+      })),
+    }
+  }
+
+  /** 切会话时整表换入；streams 按会话清空以免串台。 */
+  importSessionMemory(memory: RightStageSessionMemory | null | undefined) {
+    if (!memory) {
+      this.tabs = []
+      this.activeKey = null
+      this.collapsed = true
+      this.recentClosed = []
+      this.streams.clear()
+      this.bump()
+      return
+    }
+    this.tabs = memory.tabs.map((t) => ({
+      ...t,
+      kind: normalizeRightStageKind(t.kind),
+      data: { ...(t.data || {}) },
+    }))
+    this.activeKey = memory.activeKey
+    this.collapsed =
+      typeof memory.collapsed === 'boolean' ? memory.collapsed : this.tabs.length === 0
+    this.recentClosed = Array.isArray(memory.recentClosed) ? memory.recentClosed : []
+    this.streams.clear()
+    this.bump()
   }
 
   get currentKind(): RightStageKind | null {
@@ -161,11 +237,12 @@ export class RightStageStore {
         prev.layout === next.layout &&
         JSON.stringify(prev.data) === JSON.stringify(next.data)
       if (same) {
-        // 仅激活
-        if (this.activeKey !== key) {
-          this.activeKey = key
-          this.bump()
-        }
+        // 仅激活并展开（侧栏可能处于折叠）
+        const needActivate = this.activeKey !== key
+        const needExpand = this.collapsed
+        if (needActivate) this.activeKey = key
+        if (needExpand) this.collapsed = false
+        if (needActivate || needExpand) this.bump()
         return
       }
       this.tabs[existingIdx] = next
@@ -173,13 +250,18 @@ export class RightStageStore {
       this.tabs = [...this.tabs, next]
     }
     this.activeKey = key
+    // 打开/激活任一标签时必须展开侧栏，否则用户看不到新页
+    this.collapsed = false
     this.bump()
   }
 
   activateTab(key: string) {
-    if (this.activeKey === key) return
     if (!this.tabs.some((t) => this.tabKeyOf(t) === key)) return
-    this.activeKey = key
+    const needActivate = this.activeKey !== key
+    const needExpand = this.collapsed
+    if (!needActivate && !needExpand) return
+    if (needActivate) this.activeKey = key
+    if (needExpand) this.collapsed = false
     this.bump()
   }
 
@@ -276,11 +358,18 @@ export class RightStageStore {
     this.bump()
   }
 
-  /** 清空所有 tabs 并清空 activeKey —— rebuildSnapshot 会把 surface 推为 null。 */
+  /**
+   * 清空全部标签（写入 recentClosed）并折叠。
+   * 日常「收起侧栏」应走 collapse()，保留 tabs 缓存。
+   */
   hideAll() {
-    if (this.tabs.length === 0 && this.activeKey === null) return
+    if (this.tabs.length === 0 && this.activeKey === null && this.collapsed) return
+    for (const tab of this.tabs) {
+      this.recordClosed(this.tabKeyOf(tab), tab)
+    }
     this.tabs = []
     this.activeKey = null
+    this.collapsed = true
     this.bump()
   }
 
@@ -416,31 +505,14 @@ export class RightStageStore {
 /** Process-wide default store (per-tab). Session scoping stays in ChatApp wiring. */
 export const rightStageStore = new RightStageStore()
 
+/** 只关掉匹配 kind 的标签；不能再 hideAll，否则会把其它 kind 一并清掉。 */
 export function hideRightStageIfKind(...kinds: string[]) {
-  // eslint-disable-next-line no-console
-  console.log('[diag][collapse-panel] hideRightStageIfKind called', { kinds })
-  const kindsNorm = kinds.map((k) => normalizeRightStageKind(k))
-  // eslint-disable-next-line no-console
-  console.log('[diag][collapse-panel] rightStageStore.tabs snapshot', {
-    tabs: rightStageStore.getSnapshot().tabs.map((t) => `${t.kind}:${t.id}`),
-    surface: rightStageStore.getSnapshot().surface,
-    surfaceKind: rightStageStore.getSnapshot().surface?.kind,
-    activeKey: rightStageStore.getSnapshot().activeKey,
-  })
-  const matching = rightStageStore.getSnapshot().tabs.filter((t) =>
-    kindsNorm.includes(String(t.kind)),
-  )
-  // eslint-disable-next-line no-console
-  console.log('[diag][collapse-panel] hideRightStageIfKind kindsNorm', { kindsNorm })
-  // eslint-disable-next-line no-console
-  console.log('[diag][collapse-panel] hideRightStageIfKind matching tabs', {
-    matching: matching.map((t) => `${t.kind}:${t.id}`),
-  })
-  for (const t of matching) rightStageStore.closeTab(`${t.kind}:${t.id}`)
-  // 同时处理当前 surface 本身（browser 等 surface 通过 surface 字段而非 tabs 渲染）
-  const snap = rightStageStore.getSnapshot()
-  if (snap.surface && kindsNorm.includes(String(snap.surface.kind))) {
-    // surface 实际由 tabs 推导：清空 tabs + activeKey 后 rebuildSnapshot 会让 surface=null
-    rightStageStore.hideAll()
+  const kindsNorm = kinds.map((k) => normalizeRightStageKind(k)).filter(Boolean)
+  if (!kindsNorm.length) return
+  const matching = rightStageStore
+    .getSnapshot()
+    .tabs.filter((t) => kindsNorm.includes(normalizeRightStageKind(String(t.kind))))
+  for (const t of matching) {
+    rightStageStore.closeTab(`${normalizeRightStageKind(t.kind)}:${t.id}`)
   }
 }

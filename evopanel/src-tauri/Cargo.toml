@@ -6,7 +6,7 @@ description = "EvoFlow 桌面端 — 面向长任务的原生 Agent Runtime 与�
 authors = ["EvovexAI"]
 repository = "https://github.com/EvovexAI/EvoFlow"
 homepage = "https://www.evovexai.com"
-license = "LicenseRef-PolyForm-Noncommercial-1.0.0"
+
 license-file = "../../LICENSE"
 
 [lib]

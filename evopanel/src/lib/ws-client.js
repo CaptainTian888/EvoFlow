@@ -623,18 +623,28 @@ export function isDesktopDirectApiMode() {
   }
 }
 
-let _cachedGwBaseUrl = null
-
-/** 获取 Gateway 后端地址（缓存结果，避免重复 invoke） */
+/**
+ * Gateway base for chat/SSE. Must match ``tauri-api.js`` resolution
+ * (env / runtime / trusted URL) — a private invoke-only cache used to pin a
+ * dead port (e.g. 8912) while uvicorn sits on 8070, which surfaces as the
+ * opaque toast「服务连接异常，请确认服务已启动后重试」.
+ */
 async function _getGatewayBaseUrl() {
-  if (_cachedGwBaseUrl !== null) return _cachedGwBaseUrl
-  if (isEvoflowTauri()) {
-    const { invoke } = await import('@tauri-apps/api/core')
-    _cachedGwBaseUrl = await invoke('get_gateway_base_url')
-  } else {
-    _cachedGwBaseUrl = ''
+  try {
+    const { getGatewayBaseUrl } = await import('./tauri-api.js')
+    return String((await getGatewayBaseUrl()) || '').trim().replace(/\/+$/, '')
+  } catch (e) {
+    console.warn('[evoflow] getGatewayBaseUrl via tauri-api failed; falling back', e)
   }
-  return _cachedGwBaseUrl
+  if (isEvoflowTauri()) {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core')
+      return String((await invoke('get_gateway_base_url')) || '').trim().replace(/\/+$/, '')
+    } catch (e) {
+      console.warn('[evoflow] get_gateway_base_url invoke failed', e)
+    }
+  }
+  return ''
 }
 
 /** 合并 WebUI JWT（切换用户 / SSO 后按登录身份访问 Gateway）。 */
@@ -1029,11 +1039,44 @@ export async function evoflowFetchStream(url, options = {}) {
   // DEV 模式 或 桌面端直连 API 模式：直走浏览器 fetch，DevTools Network 可见
   const shouldUseDirectFetch = import.meta.env.DEV || isDesktopDirectApiMode()
   if (shouldUseDirectFetch) {
-    transportLog('sse transport=direct-api-fetch', pathOnly)
-    return _gatewayAuthFetch(
-      (await _getGatewayBaseUrl()) + url,
-      options
-    )
+    const base = await _getGatewayBaseUrl()
+    // Empty base → same-origin / Vite proxy (1521→8070). Never fetch "undefined/…".
+    const fullUrl = base ? `${base}${url}` : url
+    transportLog('sse transport=direct-api-fetch', pathOnly, { base: base || '(vite-proxy)' })
+    try {
+      return await _gatewayAuthFetch(fullUrl, options)
+    } catch (err) {
+      const diag = _diagTransportErr('direct-api-fetch', err)
+      const isChatSend = isRunsStream
+      // panel-stream reconnects every few seconds while Gateway is down — don't
+      // flood DevTools with identical console.error stacks (chat send still logs).
+      _logTransportDiag('runs-stream/direct-api-fetch/fail', {
+        id: diagRunId,
+        path: pathOnly,
+        base: base || '',
+        fullUrl: String(fullUrl).slice(0, 160),
+        ...diag,
+      })
+      if (isChatSend) {
+        console.error('[evoflow] direct Gateway fetch failed', { base, fullUrl, err })
+      }
+      // Absolute 8070 refused → one shot via Vite proxy (survives brief bind races).
+      if (
+        base &&
+        /failed to fetch|err_connection_refused|networkerror/i.test(String(err?.message || err || ''))
+      ) {
+        try {
+          transportLog('sse transport=direct-api-fetch-vite-fallback', pathOnly)
+          return await _gatewayAuthFetch(url, options)
+        } catch (err2) {
+          if (isChatSend) {
+            console.error('[evoflow] Vite-proxy Gateway fallback also failed', err2)
+          }
+          throw err2
+        }
+      }
+      throw err
+    }
   }
 
   let forcePipeChat = false

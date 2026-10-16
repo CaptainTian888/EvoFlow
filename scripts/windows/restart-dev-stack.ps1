@@ -10,7 +10,7 @@ param(
     [switch] $ShowBackendLog,
     [switch] $CleanViteCache,
     [switch] $KeepViteCache,
-    [int] $FrontendPort = 1421,
+    [int] $FrontendPort = 1521,
     [switch] $AutoFrontendPort = $true,
     [int] $GatewayPort = 0
 )
