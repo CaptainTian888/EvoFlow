@@ -397,9 +397,68 @@ function toolInputArgs(tool) {
   return null
 }
 
+// ── 模型自述标题契约（对齐 ZCode nodeReplToolDisplay 同款语义）──────────────
+// `mcp__node_repl__js` 的入参 schema 携带必填 `title`（模型每次调用用用户语言
+// 写的本次操作描述，Browser Use 与 Computer Use 共用该入口）。面板主标题优先
+// 取它；含实现术语的标题拒收并回退到 MCP 映射表。契约约束在工具 schema
+// （backend node_repl_tool.py），前端只负责展示与兜底，不做工具名→动词匹配。
+const NODE_REPL_TITLE_CONTRACT_TOOL_NAMES = new Set(['mcp__node_repl__js'])
+const IMPLEMENTATION_TITLE_PATTERN = /(?:\bjs\b|\bjavascript\b|node[\s_-]*repl)/i
+
+function sanitizeAuthoredTitle(value) {
+  const s = String(value ?? '').trim()
+  if (!s || IMPLEMENTATION_TITLE_PATTERN.test(s)) return ''
+  return s
+}
+
+function authoredTitleFromParsedArgs(args) {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return ''
+  if (typeof args.title !== 'string') return ''
+  return sanitizeAuthoredTitle(args.title)
+}
+
+/** 流式阶段 args 是残缺 JSON，解析失败时按前缀正则抠 title（schema 里 title 声明在最前） */
+function authoredTitleFromPartialArgsText(text) {
+  const s = String(text || '')
+  if (!s.includes('"title"')) return ''
+  const m = s.match(/"title"\s*:\s*"((?:[^"\\]|\\.)*)"/)
+  if (!m) return ''
+  let v = m[1]
+  try {
+    v = JSON.parse(`"${v}"`)
+  } catch {
+    /* 残缺转义序列时保留原文，交给 sanitize 判断 */
+  }
+  return sanitizeAuthoredTitle(v)
+}
+
+/** 模型自述标题；仅限声明了 title 显示契约的工具（当前=node_repl js 内核） */
+export function readModelAuthoredToolTitle(tool) {
+  if (!tool || typeof tool !== 'object') return ''
+  const name = String(tool.name ?? tool.tool_name ?? tool.toolName ?? '')
+  if (!NODE_REPL_TITLE_CONTRACT_TOOL_NAMES.has(name)) return ''
+  const parsed = authoredTitleFromParsedArgs(toolInputArgs(tool))
+  if (parsed) return parsed
+  for (const key of ['arguments', 'args', 'parameters']) {
+    const parsedAlt = authoredTitleFromParsedArgs(tool[key])
+    if (parsedAlt) return parsedAlt
+  }
+  // input/args 是字符串但 JSON 还没完整（流式）时，从原文正则提取
+  for (const key of ['input', 'arguments', 'args']) {
+    if (typeof tool[key] === 'string') {
+      const partial = authoredTitleFromPartialArgsText(tool[key])
+      if (partial) return partial
+    }
+  }
+  const fnArgs = tool.function && typeof tool.function === 'object' ? tool.function.arguments : ''
+  if (typeof fnArgs === 'string') return authoredTitleFromPartialArgsText(fnArgs)
+  return ''
+}
+
 // ── ZCode 插件/MCP 工具中文显示（McpToolCallBlock 同款语义）────────────────
 // ZCode 的 MCP 渲染块把 mcp__<server>__<tool> 拆成「服务器来源 + 动作」并人性化；
 // 这里同样拆分 + 中文映射，未收录的保持人性化英文名（首字母大写）。
+// 注意：这张表只是兜底 —— 声明了 title 显示契约的工具（node_repl js）优先用模型自述标题。
 const MCP_SERVER_ZH = {
   node_repl: 'Node 内核',
   filesystem: '文件系统',
@@ -508,9 +567,12 @@ export function mcpToolDisplayTitleZh(name) {
   return `${serverZh} · ${action}`
 }
 
-export function mcpToolShortLabelZh(name) {
-  const { server, tool } = splitMcpToolName(name)
-  return mcpActionZh(tool) || MCP_SERVER_ZH[server] || humanizeMcpIdentifier(tool) || '扩展工具'
+export function mcpToolShortLabelZh(name, tool) {
+  // title 显示契约工具：主标题 = 模型自述操作描述（如「打开浏览器标签页搜索 xx」）
+  const authored = readModelAuthoredToolTitle(tool)
+  if (authored) return authored
+  const { server, tool: toolName } = splitMcpToolName(name)
+  return mcpActionZh(toolName) || MCP_SERVER_ZH[server] || humanizeMcpIdentifier(toolName) || '扩展工具'
 }
 
 export function resolveToolKey(tool) {
@@ -689,9 +751,9 @@ export function capitalizeToolName(name) {
 }
 
 /** 工具调用折叠条左侧标签：显示英文工具名（首字母大写） */
-export function toolShortLabel(toolName) {
+export function toolShortLabel(toolName, tool) {
   // MCP 工具：超短中文标签（动作词或服务器名），与 ToolCallList 折叠条一致
-  if (String(toolName || '').startsWith('mcp__')) return mcpToolShortLabelZh(toolName)
+  if (String(toolName || '').startsWith('mcp__')) return mcpToolShortLabelZh(toolName, tool)
   const key = resolveToolKey({ name: toolName })
   if (key && key !== 'tool') return capitalizeToolName(key)
   const raw = String(toolName || '').trim()
@@ -1128,8 +1190,12 @@ export function formatToolDisplayTitle(tool) {
   const name = resolveEffectiveToolName(tool)
   const args = toolInputArgs(tool)
 
-  // ZCode McpToolCallBlock 同款：MCP 工具显示「服务器中文 · 操作中文 · 参数摘要」
+  // ZCode McpToolCallBlock 同款：MCP 工具显示「服务器中文 · 操作中文 · 参数摘要」；
+  // title 显示契约工具（node_repl js）优先用模型自述标题，此时不再拼参数摘要位
+  // （避免「打开 github.com」标题旁边再重复一遍同一 URL）。
   if (String(name || '').startsWith('mcp__')) {
+    const authored = readModelAuthoredToolTitle(tool)
+    if (authored) return authored
     const head = mcpToolDisplayTitleZh(name)
     const seen = new Set()
     const bits = []
@@ -1229,6 +1295,9 @@ export function toolTitleDetailTail(title) {
  * ToolCallList 的 toolBrief 专用分支仍优先；本函数用于兜底与未覆盖工具。
  */
 export function formatToolBriefDetail(tool, titleText) {
+  // title 显示契约工具（node_repl js）：主标签已是模型自述标题，右侧摘要不再
+  // 重复 title，也不把整段 code 参数当文本兜底展示。
+  if (readModelAuthoredToolTitle(tool)) return ''
   const title = String(titleText || formatToolDisplayTitle(tool)).trim()
   const tail = toolTitleDetailTail(title)
   if (tail) return tail

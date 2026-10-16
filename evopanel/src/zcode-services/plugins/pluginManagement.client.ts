@@ -12,6 +12,7 @@
  */
 
 import { Event } from "@zcode/rpc";
+import { blog } from "../../lib/browser-unified-log.js";
 import type {
   ZCodePluginOperationProgressNotification,
   ZCodePluginsCancelOperationResult,
@@ -64,23 +65,36 @@ async function httpGet<T>(url: string): Promise<T> {
 }
 
 async function httpSend<T>(url: string, method: string, body?: unknown): Promise<T> {
-  const resp = await fetch(url, {
-    method,
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
-  if (!resp.ok && resp.status !== 204) {
-    let detail = "";
-    try {
-      const payload = (await resp.json()) as { detail?: string };
-      detail = typeof payload.detail === "string" ? payload.detail : "";
-    } catch {
-      /* ignore */
+  // 插件操作（安装/启停/卸载/配置/市场变更）进统一日志，与后端 service 日志对齐。
+  const bodyPreview = body !== undefined ? JSON.stringify(body).slice(0, 160) : ""
+  blog("info", `[plugin-client] ${method} ${url}${bodyPreview ? ` body=${bodyPreview}` : ""}`)
+  const started = Date.now()
+  try {
+    const resp = await fetch(url, {
+      method,
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+    blog(
+      resp.ok ? "info" : "warn",
+      `[plugin-client] ${method} ${url} -> HTTP ${resp.status} in ${Date.now() - started}ms`,
+    )
+    if (!resp.ok && resp.status !== 204) {
+      let detail = "";
+      try {
+        const payload = (await resp.json()) as { detail?: string };
+        detail = typeof payload.detail === "string" ? payload.detail : "";
+      } catch {
+        /* ignore */
+      }
+      throw new Error(detail || `Gateway ${method} ${url} HTTP ${resp.status}`);
     }
-    throw new Error(detail || `Gateway ${method} ${url} HTTP ${resp.status}`);
+    if (resp.status === 204) return undefined as unknown as T;
+    return (await resp.json()) as T;
+  } catch (err) {
+    blog("warn", `[plugin-client] ${method} ${url} FAILED in ${Date.now() - started}ms: ${err}`)
+    throw err
   }
-  if (resp.status === 204) return undefined as unknown as T;
-  return (await resp.json()) as T;
 }
 
 function encodePathSegment(value: string): string {

@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 BUILTIN_DIR = Path(__file__).parent / "builtin"
 
-SEED_MANIFEST_VERSION = 6
+SEED_MANIFEST_VERSION = 8
 
 # 面向用户展示的 listing 文案统一使用 EvoFlow 品牌（这是 EvoFlow 平台的市场）。
 # 仅替换文本字段；插件 name slug、icon URL 等标识保持原样。
@@ -76,7 +76,7 @@ def _rebrand_entry_text(entry: dict[str, Any]) -> None:
 
 # ZCode official plugin ids exposed in the marketplace (node-repl-host is the
 # hidden host runtime and intentionally excluded, matching ZCode).
-EXCLUDED_OFFICIAL_PLUGINS = {"node-repl-host"}
+EXCLUDED_OFFICIAL_PLUGINS = {"node-repl-host", "zcode-guide", "hello-command", "evoflow-skill-kit"}
 
 # ZCode ``defaultEnabled`` content-only plugins — auto-installed + enabled.
 DEFAULT_ENABLED_OFFICIAL_PLUGINS = {
@@ -88,7 +88,7 @@ DEFAULT_ENABLED_OFFICIAL_PLUGINS = {
     "image-search",
     "plugin-creator",
     "skill-creator",
-    "zcode-guide",
+    "evoflow-guide",
 }
 
 ZCODE_OFFICIAL_MARKETPLACE_ID = "zcode-plugins-official"
@@ -147,29 +147,19 @@ def _latest_cache_version_dir(cache_root: Path, plugin_name: str) -> Path | None
 def _demo_marketplace_manifest() -> dict[str, Any]:
     plugins: list[dict[str, Any]] = [
         {
-            "name": "hello-command",
-            "displayName": "Hello Command",
-            "displayName_i18n": {"zh-CN": "示例：Hello 命令"},
-            "description": "EvoFlow 官方示例：注册一个 /hello 斜杠命令，演示插件的 commands 组件。",
+            "name": "evoflow-guide",
+            "displayName": "EvoFlow Guide",
+            "displayName_i18n": {"zh-CN": "EvoFlow 使用与诊断指南"},
+            "description": "EvoFlow usage and self-diagnosis guide: teaches agents and users how to configure MCP servers, commands, skills, hooks, and plugins, and how to locate and fix configuration problems for each.",
             "version": "1.0.0",
-            "category": "examples",
-            "tags": ["examples", "commands"],
+            "category": "guides",
+            "tags": ["guide", "diagnostics", "configuration"],
             "author": {"name": "EvoFlow"},
             "source": "filesystem",
-            "cachePath": str(builtin_plugin_dir("hello-command")),
+            "cachePath": str(builtin_plugin_dir("evoflow-guide")),
+            "icon": "/api/plugins/icon/evoflow-guide",
         },
-        {
-            "name": "evoflow-skill-kit",
-            "displayName": "EvoFlow Skill Kit",
-            "displayName_i18n": {"zh-CN": "示例：技能包"},
-            "description": "EvoFlow 官方示例：内置一个 greeting 技能，演示插件的 skills 组件。",
-            "version": "1.0.0",
-            "category": "examples",
-            "tags": ["examples", "skills"],
-            "author": {"name": "EvoFlow"},
-            "source": "filesystem",
-            "cachePath": str(builtin_plugin_dir("evoflow-skill-kit")),
-        },
+
     ]
     return {
         "name": EVOFLOW_OFFICIAL_PLUGIN_MARKETPLACE,
@@ -220,7 +210,7 @@ def build_official_marketplace_manifest() -> dict[str, Any]:
         return _demo_marketplace_manifest()
 
     description = (
-        "EvoFlow 官方插件市场（与 ZCode 官方市场 1:1 对齐）。"
+        "EvoFlow 官方插件市场（与 EvoFlow 官方市场 1:1 对齐）。"
         if cache_root and official_manifest
         else "EvoFlow 官方插件市场（内置示例，离线可用）。"
     )
@@ -242,6 +232,7 @@ def seed_official_marketplace(storage_root: Path) -> dict[str, Any]:
     manifest = build_official_marketplace_manifest()
     manifest["__seededVersion"] = SEED_MANIFEST_VERSION
     _localize_official_icons(storage_root, manifest)
+    _seed_builtin_plugin_icons(storage_root, manifest)
     save_marketplace_manifest_cache(storage_root, manifest)
     _install_default_enabled_plugins(storage_root, manifest)
     return manifest
@@ -286,6 +277,37 @@ def _localize_official_icons(storage_root: Path, manifest: dict[str, Any]) -> No
                 logger.info("Icon download failed for %s: %s", name, error)
                 continue
         entry["icon"] = f"/api/plugins/icon/{name}"
+
+
+def _seed_builtin_plugin_icons(storage_root: Path, manifest: dict[str, Any]) -> None:
+    """Copy local icon.png from builtin plugin directories into ``<storage>/icons``.
+
+    Builtin plugins (filesystem source, shipped in this package) carry their
+    icon next to the manifest; CDN download does not apply. Without this step
+    the ``/api/plugins/icon/<name>`` endpoint has no file to serve.
+    """
+    target_dir = icons_dir(storage_root)
+    for entry in manifest.get("plugins", []):
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("name") or "").strip()
+        source = str(entry.get("source") or "").strip()
+        if not name or source != "filesystem":
+            continue
+        cache_path = entry.get("cachePath")
+        if not cache_path:
+            continue
+        builtin_icon = Path(cache_path) / "icon.png"
+        if not builtin_icon.is_file():
+            continue
+        target = target_dir / f"{name}.png"
+        if target.is_file():
+            continue
+        try:
+            target_dir.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(builtin_icon.read_bytes())
+        except Exception as error:  # noqa: BLE001 - icon is cosmetic
+            logger.info("Builtin icon copy failed for %s: %s", name, error)
 
 
 def _install_default_enabled_plugins(storage_root: Path, manifest: dict[str, Any]) -> None:

@@ -60,6 +60,16 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _ulog(message: str) -> None:
+    """统一浏览器/插件调试日志（browser-debug.log，三端汇聚）。"""
+    try:
+        from evoflow.tools.builtins.browser_debug_log import browser_debug_log
+
+        browser_debug_log("py", f"[plugin-service] {message}")
+    except Exception:
+        pass
+
+
 def _diagnostic_to_json(diagnostic: PluginDiagnostic) -> dict[str, Any]:
     return diagnostic.to_json()
 
@@ -315,12 +325,12 @@ class PluginManagementService:
     def _ensure_entry_manifest(entry: MarketplaceEntry, target: Path) -> None:
         if any(
             (target / relative).is_file()
-            for relative in (".zcode-plugin/plugin.json", ".claude-plugin/plugin.json", ".codex-plugin/plugin.json")
+            for relative in (".evoflow-plugin/plugin.json", ".zcode-plugin/plugin.json", ".claude-plugin/plugin.json", ".codex-plugin/plugin.json")
         ):
             return
         from .manifest import create_manifest_from_marketplace_entry
 
-        manifest_dir = target / ".zcode-plugin"
+        manifest_dir = target / ".evoflow-plugin"
         manifest_dir.mkdir(parents=True, exist_ok=True)
         payload = create_manifest_from_marketplace_entry(entry)
         (manifest_dir / "plugin.json").write_text(
@@ -354,6 +364,9 @@ class PluginManagementService:
             )
         save_installed_plugins_state(self.storage_root, state)
         ensure_plugin_data_dir(self.storage_root, f"{plugin_name}@{marketplace}")
+        _ulog(
+            f"install ok: {plugin_name}@{marketplace} scope={scope} closure={[pid for pid, _, _ in closure]}"
+        )
         return {
             "installedPlugins": [self._installed_summary(record, state) for record in installed],
             "dependencyClosure": [plugin_id for plugin_id, _, _ in closure],
@@ -369,6 +382,7 @@ class PluginManagementService:
         state.enabled_plugins.pop(plugin_id, None)
         state.options.pop(plugin_id, None)
         save_installed_plugins_state(self.storage_root, state)
+        _ulog(f"uninstall ok: {plugin_id} remove_cache={remove_cache}")
         removed_json = self._installed_summary(record, state)
         if remove_cache:
             install_path = resolve_installed_plugin_root(self.storage_root, record)
@@ -389,6 +403,7 @@ class PluginManagementService:
             raise PluginManifestError(f"Plugin not found: {plugin_id}")
         self._cache_marketplace_plugin(plugin_id, entry, manifest, state, record.scope)
         save_installed_plugins_state(self.storage_root, state)
+        _ulog(f"update ok: {plugin_id}")
         updated = [item for item in state.plugins if item.id == plugin_id]
         return {
             "installedPlugins": [self._installed_summary(item, state) for item in updated],
@@ -417,6 +432,7 @@ class PluginManagementService:
             raise PluginManifestError(f"Plugin not installed: {plugin_id}")
         state.enabled_plugins[plugin_id] = bool(enabled)
         save_installed_plugins_state(self.storage_root, state)
+        _ulog(f"set-enabled ok: {plugin_id} enabled={bool(enabled)}")
         info = self._plugin_info(record, state)
         return {"plugin": info, "enabled": bool(enabled)}
 

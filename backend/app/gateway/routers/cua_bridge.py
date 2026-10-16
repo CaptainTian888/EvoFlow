@@ -19,7 +19,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from evoflow.authz.http_guard import require_org_admin
@@ -29,6 +29,14 @@ logger = logging.getLogger(__name__)
 
 def _org_admin_guard(request: Request) -> None:
     require_org_admin(request)
+
+
+def _bridge_token_guard(request: Request) -> None:
+    """CUA 命令面共享令牌校验（同 browser bridge，内核桥为唯一预期调用方）。"""
+    from evoflow.plugins.bridge_auth import verify_bridge_token
+
+    if not verify_bridge_token(request):
+        raise HTTPException(status_code=403, detail="browser bridge token required")
 
 
 router = APIRouter(prefix="/api/cua", tags=["cua-bridge"], dependencies=[Depends(_org_admin_guard)])
@@ -72,10 +80,17 @@ def _run_ps_action(action: str, payload: dict[str, Any]) -> dict[str, Any]:
     return json.loads(proc.stdout)
 
 
-@router.post("/execute")
+@router.post(
+    "/execute",
+    dependencies=[Depends(_bridge_token_guard)],
+)
 async def execute(payload: CuaExecuteRequest) -> dict[str, Any]:
     """Execute one CUA wire method on the real Windows desktop."""
+    from evoflow.tools.builtins.browser_debug_log import browser_debug_log
+
     method = payload.method
+    started = asyncio.get_event_loop().time()
+    browser_debug_log("py", f"[cua] execute start method={method} input_keys={sorted(dict(payload.input or {}).keys())}")
     action_map = {
         # wire method → ps1 Action
         "get_app_state": "get_app_state",
@@ -93,10 +108,18 @@ async def execute(payload: CuaExecuteRequest) -> dict[str, Any]:
         raw = await asyncio.to_thread(_run_ps_action, ps_action, ps_input)
     except Exception as exc:  # noqa: BLE001 — 统一转 CallToolResult 错误
         logger.warning("CUA execute %s failed: %s", method, exc)
+        browser_debug_log(
+            "py",
+            f"[cua] execute FAILED method={method} after {asyncio.get_event_loop().time() - started:.1f}s: {exc}",
+        )
         return {
             "content": [{"type": "text", "text": json.dumps({"kind": "cua_error", "message": str(exc)[:300]})}],
             "isError": True,
         }
+    browser_debug_log(
+        "py",
+        f"[cua] execute done method={method} ok={bool(raw.get('ok'))} after {asyncio.get_event_loop().time() - started:.1f}s",
+    )
     return _to_call_tool_result(method, raw)
 
 

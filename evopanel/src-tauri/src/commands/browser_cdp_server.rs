@@ -51,17 +51,20 @@ static EDGE_LAUNCHED: std::sync::atomic::AtomicBool =
 pub(crate) fn log_line(s: &str) {
     use std::io::Write as _;
     eprintln!("{s}");
+    // 统一浏览器调试日志：Rust（窗口生命周期/CDP）、Python 引擎、前端面板
+    // 三端全部追加到同一个文件，排两窗口/贴合/导航问题时只看这一处。
     if let Some(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(evoflow_dir().join("browser-cdp-bridge.log"))
+        .open(evoflow_dir().join("browser-debug.log"))
         .ok()
     {
-        let secs = std::time::SystemTime::now()
+        let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        let _ = writeln!(f, "ts:{secs} {s}");
+            .unwrap_or_default();
+        let secs = now.as_secs();
+        let millis = now.subsec_millis();
+        let _ = writeln!(f, "ts:{secs}.{millis:03} [rust] {s}");
         let _ = f.flush();
     }
 }

@@ -200,6 +200,9 @@ import {
 } from '../lib/browser-panel-store.js'
 import { dbgLog } from '../lib/browser-debug-log.js'
 import { hideRightStageIfKind, rightStageStore } from '../lib/right-stage/right-stage-store.js'
+import { ensureSummaryStage, closeSummaryStage } from '../lib/right-stage/ensure-summary-stage.js'
+import { ensureTerminalStage } from '../lib/right-stage/ensure-terminal-stage.js'
+import { filterRightStageTabsForSession } from '../lib/right-stage/right-stage-session-visibility.js'
 import {
   normalizeWriteStreamMode,
   shouldOpenWriteStreamPanel,
@@ -225,7 +228,9 @@ import { useDragResize } from './hooks/useDragResize.js'
 import {
   clampBottomDockHeight,
   clampRightPanelWidth,
+  defaultNarrowRightPanelWidth,
   defaultRightPanelWidth,
+  defaultWideRightPanelWidth,
   loadChatLayoutPrefs,
   applyBottomAreaHeightDelta,
   measureBottomAreaNaturalHeight,
@@ -234,7 +239,8 @@ import {
 import { SessionSidebar, type SubtaskTranscriptModalPayload } from './components/SessionSidebar.js'
 import { WorkspaceFileTree, type ContextFileEntry } from './components/WorkspaceFileTree.js'
 import { MemoryRecallChip } from './components/MemoryRecallChip.js'
-import { WorkspaceFilePreviewModal } from './components/WorkspaceFilePreviewModal.js'
+import { WorkspaceFilePreviewPanel } from './components/WorkspaceFilePreviewPanel.js'
+import { TerminalStagePanel } from './components/TerminalStagePanel.js'
 import { ImagePreviewModal, type ImagePreviewItem } from './components/ImagePreviewModal.js'
 import { isImagePathLike, resolveChatImageSrc } from '../lib/chat-image-src.js'
 import {
@@ -2376,15 +2382,6 @@ export default function ChatApp() {
   /** 切换会话后首次观测到 collab phase 时只记 baseline，不自动展开工作流 */
   const collabExecSessionBaselinedRef = useRef('')
   const [workspaceTreePinned, setWorkspaceTreePinned] = useState(false)
-  const [filePreviewModal, setFilePreviewModal] = useState<{
-    path: string
-    name: string
-    poll: boolean
-    /** 代码评论定位行（1-based）；无则普通预览 */
-    focusLine?: number
-    focusEndLine?: number
-    focusAnnotation?: { title?: string; body?: string; priority?: number }
-  } | null>(null)
   /** Chat @@dir/@@ → open workspace tree at this path */
   const [workspaceBrowseFocusPath, setWorkspaceBrowseFocusPath] = useState<string | null>(null)
   /** Filled after workspace roots resolve; used by early file-open handlers */
@@ -2506,7 +2503,6 @@ export default function ChatApp() {
     setStreamingWritePreview(null)
     lastStreamWritePathRef.current = null
     lastWriteStreamLenRef.current = 0
-    setFilePreviewModal(null)
     setChatOverlayDefer('workspace', false)
     rightStageUserPinnedRef.current = null
     hideRightStageIfKind('workspace-browse', 'write')
@@ -2752,7 +2748,6 @@ export default function ChatApp() {
       setStreamingWritePreview(null)
       lastStreamWritePathRef.current = null
     }
-    setFilePreviewModal(null)
     setWorkspaceTreePinned(kind === 'workspace-browse')
     if (kind === 'mind-map') {
       setKnowledgeMapRefreshKey((k) => k + 1)
@@ -2809,7 +2804,6 @@ export default function ChatApp() {
         setWorkspaceTreePinned(false)
         setStreamingWritePreview(null)
         lastStreamWritePathRef.current = null
-        setFilePreviewModal(null)
         setCollabExecPanelOpen(false)
         setKnowledgeMapPanelOpen(false)
         writeStreamDismissedRef.current = false
@@ -2909,7 +2903,6 @@ export default function ChatApp() {
             setWorkspaceTreePinned(false)
             setStreamingWritePreview(null)
             lastStreamWritePathRef.current = null
-            setFilePreviewModal(null)
             setCollabExecPanelOpen(false)
             setKnowledgeMapPanelOpen(false)
             writeStreamDismissedRef.current = false
@@ -3012,7 +3005,6 @@ export default function ChatApp() {
           hideRightStageIfKind('workspace-browse', 'write')
           setStreamingWritePreview(null)
           lastStreamWritePathRef.current = null
-          setFilePreviewModal(null)
           setWorkspaceTreePinned(false)
           syncShellAsideForWorkspacePanel(false)
         })
@@ -3032,7 +3024,6 @@ export default function ChatApp() {
       setWorkspacePanelOpen(true)
       setWorkspaceTreePinned(true)
       if (!streamingWritePreviewRef.current?.streaming) {
-        setFilePreviewModal(null)
         setStreamingWritePreview(null)
         lastStreamWritePathRef.current = null
       }
@@ -3094,16 +3085,27 @@ export default function ChatApp() {
       const target = resolveWorkspacePreviewTarget(rawUrl, { name: opts?.name })
       if (!target?.path) return
       cancelPendingStreamUiBumpsRef.current()
-      setChatOverlayDefer('file-preview', true)
-      // Open modal immediately; if cite is a directory, resolve to a primary file then update.
-      setFilePreviewModal({
-        path: target.path,
-        name: target.name,
-        poll: !!opts?.poll,
-        focusLine: opts?.focusLine,
-        focusEndLine: opts?.focusEndLine,
-        focusAnnotation: opts?.focusAnnotation,
-      })
+      const fileId = String(target.path || '').replace(/\\/g, '/')
+      const showFileTab = (path: string, name: string) => {
+        const id = String(path || '').replace(/\\/g, '/')
+        rightStageStore.show({
+          kind: 'file',
+          id,
+          title: name || id.split('/').filter(Boolean).pop() || '文件',
+          layout: 'wide',
+          sessionKey: rightStageSessionKeyRef.current || undefined,
+          data: {
+            path: id,
+            name: name || '',
+            poll: !!opts?.poll,
+            focusLine: opts?.focusLine,
+            focusEndLine: opts?.focusEndLine,
+            focusAnnotation: opts?.focusAnnotation || null,
+          },
+        })
+      }
+      // 右栏标签打开；目录 cite 先落临时路径，解析到可打开文件后再换页。
+      showFileTab(fileId, target.name)
       void (async () => {
         try {
           const scope = workspaceOpenScopeRef.current
@@ -3122,16 +3124,13 @@ export default function ChatApp() {
             },
           })
           if (!openable?.path || openable.path === target.path) return
-          setFilePreviewModal((prev) => {
-            if (!prev || prev.path !== target.path) return prev
-            return {
-              ...prev,
-              path: openable.path,
-              name: openable.name || prev.name,
-            }
-          })
+          const nextId = String(openable.path || '').replace(/\\/g, '/')
+          if (nextId !== fileId) {
+            rightStageStore.closeTab(`file:${fileId}`)
+          }
+          showFileTab(nextId, openable.name || target.name)
         } catch {
-          /* keep original path; modal will surface read errors */
+          /* 保留原路径；预览面板会展示读取错误 */
         }
       })()
     },
@@ -3856,12 +3855,11 @@ export default function ChatApp() {
       rightStageOpen ||
       workspacePanelOpen ||
       knowledgeMapVisible ||
-      collabExecPanelOpen ||
-      !!filePreviewModal
+      collabExecPanelOpen
     setChatOverlayDefer('workspace', workspacePanelOpen)
     setChatOverlayDefer('knowledge-map', knowledgeMapVisible)
     setChatOverlayDefer('workflow', collabExecPanelOpen)
-    setChatOverlayDefer('file-preview', !!filePreviewModal)
+    setChatOverlayDefer('file-preview', false)
     if (anySidePanelOpen) {
       cancelPendingStreamUiBumpsRef.current()
     }
@@ -3871,7 +3869,6 @@ export default function ChatApp() {
     knowledgeMapEnabled,
     knowledgeMapPanelOpen,
     collabExecPanelOpen,
-    filePreviewModal,
   ])
 
   useEffect(() => {
@@ -4090,36 +4087,70 @@ export default function ChatApp() {
   }, [isMobileChat, mobileChatPane])
 
   const anyRightPanelOpen = rightStageOpen
-
-  const rightPanelLayoutKind = rightStageLayoutKind
-  const lastRightPanelLayoutKindRef = useRef<typeof rightPanelLayoutKind | null>(null)
+  // 摘要默认窄宽；当前对话第一次打开浏览器再抬到系统默认宽（45%），之后尊重用户拖拽。
+  const rightPanelWasOpenRef = useRef(false)
+  const browserWideSeededRef = useRef(false)
+  const browserWideSeedSessionRef = useRef(String(selectedSessionKey || ''))
+  if (browserWideSeedSessionRef.current !== String(selectedSessionKey || '')) {
+    browserWideSeedSessionRef.current = String(selectedSessionKey || '')
+    browserWideSeededRef.current = false
+  }
 
   useLayoutEffect(() => {
-    if (!anyRightPanelOpen || !layoutResizeEnabled) return
+    if (!anyRightPanelOpen || !layoutResizeEnabled) {
+      rightPanelWasOpenRef.current = false
+      return
+    }
     const el = mainBodyRef.current
     if (!el) return
-    const def = defaultRightPanelWidth(el.clientWidth, rightPanelLayoutKind)
-    const prevKind = lastRightPanelLayoutKindRef.current
-    const firstOpen = prevKind == null
-    const kindChanged = !firstOpen && prevKind !== rightPanelLayoutKind
-    lastRightPanelLayoutKindRef.current = rightPanelLayoutKind
+    const bodyW = el.clientWidth
+    const opening = !rightPanelWasOpenRef.current
+    rightPanelWasOpenRef.current = true
+    let shouldPersist = false
     setRightPanelWidthPx((prev) => {
-      if (prev == null || kindChanged) {
-        layoutSizesRef.current.rightPanelWidthPx = def
-        return def
-      }
-      // 首次打开：文件树勿继承工作流/半屏留下的过宽偏好
-      if (firstOpen) {
-        const isBrowse =
-          rightPanelLayoutKind === 'workspace-browse' || rightPanelLayoutKind === 'narrow'
-        if (isBrowse && (prev < 220 || prev > 340)) {
-          layoutSizesRef.current.rightPanelWidthPx = def
-          return def
+      if (prev != null && Number.isFinite(prev) && prev > 0) {
+        const clamped = clampRightPanelWidth(prev, bodyW)
+        if (clamped !== prev) {
+          layoutSizesRef.current.rightPanelWidthPx = clamped
+          shouldPersist = true
         }
+        return clamped
       }
-      return prev
+      if (!opening && prev != null) return prev
+      // 对话默认摘要：窄栏；不要一上来半屏
+      const def = defaultNarrowRightPanelWidth(bodyW)
+      layoutSizesRef.current.rightPanelWidthPx = def
+      shouldPersist = true
+      return def
     })
-  }, [anyRightPanelOpen, rightPanelLayoutKind, layoutResizeEnabled])
+    if (shouldPersist) saveChatLayoutPrefs(layoutSizesRef.current)
+  }, [anyRightPanelOpen, layoutResizeEnabled])
+
+  // 本会话首次出现 browser 标签：一次性抬到宽栏默认；第 2+ 次打开不改用户拖过的宽度。
+  const hasBrowserStageTab = rightStageTabs.some(
+    (t) => normalizeRightStageKind(t.kind) === 'browser',
+  )
+  useLayoutEffect(() => {
+    if (!anyRightPanelOpen || !layoutResizeEnabled) return
+    if (!hasBrowserStageTab) return
+    if (browserWideSeededRef.current) return
+    const el = mainBodyRef.current
+    if (!el) return
+    browserWideSeededRef.current = true
+    const wide = defaultWideRightPanelWidth(el.clientWidth)
+    setRightPanelWidthPx((prev) => {
+      // 已比宽默认更宽（或接近）则不动，避免把用户更大的栏缩回去
+      if (prev != null && Number.isFinite(prev) && prev >= wide - 8) {
+        return prev
+      }
+      layoutSizesRef.current.rightPanelWidthPx = wide
+      saveChatLayoutPrefs({
+        ...layoutSizesRef.current,
+        rightPanelWidthPx: wide,
+      })
+      return wide
+    })
+  }, [anyRightPanelOpen, layoutResizeEnabled, hasBrowserStageTab])
 
   useEffect(() => {
     layoutSizesRef.current = { rightPanelWidthPx, bottomDockHeightPx }
@@ -4129,19 +4160,16 @@ export default function ChatApp() {
     saveChatLayoutPrefs(layoutSizesRef.current)
   }, [])
 
-  const onRightPanelDragDelta = useCallback(
-    (delta: number) => {
-      const el = mainBodyRef.current
-      if (!el) return
-      setRightPanelWidthPx((prev) => {
-        const current = prev ?? defaultRightPanelWidth(el.clientWidth, rightPanelLayoutKind)
-        const next = clampRightPanelWidth(current - delta, el.clientWidth)
-        layoutSizesRef.current.rightPanelWidthPx = next
-        return next
-      })
-    },
-    [rightPanelLayoutKind],
-  )
+  const onRightPanelDragDelta = useCallback((delta: number) => {
+    const el = mainBodyRef.current
+    if (!el) return
+    setRightPanelWidthPx((prev) => {
+      const current = prev ?? defaultRightPanelWidth(el.clientWidth)
+      const next = clampRightPanelWidth(current - delta, el.clientWidth)
+      layoutSizesRef.current.rightPanelWidthPx = next
+      return next
+    })
+  }, [])
 
   const onBottomDockDragDelta = useCallback((delta: number) => {
     const natural = bottomAreaNaturalHeightRef.current
@@ -4412,9 +4440,49 @@ export default function ChatApp() {
       return 'panel'
     }
   })
-  const setChatPanelDisplayMode = useCallback((mode: ChatSummaryDisplayMode) => {
-    setChatPanelMode(mode)
-    saveChatSummaryDisplayMode(mode)
+  /**
+   * 摘要收起 → 关掉 summary 标签；若右栏已无其它可见页则整栏折叠；
+   * 小气泡改挂对话列右上角，不再独自占着空侧栏。
+   * 展开 → 重新 ensure summary 并打开右栏。
+   */
+  const setChatPanelDisplayMode = useCallback(
+    (mode: ChatSummaryDisplayMode) => {
+      setChatPanelMode(mode)
+      saveChatSummaryDisplayMode(mode)
+      if (mode === 'panel') {
+        userClosedInfoRailRef.current = false
+        setInfoRailOpen(true)
+        ensureSummaryStage({ sessionKey: selectedSessionKey || undefined })
+        expandRightStage()
+        return
+      }
+      userClosedInfoRailRef.current = true
+      setInfoRailOpen(false)
+      closeSummaryStage()
+      const remaining = filterRightStageTabsForSession(
+        rightStageStore.getSnapshot().tabs,
+        selectedSessionKey,
+      )
+      if (remaining.length === 0) {
+        collapseRightStage()
+      }
+    },
+    [selectedSessionKey, expandRightStage, collapseRightStage],
+  )
+
+  // 偏好已是胶囊/隐藏时：启动不要把摘要又 ensure 进右栏。
+  useEffect(() => {
+    if (chatPanelMode !== 'capsule' && chatPanelMode !== 'hidden') return
+    userClosedInfoRailRef.current = true
+    setInfoRailOpen(false)
+    closeSummaryStage()
+    const remaining = filterRightStageTabsForSession(
+      rightStageStore.getSnapshot().tabs,
+      selectedSessionKey,
+    )
+    if (remaining.length === 0) collapseRightStage()
+    // 仅对齐首屏偏好；之后收起/展开走 setChatPanelDisplayMode
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount sync for prefs
   }, [])
   const publishPlatformEntries = useCallback((entries: PlatformRunEntry[], focusEntryId?: string) => {
     turnPlatformEntriesRef.current = entries
@@ -12409,10 +12477,14 @@ useEffect(() => {
     [isProactiveEmployeeSession, employeeSessionAgentCode, selectedTurnBusy, getApi],
   )
 
-  // Right Stage 与 Info Rail 互斥：右栏展开时收起摘要轨。
+  // 摘要是右栏一页，与浏览器等并存；面板态且 infoRailOpen 时才 ensure。
+  // 胶囊态只挂对话列气泡，不要把 summary 再塞回右栏。
   useEffect(() => {
-    if (rightStageOpen) setInfoRailOpen(false)
-  }, [rightStageOpen])
+    if (isHomeSurface || isMobileChat || !selectedSessionKey) return
+    if (userClosedInfoRailRef.current || !infoRailOpen) return
+    if (chatPanelMode !== 'panel') return
+    ensureSummaryStage({ sessionKey: selectedSessionKey })
+  }, [infoRailOpen, selectedSessionKey, isHomeSurface, isMobileChat, chatPanelMode])
 
   // Rust CDP path emits this when the agent drives the browser before the
   // AG-UI TOOL_CALL_START has opened the side panel. Mount the bridge WebView2
@@ -12434,7 +12506,9 @@ useEffect(() => {
           if (url && /^https?:\/\//i.test(url)) {
             applyBrowserCommandResponse({ threadId: tid, pageUrl: url })
           } else {
-            ensureBrowserStage()
+            ensureBrowserStage({
+              sessionKey: rightStageSessionKeyRef.current || undefined,
+            })
           }
         }),
       )
@@ -12650,19 +12724,44 @@ useEffect(() => {
 
   // 状态面板「进程」区：以 streamRef 为唯一真相源，按 chrome tick 取快照，
   // 避免另开 state 漏掉切会话/终态收束时的终端清理。
+  const summaryStageOpen = rightStageTabs.some(
+    (t) => normalizeRightStageKind(t.kind) === 'summary',
+  )
   const liveProcessSnapshot = useLiveProcessSnapshot(
     streamRef,
-    infoRailOpen && !isHomeSurface && !!selectedSessionKey && !isMobileChat,
+    (summaryStageOpen || infoRailOpen || chatPanelMode === 'capsule') &&
+      !isHomeSurface &&
+      !!selectedSessionKey &&
+      !isMobileChat,
   )
 
-  /** 点进程行：把右栏切到智能体区（详情由既有右栏能力承接，不另造 terminal 弹层） */
-  const handleOpenProcessItem = useCallback((item: ProcessItem) => {
-    if (!item) return
-    if (item.kind === 'agent' || item.kind === 'terminal') {
-      setInfoRailTab('agent')
-      setInfoRailOpen(true)
-    }
-  }, [])
+  /** 点进程行：终端开右栏标签；智能体仍切到摘要区 */
+  const handleOpenProcessItem = useCallback(
+    (item: ProcessItem) => {
+      if (!item) return
+      if (item.kind === 'terminal') {
+        const src = item.source as { toolCallId?: string; command?: string; phase?: string }
+        const toolCallId = String(src?.toolCallId || '').trim()
+        if (!toolCallId) {
+          setChatPanelDisplayMode('panel')
+          return
+        }
+        ensureTerminalStage({
+          toolCallId,
+          title: item.label || '终端',
+          command: String(src?.command || ''),
+          sessionKey: selectedSessionKey || undefined,
+          running: src?.phase === 'running',
+        })
+        return
+      }
+      if (item.kind === 'agent') {
+        setInfoRailTab('agent')
+        setChatPanelDisplayMode('panel')
+      }
+    },
+    [selectedSessionKey, setChatPanelDisplayMode],
+  )
 
   // 执行期间轮询：任务处于活跃执行状态时，定期 bump refreshKey 触发重新拉取 GET /tasks，
   // 弥补被移除的 task-progress 快照刷新逻辑（流式事件 task_running/task_completed 不保证到达）。
@@ -12691,9 +12790,173 @@ useEffect(() => {
     bumpSubtasksApiRefresh,
   ])
 
+  const renderChatSummaryPanel = (mode: 'panel' | 'capsule'): ReactNode => (
+    <ChatSummaryPanel
+      displayMode={mode}
+      onDisplayModeChange={setChatPanelDisplayMode}
+      isRunning={selectedTurnBusy}
+      sessionTitle={getDisplayLabel(
+        selectedSessionKey,
+        sessions.find((s) => String(s.sessionKey || '') === String(selectedSessionKey || ''))?.title,
+      )}
+      terminalStreams={liveProcessSnapshot.terminalStreams}
+      subagentTasks={liveProcessSnapshot.subagentTasks}
+      workflowSubtasks={sharedCollabSubtasks}
+      onOpenProcessItem={handleOpenProcessItem}
+      agentLabel={currentRoleLabel}
+      modelLabel={modelPillLabel}
+      modelName={effectiveModelName}
+      agentCode={
+        isProactiveEmployeeSession
+          ? employeeSessionAgentCode || currentRoleCodeForUi
+          : currentRoleCodeForUi
+      }
+      agentDescription={String(currentRoleAgent?.description || '').trim()}
+      agent={currentRoleAgent}
+      skillNames={currentAgentCapabilities.skillNames}
+      toolNames={currentAgentCapabilities.toolNames}
+      mcpServers={currentAgentCapabilities.mcpServers}
+      knowledgeVaultIds={
+        isProactiveEmployeeSession
+          ? employeeRoleDetail?.knowledgeVaultIds || []
+          : currentAgentCapabilities.knowledgeVaultIds
+      }
+      onPatchCapabilities={patchCurrentAgentCapabilities}
+      capabilityBusy={capabilityPatchBusy}
+      onSwitchAgent={() => setBottomRoleOpen(true)}
+      onEditAgent={currentRoleCodeForUi || employeeSessionAgentCode ? openCurrentAgentEditor : undefined}
+      onAssetQuickAction={handleAssetQuickAction}
+      assetQuickBusy={assetQuickBusy}
+      artifacts={sessionArtifacts}
+      recentArtifacts={turnArtifacts}
+      artifactFocusId={artifactFocusId}
+      platformEntries={sessionPlatformEntries}
+      recentPlatformEntries={turnPlatformEntries}
+      platformFocusEntryId={platformFocusEntryId}
+      onOpenArtifact={openSessionArtifact}
+      onRevealArtifact={revealSessionArtifact}
+      obsEnabled={obsEnabled}
+      threadId={selectedThreadId}
+      isEmployeeSession={isProactiveEmployeeSession}
+      employeePane={
+        isProactiveEmployeeSession ? (
+          <EmployeePane
+            employeeInfo={employeeRoleDetail}
+            sessionTitle={getDisplayLabel(selectedSessionKey, '')}
+            isRunning={selectedTurnBusy}
+            agentLabel={currentRoleLabel}
+            modelLabel={modelPillLabel}
+            agentCode={employeeSessionAgentCode || currentRoleCodeForUi}
+            agentDescription={String(currentRoleAgent?.description || '').trim()}
+            agent={currentRoleAgent}
+            skillNames={currentAgentCapabilities.skillNames}
+            toolNames={currentAgentCapabilities.toolNames}
+            mcpServers={currentAgentCapabilities.mcpServers}
+            knowledgeVaultIds={
+              employeeRoleDetail?.knowledgeVaultIds ||
+              currentAgentCapabilities.knowledgeVaultIds
+            }
+            onPatchCapabilities={patchCurrentAgentCapabilities}
+            capabilityBusy={capabilityPatchBusy}
+            modelName={effectiveModelName}
+            contextUsage={displayContextUsage}
+            tokenTotals={headerTokenTotals}
+            onManualCompact={handleManualContextCompact}
+            manualCompactDisabled={manualContextCompacting}
+            onEditAgent={openCurrentAgentEditor}
+            onAssetQuickAction={handleAssetQuickAction}
+            assetQuickBusy={assetQuickBusy}
+          />
+        ) : null
+      }
+      taskPane={
+        isProactiveEmployeeSession ? (
+          <TaskPane
+            sessionTitle={getDisplayLabel(selectedSessionKey, '')}
+            isRunning={selectedTurnBusy}
+            tokenTotals={headerTokenTotals}
+            agentCode={employeeSessionAgentCode || currentRoleCodeForUi}
+            sessionKey={String(selectedSessionKey || '')}
+            liveTask={sidebarActiveView?.task || null}
+          />
+        ) : null
+      }
+    />
+  )
+
   const renderRightStageBody = useCallback(
     (surface: RightStageSurface): ReactNode => {
       const kind = surface.kind
+      if (kind === 'summary') {
+        // 胶囊态改挂对话列；右栏 summary 页只在面板态出现。
+        if (chatPanelMode !== 'panel') return null
+        return sidePanelHeavyMount ? (
+          renderChatSummaryPanel('panel')
+        ) : (
+          <SidePanelBootShell title="摘要" className="react-chat-right-stage-panel" />
+        )
+      }
+      if (kind === 'terminal') {
+        const data = surface.data || {}
+        const toolCallId = String(data.toolCallId || surface.id || '').trim()
+        const command = String(data.command || '').trim()
+        const streams = liveProcessSnapshot.terminalStreams || {}
+        const stream =
+          streams[toolCallId] ||
+          Object.values(streams).find(
+            (s) =>
+              String(s?.toolCallId || '') === toolCallId ||
+              String((s as { id?: string })?.id || '') === toolCallId,
+          ) ||
+          undefined
+        return (
+          <TerminalStagePanel
+            title={String(surface.title || data.title || '终端')}
+            command={command}
+            sessionKey={String(data.sessionKey || selectedSessionKey || '')}
+            toolCallId={toolCallId}
+            outputFallback={String(data.outputFallback || '')}
+            stream={stream}
+            running={!!data.running || stream?.phase === 'running'}
+          />
+        )
+      }
+      if (kind === 'file') {
+        const data = surface.data || {}
+        const path = String(data.path || surface.id || '').trim()
+        const name = String(data.name || surface.title || '').trim()
+        if (!path) return null
+        const focusAnnotation =
+          data.focusAnnotation && typeof data.focusAnnotation === 'object'
+            ? (data.focusAnnotation as { title?: string; body?: string; priority?: number })
+            : undefined
+        const scope = workspaceOpenScopeRef.current
+        const root = String(scope.root || effectiveWorkspaceRoot || '').trim()
+        return sidePanelHeavyMount ? (
+          <WorkspaceFilePreviewPanel
+            embedded
+            workspaceRoot={root}
+            threadId={
+              root ? undefined : wsClient.getSessionThreadId(selectedSessionKey || '') || undefined
+            }
+            workspaceScopeOpts={{
+              configuredRoot: scope.configuredRoot,
+              useVirtualPaths: scope.useVirtualPaths,
+            }}
+            path={path}
+            name={name}
+            poll={!!data.poll}
+            focusLine={typeof data.focusLine === 'number' ? data.focusLine : undefined}
+            focusEndLine={typeof data.focusEndLine === 'number' ? data.focusEndLine : undefined}
+            focusAnnotation={focusAnnotation}
+            onClose={() => {
+              rightStageStore.closeTab(`file:${path.replace(/\\/g, '/')}`)
+            }}
+          />
+        ) : (
+          <SidePanelBootShell title={name || '文件预览'} className="react-chat-workspace-preview-stage" />
+        )
+      }
       if (kind === 'workspace-browse' || kind === 'write') {
         const writePreviewMode = kind === 'write'
         return sidePanelHeavyMount ? (
@@ -12772,11 +13035,6 @@ useEffect(() => {
             />
           ) : (
             <aside className="react-chat-collab-exec-panel react-chat-right-stage-panel" role="region" aria-label="工作流">
-              <header className="react-chat-collab-exec-panel-header">
-                <div className="react-chat-collab-exec-panel-title-wrap">
-                  <span className="react-chat-collab-exec-panel-title">工作流</span>
-                </div>
-              </header>
               <div className="react-chat-collab-exec-panel-body collab-wf-panel-body">
                 <div className="collab-exec-dag-empty">当前会话暂无工作流</div>
               </div>
@@ -12790,8 +13048,44 @@ useEffect(() => {
     },
     [
       sidePanelHeavyMount,
-      effectiveWorkspaceRoot,
+      chatPanelMode,
+      selectedTurnBusy,
       selectedSessionKey,
+      sessions,
+      liveProcessSnapshot.terminalStreams,
+      liveProcessSnapshot.subagentTasks,
+      sharedCollabSubtasks,
+      handleOpenProcessItem,
+      currentRoleLabel,
+      modelPillLabel,
+      effectiveModelName,
+      isProactiveEmployeeSession,
+      employeeSessionAgentCode,
+      currentRoleCodeForUi,
+      currentRoleAgent,
+      currentAgentCapabilities,
+      employeeRoleDetail,
+      patchCurrentAgentCapabilities,
+      capabilityPatchBusy,
+      openCurrentAgentEditor,
+      handleAssetQuickAction,
+      assetQuickBusy,
+      sessionArtifacts,
+      turnArtifacts,
+      artifactFocusId,
+      sessionPlatformEntries,
+      turnPlatformEntries,
+      platformFocusEntryId,
+      openSessionArtifact,
+      revealSessionArtifact,
+      obsEnabled,
+      selectedThreadId,
+      displayContextUsage,
+      headerTokenTotals,
+      handleManualContextCompact,
+      manualContextCompacting,
+      sidebarActiveView?.task,
+      effectiveWorkspaceRoot,
       contextFiles,
       toggleContextFile,
       workspaceIndexWatchEnabled,
@@ -12806,14 +13100,12 @@ useEffect(() => {
       collabExecPanelOpen,
       collabSubtasksTaskId,
       sidebarActiveTaskId,
-      sidebarActiveView?.task,
       threadPanelState.collabTask,
       threadPanelState.collabPhase,
       threadPanelState.collabSubtasks,
       threadPanelState.subagentTasks,
       chatThreadIdForSidebar,
       sharedCollabMainTask,
-      sharedCollabSubtasks,
       agents,
       closeCollabExecPanel,
       openWorkspaceFilePreview,
@@ -12834,18 +13126,24 @@ useEffect(() => {
   
 
   // 浏览器面板头部开关：存在则激活，再点一次关掉这一页（不关整栏其它标签）
-  const browserStageOpen = rightStageTabs.some(
+  const visibleRightStageTabs = useMemo(
+    () => filterRightStageTabsForSession(rightStageTabs, selectedSessionKey),
+    [rightStageTabs, selectedSessionKey],
+  )
+  const browserStageOpen = visibleRightStageTabs.some(
     (t) => normalizeRightStageKind(t.kind) === 'browser',
   )
   const browserStageActive =
     normalizeRightStageKind(rightStageSurface?.kind || '') === 'browser'
   const toggleBrowserStage = useCallback(() => {
     const snap = rightStageStore.getSnapshot()
-    const existing = snap.tabs.find((t) => normalizeRightStageKind(t.kind) === 'browser')
+    const existing = filterRightStageTabsForSession(snap.tabs, selectedSessionKey).find(
+      (t) => normalizeRightStageKind(t.kind) === 'browser',
+    )
     if (existing) {
       const key = `${normalizeRightStageKind(existing.kind)}:${existing.id}`
       if (snap.activeKey === key) {
-        closeBrowserStage()
+        closeBrowserStage(existing.id)
         return
       }
       rightStageStore.activateTab(key)
@@ -12853,7 +13151,7 @@ useEffect(() => {
     }
     const manualTid = String(wsClient.getSessionThreadId(selectedSessionKey || '') || '').trim()
     if (manualTid) setBrowserPanelThreadId(manualTid)
-    ensureBrowserStage()
+    ensureBrowserStage({ sessionKey: selectedSessionKey || undefined })
     if (!isChatOverlayDeferActive()) {
       scheduleBumpRef.current?.({ immediate: true })
     }
@@ -12934,7 +13232,10 @@ useEffect(() => {
         onOpenBrowser: () => {
           const manualTid = String(wsClient.getSessionThreadId(selectedSessionKey || '') || '').trim()
           if (manualTid) setBrowserPanelThreadId(manualTid)
-          ensureBrowserStage()
+          ensureBrowserStage({
+            forceNew: true,
+            sessionKey: selectedSessionKey || undefined,
+          })
         },
         onOpenWorkspace: () => {
           rightStageUserPinnedRef.current = 'workspace-browse'
@@ -12944,6 +13245,9 @@ useEffect(() => {
         },
         onOpenWorkflow: () => {
           openCollabExecPanel()
+        },
+        onOpenSummary: () => {
+          setChatPanelDisplayMode('panel')
         },
         mindMapEnabled: knowledgeMapEnabled,
         onOpenMindMap: () => {
@@ -12957,6 +13261,7 @@ useEffect(() => {
       openCollabExecPanel,
       knowledgeMapEnabled,
       openKnowledgeMapPanel,
+      setChatPanelDisplayMode,
     ],
   )
 
@@ -12979,7 +13284,13 @@ useEffect(() => {
         return
       }
       if (kind === 'browser') {
-        closeBrowserStage()
+        closeBrowserStage(tab?.id || 'primary')
+        return
+      }
+      if (kind === 'summary') {
+        userClosedInfoRailRef.current = true
+        setInfoRailOpen(false)
+        closeSummaryStage()
         return
       }
       closeRightStageTab(key)
@@ -12994,6 +13305,24 @@ useEffect(() => {
       closeRightStageTab,
     ],
   )
+
+  const handleCloseOtherRightStageTabs = useCallback(
+    (keepKey: string) => {
+      const keep = String(keepKey || '').trim()
+      if (!keep) return
+      for (const tab of visibleRightStageTabs) {
+        const key = `${normalizeRightStageKind(tab.kind)}:${tab.id}`
+        if (key !== keep) handleCloseRightStageTab(key)
+      }
+    },
+    [visibleRightStageTabs, handleCloseRightStageTab],
+  )
+
+  const handleCloseAllRightStageTabs = useCallback(() => {
+    for (const tab of [...visibleRightStageTabs]) {
+      handleCloseRightStageTab(`${normalizeRightStageKind(tab.kind)}:${tab.id}`)
+    }
+  }, [visibleRightStageTabs, handleCloseRightStageTab])
 
   const workspaceStageActive =
     normalizeRightStageKind(rightStageSurface?.kind || '') === 'workspace-browse' ||
@@ -15484,10 +15813,6 @@ useEffect(() => {
             className={`react-chat-main-body${
               rightStageOpen ? ` ${mainBodyStageClasses}` : ''
             }${
-              !rightStageOpen && infoRailOpen && !isHomeSurface && selectedSessionKey && !isMobileChat
-                ? ' is-info-rail-open'
-                : ''
-            }${
               anyRightPanelOpen && layoutResizeEnabled && rightPanelWidthPx != null
                 ? ' is-layout-custom-width'
                 : ''
@@ -15499,6 +15824,12 @@ useEffect(() => {
               onDragOver={handleConversationComposeDragOver}
               onDrop={handleConversationComposeDrop}
             >
+          {chatPanelMode === 'capsule' &&
+          !isHomeSurface &&
+          !isMobileChat &&
+          selectedSessionKey
+            ? renderChatSummaryPanel('capsule')
+            : null}
           {historyError && (
             <div className="react-chat-error-banner">{toUserFacingError(historyError)}</div>
           )}
@@ -16313,141 +16644,26 @@ useEffect(() => {
             ) : null}
             {rightStageOpen ? (
               <RightStagePanel
-                tabs={rightStageTabs}
+                tabs={visibleRightStageTabs}
                 activeKey={rightStageActiveKey}
-                recentClosed={rightStageRecentClosed}
+                recentClosed={rightStageRecentClosed.filter((entry) =>
+                  filterRightStageTabsForSession([entry.tab], selectedSessionKey).length > 0,
+                )}
                 onActivateTab={activateRightStageTab}
                 onCloseTab={handleCloseRightStageTab}
+                onCloseOtherTabs={handleCloseOtherRightStageTabs}
+                onCloseAllTabs={handleCloseAllRightStageTabs}
                 onReorderTab={reorderRightStageTab}
                 onReopenClosedTab={reopenRightStageTab}
                 onCollapse={handleCollapseRightStage}
                 launcherItems={rightStageLauncherItems}
                 renderContent={renderRightStageBody}
               />
-            ) : infoRailOpen && !isHomeSurface && selectedSessionKey && !isMobileChat ? (
-              <ChatSummaryPanel
-                displayMode={chatPanelMode}
-                onDisplayModeChange={setChatPanelDisplayMode}
-                isRunning={selectedTurnBusy}
-                sessionTitle={getDisplayLabel(
-                  selectedSessionKey,
-                  sessions.find((s) => String(s.sessionKey || '') === String(selectedSessionKey || ''))?.title,
-                )}
-                terminalStreams={liveProcessSnapshot.terminalStreams}
-                subagentTasks={liveProcessSnapshot.subagentTasks}
-                workflowSubtasks={sharedCollabSubtasks}
-                onOpenProcessItem={handleOpenProcessItem}
-                agentLabel={currentRoleLabel}
-                modelLabel={modelPillLabel}
-                modelName={effectiveModelName}
-                agentCode={
-                  isProactiveEmployeeSession
-                    ? employeeSessionAgentCode || currentRoleCodeForUi
-                    : currentRoleCodeForUi
-                }
-                agentDescription={String(currentRoleAgent?.description || '').trim()}
-                agent={currentRoleAgent}
-                skillNames={currentAgentCapabilities.skillNames}
-                toolNames={currentAgentCapabilities.toolNames}
-                mcpServers={currentAgentCapabilities.mcpServers}
-                knowledgeVaultIds={
-                  isProactiveEmployeeSession
-                    ? employeeRoleDetail?.knowledgeVaultIds || []
-                    : currentAgentCapabilities.knowledgeVaultIds
-                }
-                onPatchCapabilities={patchCurrentAgentCapabilities}
-                capabilityBusy={capabilityPatchBusy}
-                onSwitchAgent={() => setBottomRoleOpen(true)}
-                onEditAgent={currentRoleCodeForUi || employeeSessionAgentCode ? openCurrentAgentEditor : undefined}
-                onAssetQuickAction={handleAssetQuickAction}
-                assetQuickBusy={assetQuickBusy}
-                artifacts={sessionArtifacts}
-                recentArtifacts={turnArtifacts}
-                artifactFocusId={artifactFocusId}
-                platformEntries={sessionPlatformEntries}
-                recentPlatformEntries={turnPlatformEntries}
-                platformFocusEntryId={platformFocusEntryId}
-                onOpenArtifact={openSessionArtifact}
-                onRevealArtifact={revealSessionArtifact}
-                obsEnabled={obsEnabled}
-                threadId={selectedThreadId}
-                isEmployeeSession={isProactiveEmployeeSession}
-                employeePane={
-                  isProactiveEmployeeSession ? (
-                    <EmployeePane
-                      employeeInfo={employeeRoleDetail}
-                      sessionTitle={getDisplayLabel(selectedSessionKey, '')}
-                      isRunning={selectedTurnBusy}
-                      agentLabel={currentRoleLabel}
-                      modelLabel={modelPillLabel}
-                      agentCode={employeeSessionAgentCode || currentRoleCodeForUi}
-                      agentDescription={String(currentRoleAgent?.description || '').trim()}
-                      agent={currentRoleAgent}
-                      skillNames={currentAgentCapabilities.skillNames}
-                      toolNames={currentAgentCapabilities.toolNames}
-                      mcpServers={currentAgentCapabilities.mcpServers}
-                      knowledgeVaultIds={
-                        employeeRoleDetail?.knowledgeVaultIds ||
-                        currentAgentCapabilities.knowledgeVaultIds
-                      }
-                      onPatchCapabilities={patchCurrentAgentCapabilities}
-                      capabilityBusy={capabilityPatchBusy}
-                      modelName={effectiveModelName}
-                      contextUsage={displayContextUsage}
-                      tokenTotals={headerTokenTotals}
-                      onManualCompact={handleManualContextCompact}
-                      manualCompactDisabled={manualContextCompacting}
-                      onEditAgent={openCurrentAgentEditor}
-                      onAssetQuickAction={handleAssetQuickAction}
-                      assetQuickBusy={assetQuickBusy}
-                    />
-                  ) : null
-                }
-                taskPane={
-                  isProactiveEmployeeSession ? (
-                    <TaskPane
-                      sessionTitle={getDisplayLabel(selectedSessionKey, '')}
-                      isRunning={selectedTurnBusy}
-                      tokenTotals={headerTokenTotals}
-                      agentCode={employeeSessionAgentCode || currentRoleCodeForUi}
-                      sessionKey={String(selectedSessionKey || '')}
-                      liveTask={sidebarActiveView?.task || null}
-                    />
-                  ) : null
-                }
-              />
             ) : null}
           </div>
         </div>
         </section>
       </div>
-      {filePreviewModal ? (
-        <WorkspaceFilePreviewModal
-          workspaceRoot={effectiveWorkspaceRoot}
-          threadId={
-            effectiveWorkspaceRoot
-              ? undefined
-              : wsClient.getSessionThreadId(selectedSessionKey || '') || undefined
-          }
-          workspaceScopeOpts={{
-            configuredRoot: configuredWorkspaceRoot,
-            useVirtualPaths,
-          }}
-          path={filePreviewModal.path}
-          name={filePreviewModal.name}
-          poll={filePreviewModal.poll}
-          focusLine={filePreviewModal.focusLine}
-          focusEndLine={filePreviewModal.focusEndLine}
-          focusAnnotation={filePreviewModal.focusAnnotation}
-          onClose={() => {
-            setChatOverlayDefer('file-preview', false)
-            setFilePreviewModal(null)
-            if (!isChatOverlayDeferActive()) {
-              scheduleBumpRef.current?.({ immediate: true })
-            }
-          }}
-        />
-      ) : null}
       <ShellSessionListHost
         filteredSessions={filteredSessions}
         sessions={sessions}

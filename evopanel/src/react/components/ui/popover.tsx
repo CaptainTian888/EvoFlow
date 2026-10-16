@@ -16,7 +16,8 @@ const PopoverContent = React.forwardRef<
       align={align}
       sideOffset={sideOffset}
       className={cn(
-        'z-50 w-72 rounded-xl border border-[var(--border)] bg-[var(--popover)] p-3 text-[var(--popover-foreground)] shadow-lg outline-none',
+        // --popover 在 EvoFlow 主题里常未定义，回退到实色底，避免半透明叠字
+        'z-[80] w-72 rounded-xl border border-[var(--border)] bg-[var(--popover,var(--bg-elevated,var(--bg-primary,#ffffff)))] p-3 text-[var(--popover-foreground,var(--text-primary))] shadow-lg outline-none',
         className,
       )}
       {...props}

@@ -4,6 +4,8 @@ import type { RightStageKind, RightStageSurface } from './right-stage-types.js'
 export type RightStageKindRenderProps = {
   surface: RightStageSurface
   onClose: () => void
+  /** 是否为当前激活标签；原生 WebView2 需据此停靠/恢复，不能只靠 CSS hidden。 */
+  active: boolean
 }
 
 export type RightStageKindDefinition = {

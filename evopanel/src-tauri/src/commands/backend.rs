@@ -1328,14 +1328,32 @@ fn ensure_backend_sidecar_inner(app: &tauri::AppHandle) -> Result<(), String> {
 fn kill_gateway_port(port: u16) {
     #[cfg(target_os = "windows")]
     {
+        // Kill the listener AND walk up the parent chain to the supervisor
+        // (powershell/pwsh running uvicorn/langgraph/watch-external-gateway) so a
+        // watchdog cannot immediately respawn the child we just killed — which
+        // would race our sidecar bind and cause Windows dual-bind
+        // (0.0.0.0:port + 127.0.0.1:port coexisting). Mirrors the PowerShell
+        // Stop-EvoFlowKillPortListenerRoots logic in backend-common.ps1.
+        let script = format!(
+            "Get-NetTCPConnection -LocalPort {port} -State Listen -ErrorAction SilentlyContinue | ForEach-Object {{ \
+                $lp = [int]$_.OwningProcess; \
+                if ($lp -gt 0) {{ \
+                    $p = $lp; \
+                    for ($i=0; $i -le 20; $i++) {{ \
+                        $r = @(Get-CimInstance Win32_Process -Filter \"ProcessId=$p\" -ErrorAction SilentlyContinue)[0]; \
+                        if (-not $r) {{ cmd /c taskkill /T /F /PID $lp >nul 2>&1; break }}; \
+                        $n=[string]$r.Name; $c=[string]$r.CommandLine; \
+                        if (($n -match '(?i)powershell|pwsh') -and ($c -match '(?i)uvicorn|langgraph_cli|watch-external-gateway')) {{ cmd /c taskkill /T /F /PID $p >nul 2>&1; break }}; \
+                        if (($n -match '(?i)^python(?:w)?\\.exe$') -and ($c -match '(?i)app\\.gateway\\.app:app')) {{ cmd /c taskkill /T /F /PID $p >nul 2>&1; break }}; \
+                        $pp=[int]$r.ParentProcessId; \
+                        if ($pp -le 0 -or $pp -eq $p) {{ cmd /c taskkill /T /F /PID $lp >nul 2>&1; break }}; \
+                        $p=$pp \
+                    }} \
+                }} \
+            }}"
+        );
         let mut cmd = Command::new("powershell");
-        cmd.args([
-            "-NoProfile",
-            "-Command",
-            &format!(
-                "Get-NetTCPConnection -LocalPort {port} -State Listen -ErrorAction SilentlyContinue | ForEach-Object {{ Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }}"
-            ),
-        ]);
+        cmd.args(["-NoProfile", "-Command", &script]);
         const CREATE_NO_WINDOW: u32 = 0x08000000;
         cmd.creation_flags(CREATE_NO_WINDOW);
         let _ = cmd.output();

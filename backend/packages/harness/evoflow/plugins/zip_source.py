@@ -36,6 +36,7 @@ ZIP_DOWNLOAD_TIMEOUT_SEC = 180
 SHA256_PATTERN = re.compile(r"^[a-f0-9]{64}$")
 
 MANIFEST_RELATIVE_PATHS = (
+    ".evoflow-plugin/plugin.json",
     ".zcode-plugin/plugin.json",
     ".claude-plugin/plugin.json",
     ".codex-plugin/plugin.json",

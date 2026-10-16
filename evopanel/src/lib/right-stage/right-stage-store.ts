@@ -208,6 +208,7 @@ export class RightStageStore {
     title?: string
     layout?: RightStageSurface['layout']
     data?: Record<string, unknown>
+    sessionKey?: string
   }) {
     const kind = normalizeRightStageKind(String(input.kind || '').trim())
     if (!kind) return
@@ -221,20 +222,25 @@ export class RightStageStore {
       }
       return
     }
+    const sessionKey = String(input.sessionKey || '').trim() || undefined
     const next: RightStageSurface = {
       id: String(input.id || 'primary').trim() || 'primary',
       kind,
       title: input.title?.trim() || defaultTitleForKind(kind),
       layout: input.layout || defaultLayoutForKind(kind),
       data: { ...(input.data || {}) },
+      ...(sessionKey ? { sessionKey } : {}),
     }
     const key = this.tabKeyOf(next)
     const existingIdx = this.tabs.findIndex((t) => this.tabKeyOf(t) === key)
     if (existingIdx >= 0) {
       const prev = this.tabs[existingIdx]
+      // 更新时保留已有 sessionKey（除非显式传入新的）
+      if (!next.sessionKey && prev.sessionKey) next.sessionKey = prev.sessionKey
       const same =
         prev.title === next.title &&
         prev.layout === next.layout &&
+        prev.sessionKey === next.sessionKey &&
         JSON.stringify(prev.data) === JSON.stringify(next.data)
       if (same) {
         // 仅激活并展开（侧栏可能处于折叠）
@@ -252,6 +258,27 @@ export class RightStageStore {
     this.activeKey = key
     // 打开/激活任一标签时必须展开侧栏，否则用户看不到新页
     this.collapsed = false
+    this.bump()
+  }
+
+  /** 关闭除 keepKey 外的全部标签（写入 recentClosed）。 */
+  closeOtherTabs(keepKey: string) {
+    const keep = String(keepKey || '').trim()
+    if (!keep) return
+    const victims = this.tabs.filter((t) => this.tabKeyOf(t) !== keep)
+    if (!victims.length) return
+    for (const tab of victims) this.recordClosed(this.tabKeyOf(tab), tab)
+    this.tabs = this.tabs.filter((t) => this.tabKeyOf(t) === keep)
+    this.activeKey = this.tabs.length ? keep : null
+    this.bump()
+  }
+
+  /** 关闭全部标签（写入 recentClosed），不强制折叠（折叠由外壳按钮负责）。 */
+  closeAllTabs() {
+    if (!this.tabs.length) return
+    for (const tab of this.tabs) this.recordClosed(this.tabKeyOf(tab), tab)
+    this.tabs = []
+    this.activeKey = null
     this.bump()
   }
 
@@ -306,7 +333,14 @@ export class RightStageStore {
     const entry = this.recentClosed.find((e) => e.key === key)
     if (!entry) return
     this.recentClosed = this.recentClosed.filter((e) => e.key !== key)
-    this.show({ kind: entry.tab.kind, id: entry.tab.id, title: entry.tab.title, layout: entry.tab.layout, data: entry.tab.data })
+    this.show({
+      kind: entry.tab.kind,
+      id: entry.tab.id,
+      title: entry.tab.title,
+      layout: entry.tab.layout,
+      data: entry.tab.data,
+      sessionKey: entry.tab.sessionKey,
+    })
   }
 
   updateData(patch: Record<string, unknown>, opts?: { id?: string }) {

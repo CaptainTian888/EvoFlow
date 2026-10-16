@@ -288,17 +288,19 @@ async def _load_tools_from_server(
     *,
     raw_cfg: dict[str, Any] | None = None,
 ) -> tuple[list[BaseTool], str | None]:
-    """Load tools from a single MCP server. Returns ``(tools, error_message)``."""
-    from langchain_mcp_adapters.client import MultiServerMCPClient
+    """Load tools from a single MCP server via the persistent connection pool.
+
+    常驻会话池（ZCode 连接池语义）：stdio 子进程只为每个 server 拉起一次，
+    工具调用复用会话；连接级失败由池标记 stale 并在下次调用自动重建。
+    返回 ``(tools, error_message)``。
+    """
+    from evoflow.mcp.pool import get_mcp_connection_pool
 
     timeout_sec = _per_server_timeout_sec(raw_cfg)
+    pool = get_mcp_connection_pool()
     try:
-        client = MultiServerMCPClient({name: cfg}, tool_name_prefix=True)
-        tools = await asyncio.wait_for(client.get_tools(), timeout=timeout_sec)
+        tools = await pool.ensure_server_tools(name, cfg, timeout_sec=timeout_sec)
         _normalize_mcp_tool_names(tools, {name: cfg})
-        for tool in tools:
-            if getattr(tool, "func", None) is None and getattr(tool, "coroutine", None) is not None:
-                tool.func = _make_sync_tool_wrapper(tool.coroutine, tool.name)
         return tools, None
     except TimeoutError:
         err = f"Timed out after {timeout_sec:.0f}s connecting to MCP server"

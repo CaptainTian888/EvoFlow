@@ -261,11 +261,11 @@ impl CdpBrokerState {
             Err(_) => None,
         };
         let Some(sink) = sink else {
-            eprintln!("[browser-cdp] event {method} dropped: no sink for {label}");
+            crate::commands::browser_cdp_server::log_line(&format!("[browser-cdp] event {method} dropped: no sink for {label}"));
             return;
         };
         let params: Value = serde_json::from_str(params_json).unwrap_or_else(|_| json!({}));
-        eprintln!("[browser-cdp] event {method} -> sink");
+        crate::commands::browser_cdp_server::log_line(&format!("[browser-cdp] event {method} -> sink"));
         sink(&json!({ "method": method, "params": params }).to_string());
     }
 }
@@ -300,8 +300,8 @@ fn call_cdp_locked(
         .ok_or_else(|| format!("embedded webview '{label}' not found"))?;
 
     let trace_path = crate::commands::evoflow_dir().join("browser-cdp-trace.log");
-    eprintln!("[browser-cdp] TRACE_FILE={}", trace_path.display());
-    eprintln!("[browser-cdp] call {method} params={}", truncate(params_json, 400));
+    crate::commands::browser_cdp_server::log_line(&format!("[browser-cdp] TRACE_FILE={}", trace_path.display()));
+    crate::commands::browser_cdp_server::log_line(&format!("[browser-cdp] call {method} params={}", truncate(params_json, 400)));
 
     // Native fast-paths — these are the browser-use bootstrap commands and must
     // not depend on CallDevToolsProtocolMethod (historically hung on child HWND).
@@ -325,7 +325,7 @@ fn call_cdp_locked(
     }
 
     // Generic CDP: same main-thread + PeekMessage pump as ExecuteScript.
-    eprintln!("[browser-cdp] about to call with_webview for {method} on {label}...");
+    crate::commands::browser_cdp_server::log_line(&format!("[browser-cdp] about to call with_webview for {method} on {label}..."));
     let outcome = call_cdp_on_main_thread(app, &window, method, params_json);
     write_cdp_trace(&trace_path, label, method, &outcome);
     outcome
@@ -352,7 +352,7 @@ fn call_cdp_on_main_thread(
             let webview = match core_webview2(&platform.controller()) {
                 Ok(w) => w,
                 Err(e) => {
-                    eprintln!("[browser-cdp] core_webview2 failed: {e}");
+                    crate::commands::browser_cdp_server::log_line(&format!("[browser-cdp] core_webview2 failed: {e}"));
                     if let Ok(mut guard) = cell_inner.lock() {
                         *guard = Some(Err(e));
                     }
@@ -411,7 +411,7 @@ fn call_cdp_on_main_thread(
                         "{method_owned} timed out waiting for the webview UI thread to dispatch the closure"
                     )
                 };
-                eprintln!("[browser-cdp] {detail}");
+                crate::commands::browser_cdp_server::log_line(&format!("[browser-cdp] {detail}"));
                 let _ = tx.send(Err(detail));
                 return;
             }
@@ -462,7 +462,7 @@ fn native_navigate(
     if target.is_empty() {
         return Err("Page.navigate requires url".into());
     }
-    eprintln!("[browser-cdp] native_navigate label={label} url={target}");
+    crate::commands::browser_cdp_server::log_line(&format!("[browser-cdp] native_navigate label={label} url={target}"));
     let parsed = target
         .parse::<url::Url>()
         .or_else(|_| format!("https://{target}").parse::<url::Url>())
@@ -485,10 +485,10 @@ fn native_evaluate(
     label: &str,
     expression: &str,
 ) -> Result<String, String> {
-    eprintln!(
+    crate::commands::browser_cdp_server::log_line(&format!(
         "[browser-cdp] native_evaluate label={label} expr={}",
         truncate(expression, 120)
-    );
+    ));
     let expr = expression.trim();
     let bridge = app
         .try_state::<crate::commands::browser_embed_bridge::EmbedBridge>()
@@ -937,20 +937,20 @@ pub fn subscribe_events(
                 let handler = DevToolsProtocolEventReceivedEventHandler::create(Box::new(
                     move |_sender, args| {
                         let Some(args) = args else {
-                            eprintln!("[browser-cdp] event {name} had no args");
+                            crate::commands::browser_cdp_server::log_line(&format!("[browser-cdp] event {name} had no args"));
                             return Ok(());
                         };
                         let mut params = PWSTR::null();
                         if unsafe { args.ParameterObjectAsJson(&mut params) }.is_err() {
-                            eprintln!("[browser-cdp] event {name} params unreadable");
+                            crate::commands::browser_cdp_server::log_line(&format!("[browser-cdp] event {name} params unreadable"));
                             return Ok(());
                         }
                         let params = CoTaskMemPWSTR::from(params).to_string();
                         if params.is_empty() {
-                            eprintln!("[browser-cdp] event {name} had empty params");
+                            crate::commands::browser_cdp_server::log_line(&format!("[browser-cdp] event {name} had empty params"));
                             return Ok(());
                         }
-                        eprintln!("[browser-cdp] event {label}/{name} = {:.200}", params);
+                        crate::commands::browser_cdp_server::log_line(&format!("[browser-cdp] event {label}/{name} = {:.200}", params));
                         state.emit_event(&label, &name, &params);
                         Ok(())
                     },
@@ -970,12 +970,12 @@ pub fn subscribe_events(
             // for the lifetime of the webview, and the panel closes with it.
             std::mem::forget(receivers);
 
-            eprintln!(
+            crate::commands::browser_cdp_server::log_line(&format!(
                 "[browser-cdp] subscribe {label_owned}: {registered}/{} events registered",
                 FORWARDED_EVENTS.len()
-            );
+            ));
             for miss in &skipped {
-                eprintln!("[browser-cdp]   skipped {miss}");
+                crate::commands::browser_cdp_server::log_line(&format!("[browser-cdp]   skipped {miss}"));
             }
 
             if registered == 0 {

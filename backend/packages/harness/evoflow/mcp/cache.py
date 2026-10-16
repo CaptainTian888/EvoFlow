@@ -272,6 +272,13 @@ def reset_mcp_tools_cache() -> None:
     _config_fingerprint = None
     _mcp_server_status = {}
     _mcp_init_error = None
+    # 常驻会话一并关闭：下次 initialize 走连接池重建（配置变更/手动重置语义）。
+    try:
+        from evoflow.mcp.pool import reset_mcp_connection_pool
+
+        reset_mcp_connection_pool()
+    except Exception:
+        logger.debug("MCP connection pool reset skipped", exc_info=True)
     # Do not unconditionally null ``_async_init_lock``: concurrent
     # ``initialize_mcp_tools`` on the same loop must keep sharing one lock.
     # Cross-loop staleness is handled lazily in ``_get_async_init_lock``.

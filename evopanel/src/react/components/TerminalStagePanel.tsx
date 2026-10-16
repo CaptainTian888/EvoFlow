@@ -1,0 +1,83 @@
+import { memo, useEffect, useState } from 'react'
+import { fetchToolResultFull } from '../../lib/tool-result-fetch.js'
+import { stripMindMapHint } from '../../lib/strip-mind-map-hint.js'
+import type { TerminalStreamTask } from '../chat-types.js'
+import { TerminalToolPanel } from './TerminalToolPanel.js'
+
+export type TerminalStagePanelProps = {
+  title?: string
+  command: string
+  sessionKey?: string
+  toolCallId?: string
+  outputFallback?: string
+  stream?: TerminalStreamTask
+  running?: boolean
+}
+
+function streamHasOutput(stream: TerminalStreamTask | undefined): boolean {
+  if (!stream) return false
+  if (stream.chunks?.length) {
+    return stream.chunks.some((c) => String(c.text || '').length > 0)
+  }
+  return Boolean(String(stream.stdout || '').trim() || String(stream.stderr || '').trim())
+}
+
+/** 右栏 terminal 标签正文（从 TerminalToolDetailModal 抽出）。 */
+export const TerminalStagePanel = memo(function TerminalStagePanel({
+  title,
+  command,
+  sessionKey,
+  toolCallId,
+  outputFallback,
+  stream,
+  running,
+}: TerminalStagePanelProps) {
+  const [fetchedOutput, setFetchedOutput] = useState<string | null>(null)
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    const sk = String(sessionKey || '').trim()
+    const tcid = String(toolCallId || '').trim()
+    if (!sk || !tcid) return
+    let cancelled = false
+    setLoading(true)
+    void fetchToolResultFull(sk, tcid)
+      .then((data) => {
+        if (cancelled) return
+        setFetchedOutput(String((data as { content?: string })?.content ?? ''))
+      })
+      .catch(() => {
+        if (!cancelled) setFetchedOutput(null)
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [sessionKey, toolCallId])
+
+  const livePreferred = streamHasOutput(stream)
+  const output = livePreferred
+    ? undefined
+    : stripMindMapHint(fetchedOutput ?? outputFallback ?? '') || undefined
+
+  return (
+    <div className="react-chat-terminal-stage" role="region" aria-label={title || '终端'}>
+      <div className="react-chat-terminal-stage-header">
+        <span className="react-chat-terminal-stage-title">{title || '终端'}</span>
+        {loading && !livePreferred ? (
+          <span className="react-chat-terminal-stage-hint">加载输出…</span>
+        ) : null}
+      </div>
+      <div className="react-chat-terminal-stage-body">
+        <TerminalToolPanel
+          command={command}
+          outputFallback={output}
+          stream={stream}
+          running={running}
+        />
+      </div>
+    </div>
+  )
+})

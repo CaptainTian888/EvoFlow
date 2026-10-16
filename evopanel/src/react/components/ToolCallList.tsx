@@ -92,7 +92,7 @@ import {
 import { ToolResultDetailModal, type ToolResultMetaBlock } from './ToolResultDetailModal.js'
 import { ViewImageDetailModal } from './ViewImageDetailModal.js'
 import { SubagentTranscriptModal } from './SubagentTranscriptModal.js'
-import { TerminalToolDetailModal } from './TerminalToolDetailModal.js'
+import { ensureTerminalStage } from '../../lib/right-stage/ensure-terminal-stage.js'
 import { SandboxBlockedCard } from './SandboxBlockedCard.js'
 import { hasSandboxBlock } from '../../lib/sandbox-blocked-card.js'
 import {
@@ -842,19 +842,11 @@ function ToolCallListInner({
     fallbackTools?: unknown[]
     fallbackStatus?: string
   } | null>(null)
-  /** 终端工具详情弹窗：行只显示命令摘要，点击后弹窗看完整输出（支持运行中实时刷新） */
-  const [terminalModal, setTerminalModal] = useState<{
-    toolCallId: string
-    title: string
-    command: string
-    outputFallback: string
-  } | null>(null)
   // Stable close/approval handlers — prevent memo'd modals from re-rendering on every stream tick (~450ms)
   const handleCloseLazyDetail = useCallback(() => setLazyDetailModal(null), [])
   const handleCloseViewImage = useCallback(() => setViewImageModal(null), [])
   const handleCloseFileEdit = useCallback(() => setFileEditModal(null), [])
   const handleCloseTranscript = useCallback(() => setTranscriptModal(null), [])
-  const handleCloseTerminal = useCallback(() => setTerminalModal(null), [])
   const debugShowTaskIds = (() => {
     try {
       return localStorage.getItem('EVOFLOW_DEBUG_SHOW_TASK_ID') === '1'
@@ -1424,7 +1416,8 @@ function ToolCallListInner({
               (typeof inputObj?.subagentType === 'string' ? String(inputObj.subagentType).trim() : '')
             return formatSubagentTypeLabel(st)
           }
-          return toolShortLabel(toolName)
+          // 传完整 tool 对象：title 显示契约工具（mcp__node_repl__js）从入参读模型自述标题
+          return toolShortLabel(toolName, t)
         })()
         const inputJson = formatToolDisplayValue(t.input)
         const outputJson =
@@ -1833,8 +1826,8 @@ function ToolCallListInner({
         const terminalDetailOpener =
           isTerminalModalTool && (toolCallId || outputJson)
             ? () =>
-                setTerminalModal({
-                  toolCallId,
+                ensureTerminalStage({
+                  toolCallId: toolCallId || `anon-${Date.now().toString(36)}`,
                   title:
                     summaryTitle ||
                     titleText ||
@@ -1843,6 +1836,8 @@ function ToolCallListInner({
                     ? bashCommand || terminalStream?.command || ''
                     : processModalCommand,
                   outputFallback: outputJson || '',
+                  sessionKey,
+                  running: isToolRunning(t as Record<string, unknown>) || terminalStream?.phase === 'running',
                 })
             : undefined
         const viewImageDetailOpener =
@@ -2255,35 +2250,6 @@ function ToolCallListInner({
           fallbackTools={liveTask?.tools || transcriptModal.fallbackTools}
           fallbackStatus={liveTask?.phase || transcriptModal.fallbackStatus}
           onClose={handleCloseTranscript}
-        />
-      )
-    })() : null}
-    {terminalModal ? (() => {
-      // 运行中也能打开弹窗，从最新 list 里实时找回工具状态 + 流式输出，让 modal 实时刷新
-      const liveTool = list.find((x) => {
-        const xx = x as { id?: string; tool_call_id?: string }
-        // 与 toolCallId 派生逻辑保持一致：优先 tool_call_id，再回退 id；同时双字段匹配以防 LangGraph id(msg_*) ≠ tool_call_id(call_*)
-        const tId = String(xx.tool_call_id || '').trim()
-        const xId = String(xx.id || '').trim()
-        return tId === terminalModal.toolCallId || xId === terminalModal.toolCallId
-      }) as Record<string, unknown> | undefined
-      const liveStream = liveTool ? resolveTerminalStreamTask(terminalStreams, liveTool) : undefined
-      const liveRunning =
-        (liveTool ? isToolRunning(liveTool) : false) || liveStream?.phase === 'running'
-      const liveOutputFallback = liveTool
-        ? String(liveTool.output ?? liveTool.result ?? '') || terminalModal.outputFallback
-        : terminalModal.outputFallback
-      return (
-        <TerminalToolDetailModal
-          open
-          title={terminalModal.title}
-          command={terminalModal.command}
-          sessionKey={sessionKey}
-          toolCallId={terminalModal.toolCallId}
-          outputFallback={liveOutputFallback}
-          stream={liveStream}
-          running={liveRunning}
-          onClose={handleCloseTerminal}
         />
       )
     })() : null}

@@ -102,13 +102,30 @@ export function acceptThreadId(tid: string | null | undefined): string {
   return raw
 }
 
-/** 打开或激活浏览器标签（不关掉其它 kind）。 */
-export function ensureBrowserStage() {
+function newBrowserStageId(): string {
+  return `b-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+/** 打开或激活浏览器标签（不关掉其它 kind）。
+ *  - 默认复用 `primary`（顶栏地球 / agent 驱动）
+ *  - `forceNew: true` 时新建独立标签（加号菜单）
+ */
+export function ensureBrowserStage(opts?: {
+  forceNew?: boolean
+  sessionKey?: string
+  title?: string
+  id?: string
+}) {
+  const sessionKey = String(opts?.sessionKey || '').trim() || undefined
+  const id = opts?.forceNew
+    ? newBrowserStageId()
+    : String(opts?.id || 'primary').trim() || 'primary'
   rightStageStore.show({
     kind: 'browser',
-    id: 'primary',
-    title: '浏览器',
+    id,
+    title: String(opts?.title || '').trim() || '浏览器',
     layout: 'wide',
+    sessionKey,
     data: {},
   })
 }
@@ -119,8 +136,9 @@ export function setBrowserTabs(tabs: BrowserTabSummary[]) {
 }
 
 /** 只关浏览器这一页，其它 right-stage 标签保留。 */
-export function closeBrowserStage() {
-  rightStageStore.closeTab('browser:primary')
+export function closeBrowserStage(id = 'primary') {
+  const tabId = String(id || 'primary').trim() || 'primary'
+  rightStageStore.closeTab(`browser:${tabId}`)
 }
 
 /** Publish the panel's *real* thread id (from the chat session) so the browser

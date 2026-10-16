@@ -1,7 +1,7 @@
 /* 状态面板（ChatSummaryPanel）
  *
- * 对齐 ZCode 浮层形态：常驻右下的胶囊 / 可展开面板，两态靠 .is-capsule 切换。
- * 面板态仍参与右栏布局（替换原 ChatWorkspaceInfoRail 的 340px 位置）。
+ * 对齐 ZCode 浮层形态：对话列右上角胶囊 / 右栏摘要页，两态靠 .is-capsule 切换。
+ * 面板态挂在 right-stage summary 标签；胶囊态挂在对话列，不占空侧栏。
  *
  * 令牌纪律：一律 --ef-text-* 字号，不写裸 px font-size。
  */
@@ -27,39 +27,34 @@
     box-shadow 300ms ease-in-out;
 }
 
-/* ── 面板态：占据右栏一条 ───────────────────────────── */
-/* 高度贴合内容：面板按自身内容收缩，超过父容器高度后内部滚动。
-   之前用 align-self:stretch 会被父级 align-items:stretch 拉满，
-   内容只有 160px 时也占满 854px，右侧留一大片空白。 */
+/* ── 面板态：铺满右栏正文区 ───────────────────────────── */
+/* 摘要已挂在 right-stage 标签里，宽度由侧栏槽位决定，不再自己锁 340px。
+   原先 flex-basis 340px + margin-right 8px 会在窄栏（默认 340）里被裁掉一截。
+   用 calc 扣掉四周 8px margin，避免 width:100% + margin 再次溢出。 */
 .chat-summary-panel.is-panel {
-  flex: 0 0 var(--agent-panel-width, 340px);
-  width: var(--agent-panel-width, 340px);
-  max-width: 360px;
-  min-width: 320px;
-  /* 不写 align-self，继承父容器的 stretch（默认）；
-     高度由 .is-panel 的 max-height + 父级 align-items:stretch 决定，
-     让面板真正延伸到容器底部，避免底部出现「空条」。 */
+  box-sizing: border-box;
+  flex: 1 1 auto;
+  width: calc(100% - 16px);
+  max-width: none;
+  min-width: 0;
   align-self: stretch;
-  /* 卡片四周留呼吸：顶部 8px、右侧 8px。
-     右侧留白让卡片不贴死容器右边，和 left 的对话区之间有个间隔；
-     flex-basis 固定 340px，margin 是在此之外额外加的，不会把卡片挤窄。 */
-  margin: 8px 8px 0 0;
-  max-height: calc(100% - 8px);
+  margin: 8px;
+  height: calc(100% - 16px);
+  max-height: calc(100% - 16px);
   z-index: 4;
 }
 
-/* ── 胶囊态：右下角浮层小条，不参与布局 ───────────────── */
-/* 胶囊态：右上角浮层小条，不参与布局。
-   从右下移到右上：右下角和输入区/发送按钮抢位置，
-   收起态的入口贴在那儿容易被误触，也挡住最后一条消息。
-   top 要让开 .react-chat-header（48px），否则胶囊压在顶栏上盖住标题/按钮。 */
+/* ── 胶囊态：挂在对话列右上角，不参与布局 ─────────────── */
+/* absolute 相对 .react-chat-conversation-col：右栏仍开着其它 tab 时，
+   气泡贴对话区右缘，不会漂到侧栏里或盖住侧栏内容。
+   顶栏在 conversation-col 之外，top: 8px 即可。 */
 .chat-summary-panel.is-capsule {
-  position: fixed;
+  position: absolute;
   right: 16px;
-  top: calc(48px + 8px);
+  top: 8px;
   width: auto;
   min-width: 180px;
-  max-width: min(320px, calc(100vw - 1.5rem));
+  max-width: min(320px, calc(100% - 1.5rem));
   z-index: 40;
 }
 
@@ -658,29 +653,18 @@
   color: var(--accent, #635bff);
 }
 
-/* ── 窄屏：面板态也退化为浮层，不挤压对话列 ─────────── */
-@media (max-width: 1280px) {
-  .chat-summary-panel.is-panel {
-    position: absolute;
-    top: 0;
-    right: 0;
-    bottom: 0;
-    flex: none;
-    box-shadow: -8px 0 24px color-mix(in srgb, #0f172a 8%, transparent);
-  }
-}
-
+/* 窄屏不再把面板改成 absolute 浮层：侧栏槽位本身已负责占宽，
+   absolute + 旧定宽会在标签正文里再次裁切。 */
 @media (max-width: 720px) {
   .chat-summary-panel.is-panel {
-    left: 8px;
-    right: 8px;
-    width: auto;
-    min-width: 0;
-    max-width: none;
+    margin: 6px;
+    width: calc(100% - 12px);
+    height: calc(100% - 12px);
+    max-height: calc(100% - 12px);
   }
 
   .chat-summary-panel.is-capsule {
     right: 8px;
-    top: calc(48px + 8px);
+    top: 8px;
   }
 }

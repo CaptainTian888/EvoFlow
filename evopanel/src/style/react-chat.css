@@ -3153,6 +3153,7 @@ html[data-theme='dark'] .react-chat-history-item.active {
 }
 
 .react-chat-conversation-col {
+  position: relative;
   flex: 1;
   min-width: 0;
   min-height: 0;
@@ -3202,16 +3203,12 @@ html[data-theme='dark'] .react-chat-history-item.active {
   min-width: 220px;
 }
 
-.react-chat-main-body.is-layout-custom-width.is-collab-exec-open .react-chat-collab-exec-panel,
-.react-chat-main-body.is-layout-custom-width.is-knowledge-map-open .react-chat-knowledge-map-panel,
-.react-chat-main-body.is-layout-custom-width.is-browser-open .react-chat-browser-panel,
-.react-chat-main-body.is-layout-custom-width.is-workspace-open .react-chat-workspace-panel,
-.react-chat-main-body.is-layout-custom-width.is-artifacts-open .react-chat-artifacts-panel,
-.react-chat-main-body.is-layout-custom-width.is-right-stage-open .react-chat-right-stage-panel {
+/* 只有右栏外壳吃自定义宽度；内部 BrowserPanel / 工作流等不再套同一像素宽
+   （否则嵌套时 flex-basis 落到纵轴，浏览器区会被压成窄条）。 */
+.react-chat-main-body.is-layout-custom-width.is-right-stage-open > .react-chat-right-stage-panel {
   flex: 0 0 var(--chat-right-panel-width) !important;
   width: var(--chat-right-panel-width) !important;
   max-width: var(--chat-right-panel-width) !important;
-  /* 覆盖 workspace browse/preview 等模式的固定 min-width，否则拖窄后拉不回来 */
   min-width: 0 !important;
 }
 
@@ -3373,28 +3370,28 @@ html.dark .react-chat-panel-resize-handle.is-dragging::before {
   max-width: 100%;
 }
 
-/* 协作执行面板：与主对话各占一半 */
-.react-chat-main-body.is-collab-exec-open .react-chat-conversation-col {
+/* 旧半栏布局：仅在「面板仍是 main-body 直接子级」时生效。
+   右栏标签外壳路径改走 is-right-stage-open + --chat-right-panel-width。 */
+.react-chat-main-body.is-collab-exec-open:not(.is-right-stage-open) .react-chat-conversation-col {
   flex: 1 1 50%;
   max-width: 50%;
   min-width: 0;
 }
 
-.react-chat-main-body.is-collab-exec-open .react-chat-collab-exec-panel {
+.react-chat-main-body.is-collab-exec-open:not(.is-right-stage-open) > .react-chat-collab-exec-panel {
   flex: 1 1 50%;
   width: 50%;
   max-width: 50%;
   min-width: min(280px, 50%);
 }
 
-/* 知识图面板：与主对话各占一半（布局同工作流） */
-.react-chat-main-body.is-knowledge-map-open .react-chat-conversation-col {
+.react-chat-main-body.is-knowledge-map-open:not(.is-right-stage-open) .react-chat-conversation-col {
   flex: 1 1 50%;
   max-width: 50%;
   min-width: 0;
 }
 
-.react-chat-main-body.is-knowledge-map-open .react-chat-knowledge-map-panel {
+.react-chat-main-body.is-knowledge-map-open:not(.is-right-stage-open) > .react-chat-knowledge-map-panel {
   flex: 1 1 50%;
   width: 50%;
   max-width: 50%;
@@ -3404,8 +3401,7 @@ html.dark .react-chat-panel-resize-handle.is-dragging::before {
   align-self: stretch;
 }
 
-/* 浏览器面板：与主对话各占一半 */
-.react-chat-main-body.is-browser-open .react-chat-conversation-col {
+.react-chat-main-body.is-browser-open:not(.is-right-stage-open) .react-chat-conversation-col {
   flex: 1 1 50%;
   max-width: 50%;
   min-width: 0;
@@ -3426,7 +3422,8 @@ html.dark .react-chat-panel-resize-handle.is-dragging::before {
   padding: 0;
 }
 
-.react-chat-main-body.is-browser-open .react-chat-browser-panel {
+/* 旧路径：浏览器面板仍是 main-body 直接子级时占半栏 */
+.react-chat-main-body.is-browser-open > .react-chat-browser-panel {
   flex: 1 1 50%;
   width: 50%;
   max-width: 50%;
@@ -23431,6 +23428,116 @@ html[data-translucent-ui='1'] .react-chat-workspace-tree .kv-tree-expand {
   flex-direction: column;
 }
 
+/* 右栏 file 标签：铺满侧栏，不再套弹窗卡片尺寸 */
+.react-chat-workspace-preview-stage {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+  background: var(--bg-primary, #ffffff);
+  overflow: hidden;
+}
+.react-chat-workspace-preview-stage > .react-chat-workspace-preview-pane {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+html[data-theme='dark'] .react-chat-workspace-preview-stage,
+html.dark .react-chat-workspace-preview-stage {
+  background: var(--bg-primary, #0b1220);
+}
+
+/* ZCode PreviewPane 顶栏：面包屑 + ··· / 外链 */
+.react-chat-workspace-preview-pane.is-embedded .react-chat-workspace-preview-pane-header {
+  padding: 0 6px 0 0;
+  min-height: 40px;
+  align-items: center;
+  gap: 8px;
+}
+.react-chat-workspace-preview-breadcrumb {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 12px;
+  overflow: hidden;
+  font-size: 12.5px;
+  color: var(--text-secondary, #6b7280);
+  white-space: nowrap;
+}
+.react-chat-workspace-preview-crumb {
+  flex-shrink: 0;
+  max-width: 8rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.react-chat-workspace-preview-crumb.is-file {
+  color: var(--text-primary, #111827);
+  font-weight: 500;
+  max-width: 14rem;
+}
+.react-chat-workspace-preview-crumb-sep {
+  flex-shrink: 0;
+  opacity: 0.45;
+  margin: 0 2px;
+}
+.react-chat-workspace-preview-icon-btn {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary, #6b7280);
+  cursor: pointer;
+}
+.react-chat-workspace-preview-icon-btn:hover {
+  background: var(--bg-hover, rgba(127, 127, 127, 0.1));
+  color: var(--text-primary, inherit);
+}
+.react-chat-workspace-preview-menu-label {
+  padding: 4px 8px 2px;
+  font-size: 11px;
+  color: var(--text-secondary, #6b7280);
+}
+.react-chat-workspace-preview-menu-item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-primary, inherit);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.react-chat-workspace-preview-menu-item:hover,
+.react-chat-workspace-preview-menu-item.is-active {
+  background: var(--bg-hover, rgba(127, 127, 127, 0.1));
+}
+.react-chat-workspace-preview-menu-sep {
+  height: 1px;
+  margin: 4px 0;
+  background: var(--border, rgba(127, 127, 127, 0.2));
+}
+.react-chat-workspace-preview-pane.is-wrap-lines .react-chat-workspace-preview-code,
+.react-chat-workspace-preview-pane.is-wrap-lines .react-chat-workspace-preview-code code {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .react-chat-workspace-preview-zoom-bar {
   flex-shrink: 0;
   display: flex;
@@ -23929,10 +24036,9 @@ html.dark .react-chat-workspace-panel {
   min-width: 240px;
 }
 
-/* BrowserPanel 自带壳：它同时命中 ``react-chat-collab-exec-panel``（flex: 1 1 50%）
-   和 ``react-chat-right-stage-panel``（flex: 0 0 var(--chat-right-panel-width)）。
-   显式收敛到 right-stage 契约，避免双层 flex 抢宽度导致面板缩成小方块。 */
-.react-chat-browser-panel.react-chat-collab-exec-panel {
+/* 仅当 BrowserPanel 仍是 main-body 的直接子级时才当外壳占宽（旧路径兜底）。
+   标签内容路径见下方 ``.react-chat-right-stage-body > …``。 */
+.react-chat-main-body > .react-chat-browser-panel.react-chat-collab-exec-panel {
   flex: 0 0 var(--chat-right-panel-width, 50%);
   width: var(--chat-right-panel-width, 50%);
   max-width: var(--chat-right-panel-width, 50%);
@@ -24945,9 +25051,35 @@ html.dark .react-chat-collab-exec-panel {
 }
 
 .collab-exec-dag-empty {
-  font-size: var(--ef-text-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 8rem;
+  margin: 0;
+  padding: 24px 16px;
+  text-align: center;
+  font-size: 0.875rem;
+  line-height: 1.45;
+  font-weight: 500;
   color: var(--text-secondary, #6b7280);
-  padding: 8px 0;
+}
+
+/* 空白态：正文居中，不画标题栏底线和画布点阵 */
+.react-chat-collab-exec-panel:has(.react-chat-collab-exec-panel-body > .collab-exec-dag-empty:only-child) > .react-chat-collab-exec-panel-header,
+.react-chat-knowledge-map-panel:has(.km-panel-body > .collab-exec-dag-empty:only-child) > .react-chat-collab-exec-panel-header {
+  display: none;
+}
+.react-chat-collab-exec-panel-body:has(> .collab-exec-dag-empty:only-child),
+.km-panel-body:has(> .collab-exec-dag-empty:only-child) {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+  padding: 0;
+  background: transparent;
+  background-image: none;
 }
 
 .collab-wf-panel-body {
@@ -32450,6 +32582,7 @@ html[data-theme='dark'] .react-chat-browser-panel .browser-panel-nav-error {
  * 空间不足时平均收缩而非让长标题独占宽度；再不足才出现横向滚动。 */
 /* 右栏外壳：标签条 + 内容区（ZCode side pane 同构） */
 .react-chat-right-stage-shell {
+  position: relative;
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -32457,6 +32590,69 @@ html[data-theme='dark'] .react-chat-browser-panel .browser-panel-nav-error {
   min-width: 0;
   background: var(--bg-primary, var(--background, #fff));
   border-left: 1px solid var(--border, #e5e7eb);
+}
+
+/* 顶部悬停热区：平时只留 ~10px 细带；展开时正文同步下推，避免遮挡 */
+.react-chat-stage-chrome {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 30;
+  height: 10px;
+  overflow: visible;
+  pointer-events: auto;
+  transition: height 0.14s ease;
+}
+.react-chat-stage-chrome:hover,
+.react-chat-stage-chrome.is-open,
+.react-chat-stage-chrome:focus-within {
+  height: 48px;
+}
+.react-chat-stage-chrome .react-chat-stage-tabs {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  opacity: 0;
+  transform: translateY(-6px);
+  pointer-events: none;
+  background: var(--bg-primary, var(--background, #fff));
+  border-bottom: 1px solid color-mix(in srgb, var(--border, #e5e7eb) 50%, transparent);
+  transition: opacity 0.14s ease, transform 0.14s ease;
+}
+.react-chat-stage-chrome:hover .react-chat-stage-tabs,
+.react-chat-stage-chrome.is-open .react-chat-stage-tabs,
+.react-chat-stage-chrome:focus-within .react-chat-stage-tabs {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+}
+html[data-theme='dark'] .react-chat-stage-chrome .react-chat-stage-tabs,
+html.dark .react-chat-stage-chrome .react-chat-stage-tabs {
+  background: var(--bg-primary, #0b1220);
+}
+
+/* 标签条展开时正文让出等高空间（悬停 / 菜单打开 / 焦点均同步） */
+.react-chat-right-stage-shell:has(.react-chat-stage-chrome:hover) .react-chat-right-stage-bodies,
+.react-chat-right-stage-shell:has(.react-chat-stage-chrome.is-open) .react-chat-right-stage-bodies,
+.react-chat-right-stage-shell:has(.react-chat-stage-chrome:focus-within) .react-chat-right-stage-bodies {
+  padding-top: 48px;
+}
+
+/* 标签相关弹层：强制实色底，避免半透明叠在正文上 */
+.react-chat-stage-popover {
+  z-index: 90 !important;
+  background: var(--bg-elevated, var(--bg-primary, #ffffff)) !important;
+  color: var(--text-primary, #111827);
+  border: 1px solid var(--border, #e5e7eb);
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.16);
+}
+html[data-theme='dark'] .react-chat-stage-popover,
+html.dark .react-chat-stage-popover {
+  background: var(--bg-elevated, #111827) !important;
+  border-color: color-mix(in srgb, var(--border, #334155) 80%, transparent);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
 }
 .react-chat-stage-open-tab-shell {
   display: flex;
@@ -32542,6 +32738,7 @@ html[data-theme='dark'] .react-chat-browser-panel .browser-panel-nav-error {
   flex: 1 1 auto;
   min-height: 0;
   min-width: 0;
+  transition: padding-top 0.14s ease;
 }
 .react-chat-right-stage-body {
   height: 100%;
@@ -32554,14 +32751,26 @@ html[data-theme='dark'] .react-chat-browser-panel .browser-panel-nav-error {
 .react-chat-right-stage-body > .react-chat-browser-panel-content,
 .react-chat-right-stage-body > .react-chat-right-stage-panel,
 .react-chat-right-stage-body > .react-chat-workspace-panel,
-.react-chat-right-stage-body > .react-chat-collab-exec-panel {
+.react-chat-right-stage-body > .react-chat-collab-exec-panel,
+.react-chat-right-stage-body > .react-chat-knowledge-map-panel,
+.react-chat-right-stage-body > .react-chat-terminal-stage {
   height: 100%;
   min-height: 0;
 }
 
-/* BrowserPanel 现在是标签内容，不再是右栏外壳。
-   旧的 collab-exec / right-stage 宽度（50%）会把它缩成半栏卡片。 */
-.react-chat-right-stage-body > .react-chat-browser-panel.react-chat-collab-exec-panel {
+/* 摘要卡片贴合标签槽：跟侧栏同宽（扣掉 margin），拖宽右栏时一起变宽 */
+.react-chat-right-stage-body > .chat-summary-panel.is-panel {
+  flex: 1 1 auto;
+  width: calc(100% - 16px);
+  max-width: none;
+  min-width: 0;
+  height: calc(100% - 16px);
+  max-height: calc(100% - 16px);
+}
+
+/* 嵌进右栏标签后不再套半宽灰底和左边线（外壳已有分隔） */
+.react-chat-right-stage-body > .react-chat-collab-exec-panel,
+.react-chat-right-stage-body > .react-chat-knowledge-map-panel {
   flex: 1 1 auto;
   width: 100%;
   max-width: none;
@@ -32570,8 +32779,116 @@ html[data-theme='dark'] .react-chat-browser-panel .browser-panel-nav-error {
   border-left: 0;
   background: var(--bg-primary, #ffffff);
 }
+html[data-theme='dark'] .react-chat-right-stage-body > .react-chat-collab-exec-panel,
+html.dark .react-chat-right-stage-body > .react-chat-collab-exec-panel,
+html[data-theme='dark'] .react-chat-right-stage-body > .react-chat-knowledge-map-panel,
+html.dark .react-chat-right-stage-body > .react-chat-knowledge-map-panel {
+  background: var(--bg-primary, #0b1220);
+  border-left-color: transparent;
+}
+
+/* 终端标签正文 */
+.react-chat-terminal-stage {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+  background: var(--bg-primary, #ffffff);
+}
+.react-chat-terminal-stage-header {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border, #e5e7eb) 50%, transparent);
+}
+.react-chat-terminal-stage-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary, #111827);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.react-chat-terminal-stage-hint {
+  font-size: 12px;
+  color: var(--text-secondary, #6b7280);
+}
+.react-chat-terminal-stage-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+html[data-theme='dark'] .react-chat-terminal-stage,
+html.dark .react-chat-terminal-stage {
+  background: var(--bg-primary, #0b1220);
+}
+
+/* 右栏标签右键菜单 */
+.react-chat-stage-tab-context-menu {
+  position: fixed;
+  z-index: 80;
+  min-width: 160px;
+  padding: 4px;
+  border-radius: 8px;
+  border: 1px solid var(--border, #e5e7eb);
+  background: var(--bg-primary, #fff);
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.14);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.react-chat-stage-tab-context-menu-item {
+  display: block;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  padding: 7px 10px;
+  border-radius: 6px;
+  font-size: 12.5px;
+  color: var(--text-primary, #111827);
+  cursor: pointer;
+}
+.react-chat-stage-tab-context-menu-item:hover:not(:disabled) {
+  background: var(--bg-hover, rgba(127, 127, 127, 0.12));
+}
+.react-chat-stage-tab-context-menu-item:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+html[data-theme='dark'] .react-chat-stage-tab-context-menu,
+html.dark .react-chat-stage-tab-context-menu {
+  background: var(--bg-elevated, #111827);
+  border-color: color-mix(in srgb, var(--border, #334155) 80%, transparent);
+}
+
+/* BrowserPanel / 预览等是标签内容：铺满外壳，禁止再套 50% / 自定义像素宽 */
+.react-chat-right-stage-body > .react-chat-browser-panel,
+.react-chat-right-stage-body > .react-chat-browser-panel.react-chat-collab-exec-panel,
+.react-chat-right-stage-body > .react-chat-workspace-preview-stage,
+.react-chat-right-stage-body > .react-chat-collab-exec-panel,
+.react-chat-right-stage-body > .react-chat-knowledge-map-panel {
+  flex: 1 1 auto !important;
+  width: 100% !important;
+  max-width: none !important;
+  min-width: 0 !important;
+  height: 100% !important;
+  align-self: stretch !important;
+  border-left: 0 !important;
+  background: var(--bg-primary, #ffffff);
+}
+html[data-theme='dark'] .react-chat-right-stage-body > .react-chat-browser-panel,
+html.dark .react-chat-right-stage-body > .react-chat-browser-panel.react-chat-collab-exec-panel,
 html[data-theme='dark'] .react-chat-right-stage-body > .react-chat-browser-panel.react-chat-collab-exec-panel,
-html.dark .react-chat-right-stage-body > .react-chat-browser-panel.react-chat-collab-exec-panel {
+html.dark .react-chat-right-stage-body > .react-chat-browser-panel,
+html[data-theme='dark'] .react-chat-right-stage-body > .react-chat-collab-exec-panel,
+html.dark .react-chat-right-stage-body > .react-chat-collab-exec-panel,
+html[data-theme='dark'] .react-chat-right-stage-body > .react-chat-knowledge-map-panel,
+html.dark .react-chat-right-stage-body > .react-chat-knowledge-map-panel {
   background: var(--bg-primary, #0b1220);
 }
 
@@ -32582,8 +32899,6 @@ html.dark .react-chat-right-stage-body > .react-chat-browser-panel.react-chat-co
   height: 48px;
   padding: 0 8px;
   gap: 4px;
-  background: transparent;
-  border-bottom: 1px solid color-mix(in srgb, var(--border, #e5e7eb) 50%, transparent);
   overflow: hidden;
   /* Tauri 无边框：标签条兼作窗口拖拽区，可交互子节点各自打 data-tauri-no-drag */
   user-select: none;

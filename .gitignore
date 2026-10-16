@@ -1,5 +1,7 @@
 # EvoFlow docker image cache
 docker/.cache/
+# Internal design/plan docs (not for version control)
+.internal-docs/
 # oh-my-claudecode state
 .omc/
 # zcode local plan / scratch (root only — do NOT ignore evopanel/src/zcode-* source)

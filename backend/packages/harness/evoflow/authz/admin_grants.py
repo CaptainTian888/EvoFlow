@@ -29,7 +29,21 @@ def is_org_admin(principal_id: str, *, org_id: str = DEFAULT_ORG_ID) -> bool:
         )
         .fetchone()
     )
-    return bool(row)
+    if row:
+        return True
+    # 引导本地管理员按构造就是 admin：无 cookie 的平台内部调用（内核桥、
+    # 引擎桥）会解析成 local/admin 身份。曾观察到 grants 行存在时该查询
+    # 仍返回 False（连接/快照异常），导致桥首调 403；这里用身份兜底，
+    # 只放行真正的 local bootstrap principal，不影响其他用户。
+    try:
+        from evoflow.authz.principals import resolve_principal_by_identity
+
+        p = resolve_principal_by_identity("local", "admin", org_id=org_id)
+        if p and str(p.get("principal_id") or "").strip() == pid:
+            return True
+    except Exception:
+        logger.debug("local admin identity fallback failed", exc_info=True)
+    return False
 
 
 def list_org_admins(*, org_id: str = DEFAULT_ORG_ID) -> list[str]:

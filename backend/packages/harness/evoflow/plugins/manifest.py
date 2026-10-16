@@ -1,7 +1,7 @@
 """Manifest parsing for plugin.json / marketplace.json and frontmatter helpers.
 
 Mirrors ZCode adapters/plugins/marketplace.ts parsing rules:
-- plugin manifest lookup order: .zcode-plugin / .claude-plugin / .codex-plugin
+- plugin manifest lookup order: .evoflow-plugin / .zcode-plugin / .claude-plugin / .codex-plugin
 - marketplace manifest lookup: marketplace.json or .claude-plugin/marketplace.json
 - name pattern ``^[a-z0-9][a-z0-9._-]{0,127}$`` for both marketplaces and plugins
 """
@@ -16,6 +16,7 @@ from typing import Any
 
 MARKETPLACE_FILE = "marketplace.json"
 CLAUDE_MARKETPLACE_FILE = ".claude-plugin/marketplace.json"
+EVOFLOW_MANIFEST_PATH = ".evoflow-plugin/plugin.json"
 ZCODE_MANIFEST_PATH = ".zcode-plugin/plugin.json"
 CLAUDE_MANIFEST_PATH = ".claude-plugin/plugin.json"
 CODEX_MANIFEST_PATH = ".codex-plugin/plugin.json"
@@ -157,7 +158,7 @@ def validate_plugin_name(name: str) -> str | None:
 
 
 def find_plugin_manifest_path(root: Path) -> Path | None:
-    for relative in (ZCODE_MANIFEST_PATH, CLAUDE_MANIFEST_PATH, CODEX_MANIFEST_PATH):
+    for relative in (EVOFLOW_MANIFEST_PATH, ZCODE_MANIFEST_PATH, CLAUDE_MANIFEST_PATH, CODEX_MANIFEST_PATH):
         candidate = root / relative
         if candidate.is_file():
             return candidate

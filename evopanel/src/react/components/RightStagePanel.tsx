@@ -14,10 +14,12 @@ import {
   FolderIcon,
   GlobeIcon,
   NetworkIcon,
+  PanelRightIcon,
   PlusIcon,
   WorkflowIcon,
   type LucideIcon,
 } from 'lucide-react'
+import { createPortal } from 'react-dom'
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   defaultTitleForKind,
@@ -37,6 +39,9 @@ import {
 /** 失活仍挂载：切签像浏览器标签一样保活（含工作流/导图）。 */
 const FORCE_MOUNT_KINDS = new Set([
   'browser',
+  'file',
+  'terminal',
+  'summary',
   'write',
   'workspace-browse',
   'collab-workflow',
@@ -51,6 +56,7 @@ export type RightStageLauncherItemId =
   | 'workspace'
   | 'workflow'
   | 'mind-map'
+  | 'summary'
 
 export type RightStageLauncherItem = {
   id: RightStageLauncherItemId
@@ -58,6 +64,12 @@ export type RightStageLauncherItem = {
   description?: string
   icon: LucideIcon
   onOpen: () => void
+}
+
+type StageTabContextMenu = {
+  key: string
+  x: number
+  y: number
 }
 
 function tabKeyOf(tab: RightStageSurface): string {
@@ -73,11 +85,13 @@ function StageTabChip({
   active,
   onActivate,
   onClose,
+  onContextMenu,
 }: {
   tab: RightStageSurface
   active: boolean
   onActivate: (key: string) => void
   onClose: (key: string) => void
+  onContextMenu: (key: string, x: number, y: number) => void
 }) {
   const key = tabKeyOf(tab)
   const title = tabTitleOf(tab)
@@ -101,6 +115,11 @@ function StageTabChip({
       style={style}
       onClick={() => {
         if (!active) onActivate(key)
+      }}
+      onContextMenu={(e) => {
+        e.preventDefault()
+        e.stopPropagation()
+        onContextMenu(key, e.clientX, e.clientY)
       }}
       {...attributes}
       {...listeners}
@@ -140,6 +159,8 @@ export type RightStagePanelProps = {
   recentClosed: RecentClosedRightStageTab[]
   onActivateTab: (key: string) => void
   onCloseTab: (key: string) => void
+  onCloseOtherTabs?: (keepKey: string) => void
+  onCloseAllTabs?: () => void
   onReorderTab: (activeId: string, overId: string) => void
   onReopenClosedTab: (key: string) => void
   /** 折叠侧栏（保留 tabs 缓存），不是 hideAll。 */
@@ -154,6 +175,8 @@ export const RightStagePanel = memo(function RightStagePanel({
   recentClosed,
   onActivateTab,
   onCloseTab,
+  onCloseOtherTabs,
+  onCloseAllTabs,
   onReorderTab,
   onReopenClosedTab,
   onCollapse,
@@ -163,9 +186,33 @@ export const RightStagePanel = memo(function RightStagePanel({
   const [draggingKey, setDraggingKey] = useState<string | null>(null)
   const [overviewOpen, setOverviewOpen] = useState(false)
   const [addMenuOpen, setAddMenuOpen] = useState(false)
+  const [tabCtx, setTabCtx] = useState<StageTabContextMenu | null>(null)
   const viewportRef = useRef<HTMLDivElement | null>(null)
   const [viewportWidth, setViewportWidth] = useState(0)
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }))
+
+  useEffect(() => {
+    if (!tabCtx) return
+    const close = () => setTabCtx(null)
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') close()
+    }
+    window.addEventListener('mousedown', close)
+    window.addEventListener('keydown', onKey)
+    window.addEventListener('blur', close)
+    return () => {
+      window.removeEventListener('mousedown', close)
+      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('blur', close)
+    }
+  }, [tabCtx])
+
+  const openTabContextMenu = useCallback((key: string, x: number, y: number) => {
+    setTabCtx({ key, x, y })
+  }, [])
+
+  /** 菜单/拖拽进行中强制露出标签条，避免 Portal 弹出后 mouseleave 把条收回去。 */
+  const chromeForcedOpen = overviewOpen || addMenuOpen || !!tabCtx || !!draggingKey
 
   const visibleActiveKey = useMemo(() => {
     if (activeKey && tabs.some((t) => tabKeyOf(t) === activeKey)) return activeKey
@@ -230,7 +277,7 @@ export const RightStagePanel = memo(function RightStagePanel({
 
       const def = getRightStageKind(kind)
       const body = def
-        ? def.render({ surface: tab, onClose: () => onCloseTab(key) })
+        ? def.render({ surface: tab, onClose: () => onCloseTab(key), active })
         : renderContent?.(tab) ?? <UnknownStageKind kind={kind} />
 
       return (
@@ -280,7 +327,11 @@ export const RightStagePanel = memo(function RightStagePanel({
           <PlusIcon className="size-4" aria-hidden />
         </button>
       </PopoverTrigger>
-      <PopoverContent align="start" className="w-56 p-1" data-tauri-no-drag>
+      <PopoverContent
+        align="start"
+        className="react-chat-stage-popover w-56 p-1"
+        data-tauri-no-drag
+      >
         <div className="flex flex-col gap-0.5" role="menu">
           {launcherItems.map((item) => {
             const Icon = item.icon
@@ -347,92 +398,152 @@ export const RightStagePanel = memo(function RightStagePanel({
 
   return (
     <aside className="react-chat-right-stage-panel react-chat-right-stage-shell" role="region" aria-label="右侧面板">
-      <div className="react-chat-stage-tabs" role="tablist" aria-label="右侧标签">
-        <Popover open={overviewOpen} onOpenChange={setOverviewOpen}>
-          <PopoverTrigger asChild>
-            <button
-              type="button"
-              className={`react-chat-stage-tab-new${overviewOpen ? ' is-pressed' : ''}`}
+      {/* 顶部悬停才展开标签条：平时不占摘要等内容的视觉空间 */}
+      <div
+        className={`react-chat-stage-chrome${chromeForcedOpen ? ' is-open' : ''}`}
+        data-tauri-no-drag
+      >
+        <div className="react-chat-stage-tabs" role="tablist" aria-label="右侧标签">
+          <Popover open={overviewOpen} onOpenChange={setOverviewOpen}>
+            <PopoverTrigger asChild>
+              <button
+                type="button"
+                className={`react-chat-stage-tab-new${overviewOpen ? ' is-pressed' : ''}`}
+                data-tauri-no-drag
+                title="搜索标签页"
+                aria-label="搜索标签页"
+                aria-haspopup="dialog"
+                aria-expanded={overviewOpen}
+              >
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                  <path d="m7 6 5 5 5-5" />
+                  <path d="m7 13 5 5 5-5" />
+                </svg>
+              </button>
+            </PopoverTrigger>
+            <PopoverContent
+              align="start"
+              className="react-chat-stage-popover w-72 p-2"
               data-tauri-no-drag
-              title="搜索标签页"
-              aria-label="搜索标签页"
-              aria-haspopup="dialog"
-              aria-expanded={overviewOpen}
             >
-              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-                <path d="m7 6 5 5 5-5" />
-                <path d="m7 13 5 5 5-5" />
-              </svg>
-            </button>
-          </PopoverTrigger>
-          <PopoverContent align="start" className="w-72 p-2" data-tauri-no-drag>
-            <RightStageTabOverview
-              tabs={tabs}
-              activeKey={visibleActiveKey}
-              recentClosed={recentClosed}
-              onActivateTab={(key) => {
-                onActivateTab(key)
-                setOverviewOpen(false)
-              }}
-              onCloseTab={onCloseTab}
-              onReopenClosedTab={(key) => {
-                onReopenClosedTab(key)
-                setOverviewOpen(false)
-              }}
-            />
-          </PopoverContent>
-        </Popover>
+              <RightStageTabOverview
+                tabs={tabs}
+                activeKey={visibleActiveKey}
+                recentClosed={recentClosed}
+                onActivateTab={(key) => {
+                  onActivateTab(key)
+                  setOverviewOpen(false)
+                }}
+                onCloseTab={onCloseTab}
+                onReopenClosedTab={(key) => {
+                  onReopenClosedTab(key)
+                  setOverviewOpen(false)
+                }}
+              />
+            </PopoverContent>
+          </Popover>
 
-        <div
-          ref={viewportRef}
-          className="react-chat-stage-tabs-viewport"
-          data-overflow-left={overflowEdges.left ? 'true' : undefined}
-          data-overflow-right={overflowEdges.right ? 'true' : undefined}
-          onScroll={measureViewport}
-        >
-          <DndContext
-            sensors={sensors}
-            collisionDetection={closestCenter}
-            onDragStart={handleDragStart}
-            onDragEnd={handleDragEnd}
-            onDragCancel={() => setDraggingKey(null)}
+          <div
+            ref={viewportRef}
+            className="react-chat-stage-tabs-viewport"
+            data-overflow-left={overflowEdges.left ? 'true' : undefined}
+            data-overflow-right={overflowEdges.right ? 'true' : undefined}
+            onScroll={measureViewport}
           >
-            <SortableContext items={tabs.map(tabKeyOf)} strategy={horizontalListSortingStrategy}>
-              {tabs.map((tab) => (
-                <StageTabChip
-                  key={tabKeyOf(tab)}
-                  tab={tab}
-                  active={tabKeyOf(tab) === visibleActiveKey}
-                  onActivate={onActivateTab}
-                  onClose={onCloseTab}
-                />
-              ))}
-            </SortableContext>
-            {!isOverflowing ? addTabMenu : null}
-            <DragOverlay dropAnimation={null}>
-              {draggingTab ? (
-                <button
-                  type="button"
-                  className="react-chat-stage-tab is-active is-dragging-overlay"
-                  data-tauri-no-drag
-                >
-                  <KindTabIcon kind={normalizeRightStageKind(draggingTab.kind)} />
-                  <span className="react-chat-stage-tab-content">
-                    <span className="react-chat-stage-tab-title">{tabTitleOf(draggingTab)}</span>
-                  </span>
-                </button>
-              ) : null}
-            </DragOverlay>
-          </DndContext>
-        </div>
+            <DndContext
+              sensors={sensors}
+              collisionDetection={closestCenter}
+              onDragStart={handleDragStart}
+              onDragEnd={handleDragEnd}
+              onDragCancel={() => setDraggingKey(null)}
+            >
+              <SortableContext items={tabs.map(tabKeyOf)} strategy={horizontalListSortingStrategy}>
+                {tabs.map((tab) => (
+                  <StageTabChip
+                    key={tabKeyOf(tab)}
+                    tab={tab}
+                    active={tabKeyOf(tab) === visibleActiveKey}
+                    onActivate={onActivateTab}
+                    onClose={onCloseTab}
+                    onContextMenu={openTabContextMenu}
+                  />
+                ))}
+              </SortableContext>
+              {!isOverflowing ? addTabMenu : null}
+              <DragOverlay dropAnimation={null}>
+                {draggingTab ? (
+                  <button
+                    type="button"
+                    className="react-chat-stage-tab is-active is-dragging-overlay"
+                    data-tauri-no-drag
+                  >
+                    <KindTabIcon kind={normalizeRightStageKind(draggingTab.kind)} />
+                    <span className="react-chat-stage-tab-content">
+                      <span className="react-chat-stage-tab-title">{tabTitleOf(draggingTab)}</span>
+                    </span>
+                  </button>
+                ) : null}
+              </DragOverlay>
+            </DndContext>
+          </div>
 
-        <div className="react-chat-stage-tabs-tail">
-          {isOverflowing ? addTabMenu : null}
-          {collapseButton}
+          <div className="react-chat-stage-tabs-tail">
+            {isOverflowing ? addTabMenu : null}
+            {collapseButton}
+          </div>
         </div>
       </div>
 
       <div className="react-chat-right-stage-bodies">{tabs.map(renderTabBody)}</div>
+
+      {tabCtx && typeof document !== 'undefined'
+        ? createPortal(
+            <div
+              className="react-chat-stage-tab-context-menu"
+              data-tauri-no-drag
+              style={{ left: tabCtx.x, top: tabCtx.y }}
+              onMouseDown={(e) => e.stopPropagation()}
+              role="menu"
+            >
+              <button
+                type="button"
+                role="menuitem"
+                className="react-chat-stage-tab-context-menu-item"
+                onClick={() => {
+                  onCloseTab(tabCtx.key)
+                  setTabCtx(null)
+                }}
+              >
+                关闭标签
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                className="react-chat-stage-tab-context-menu-item"
+                disabled={!onCloseOtherTabs || tabs.length <= 1}
+                onClick={() => {
+                  onCloseOtherTabs?.(tabCtx.key)
+                  setTabCtx(null)
+                }}
+              >
+                关闭其他标签
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                className="react-chat-stage-tab-context-menu-item"
+                disabled={!onCloseAllTabs || tabs.length === 0}
+                onClick={() => {
+                  onCloseAllTabs?.()
+                  setTabCtx(null)
+                }}
+              >
+                关闭全部标签
+              </button>
+            </div>,
+            document.body,
+          )
+        : null}
     </aside>
   )
 })
@@ -444,6 +555,7 @@ export function buildDefaultRightStageLauncherItems(handlers: {
   onOpenWorkflow: () => void
   onOpenMindMap?: () => void
   mindMapEnabled?: boolean
+  onOpenSummary?: () => void
 }): RightStageLauncherItem[] {
   const items: RightStageLauncherItem[] = [
     {
@@ -465,6 +577,14 @@ export function buildDefaultRightStageLauncherItems(handlers: {
       onOpen: handlers.onOpenWorkflow,
     },
   ]
+  if (handlers.onOpenSummary) {
+    items.push({
+      id: 'summary',
+      label: '摘要',
+      icon: PanelRightIcon,
+      onOpen: handlers.onOpenSummary,
+    })
+  }
   if (handlers.mindMapEnabled && handlers.onOpenMindMap) {
     items.push({
       id: 'mind-map',

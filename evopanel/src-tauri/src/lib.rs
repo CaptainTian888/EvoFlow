@@ -359,6 +359,7 @@ pub fn run() {
             browser_embed::browser_embed_supported,
             browser_embed::browser_embed_upsert,
             browser_embed::browser_embed_set_bounds,
+            browser_embed::browser_embed_park,
             browser_embed::browser_embed_close,
             browser_embed_bridge::browser_embed_bridge_response,
         ])

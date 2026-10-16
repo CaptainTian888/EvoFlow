@@ -1,0 +1,9 @@
+{
+  "name": "evoflow-guide",
+  "displayName": "EvoFlow Guide",
+  "description": "EvoFlow usage and self-diagnosis guide: teaches agents and users how to configure MCP servers, commands, skills, hooks, and plugins, and how to locate and fix configuration problems for each.",
+  "version": "1.0.0",
+  "author": "EvoFlow",
+  "homepage": "https://github.com/EvovexAI/EvoFlow",
+  "keywords": ["guide", "diagnostics", "configuration"]
+}

@@ -2,6 +2,7 @@ import { useEffect, useMemo, type CSSProperties, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import '@/styles-bridge.css'
 import { resolvePluginIconSource } from '@/lib/pluginIconSource.js'
+import { blog } from '../../lib/browser-unified-log.js'
 import type { PluginPickerItem } from './PluginPickerModal.js'
 
 /**
@@ -303,6 +304,10 @@ export function PluginQuickPanel({
                           // 即点即存（与说明文案一致），选完一项自动收起面板，
                           // 避免浮层继续遮挡下方输入框。如果将来需要连选，
                           // 这里接 Ctrl/Cmd 修饰键维持开启即可。
+                          blog(
+                            'info',
+                            `[plugin-panel] toggle id=${p.id} turning ${selectedIds.has(p.id) ? 'off' : 'on'}`,
+                          )
                           onToggle(p)
                           if (!selectedIds.has(p.id)) onClose()
                         }}

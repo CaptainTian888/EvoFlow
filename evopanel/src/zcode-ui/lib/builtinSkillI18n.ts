@@ -14,6 +14,7 @@ const OFFICIAL_BUILTIN_PLUGIN_NAMES = new Set([
   "browser-use",
   "document-skills",
   "documents",
+  "evoflow-guide",
   "pdf",
   "presentations",
   "spreadsheets",
@@ -27,6 +28,7 @@ const OFFICIAL_BUILTIN_PLUGIN_NAMES = new Set([
 const OFFICIAL_PLUGIN_PATH_MARKERS = [
   "/zcode-plugins-official/",
   "\\zcode-plugins-official\\",
+  "/evoflow-guide/",
   "/android-emulator-plugin/",
   "/browser-use-plugin/",
   "/document-skills-plugin/",
@@ -164,6 +166,37 @@ const BUILTIN_SKILL_DESCRIPTIONS: Record<string, Record<Locale, string>> = {
     "zh-CN": "创建新技能、编辑现有技能或在发布前验证技能是否有效时使用。",
     "en-US":
       "Use when creating new skills, editing existing skills, or verifying skills work before deployment.",
+  },
+  "evoflow-configuration-guide": {
+    "zh-CN":
+      "配置 EvoFlow 扩展资源（MCP 服务器、斜杠命令、技能、钩子、插件）或 AGENTS.md 指令文件时使用。说明各资源的配置位置、发现顺序、优先级与合并规则，以及如何选择配置位置。",
+    "en-US":
+      "Use when configuring EvoFlow's extension resources (MCP servers, commands, skills, hooks, plugins) or AGENTS.md. Explains locations, discovery order, precedence, and merge rules.",
+  },
+  "diagnosing-mcp": {
+    "zh-CN": "诊断和修复 EvoFlow MCP 服务器配置问题：服务器不连接、工具缺失、禁用或失败、连接超时、环境变量未展开等。",
+    "en-US":
+      "Diagnose and fix EvoFlow MCP server problems: server not connecting, tools missing, disabled or failed, timeout, env variables not expanded.",
+  },
+  "diagnosing-skills": {
+    "zh-CN": "诊断和修复 EvoFlow 技能问题：技能不被发现、不触发、被覆盖、被禁用或描述不匹配。",
+    "en-US":
+      "Diagnose and fix EvoFlow skill problems: not discovered, not triggering, shadowed, disabled, or description mismatch.",
+  },
+  "diagnosing-commands": {
+    "zh-CN": "诊断和修复 EvoFlow 斜杠命令问题：命令缺失、被覆盖、frontmatter 错误、参数不替换或正文未注入。",
+    "en-US":
+      "Diagnose and fix EvoFlow slash command problems: missing, overridden, frontmatter errors, args not substituted, or body not injected.",
+  },
+  "diagnosing-hooks": {
+    "zh-CN": "诊断和修复 EvoFlow 钩子问题：钩子不触发、匹配器不匹配、脚本不可执行或意外阻塞。",
+    "en-US":
+      "Diagnose and fix EvoFlow hook problems: not triggering, matcher not matching, script not executable, or blocking unexpectedly.",
+  },
+  "diagnosing-plugins": {
+    "zh-CN": "诊断和修复 EvoFlow 插件问题：插件不列出、安装失败、缺少组件、未启用或图标不显示。",
+    "en-US":
+      "Diagnose and fix EvoFlow plugin problems: not listed, install failure, missing components, not enabled, or icon not displaying.",
   },
 };
 

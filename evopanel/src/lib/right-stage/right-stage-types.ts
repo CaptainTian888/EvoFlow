@@ -19,6 +19,8 @@ export type RightStageSurface = {
   title?: string
   layout?: RightStageLayout
   data: Record<string, unknown>
+  /** 归属会话；有值时 UI 按当前 sessionKey 过滤可见标签。 */
+  sessionKey?: string
 }
 
 export type RightStageStreamChunk = {
@@ -40,6 +42,9 @@ export type RightStageStreamSession = {
 export const RIGHT_STAGE_KIND_LABELS: Record<string, string> = {
   'workspace-browse': '工作区文件',
   write: '写入内容',
+  file: '文件预览',
+  summary: '摘要',
+  terminal: '终端',
   artifacts: '本轮产物',
   'mind-map': '思维导图',
   'collab-workflow': '工作流',
@@ -72,12 +77,17 @@ export function defaultTitleForKind(kind: string): string {
 export function defaultLayoutForKind(kind: string): RightStageLayout {
   switch (normalizeRightStageKind(kind)) {
     case 'workspace-browse':
+    case 'summary':
       return 'narrow'
     case 'platform-feedback':
       return 'narrow'
+    case 'terminal':
+      return 'half'
     case 'write':
     case 'artifacts':
       return 'workspace-write'
+    case 'file':
+    case 'browser':
     case 'news-dashboard':
     case 'web-embed':
       return 'wide'

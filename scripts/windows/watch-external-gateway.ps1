@@ -87,7 +87,7 @@ while ($true) {
     Write-SupervisorLog "spawn gen=$generation uvicorn port=$Port out=$outLog err=$errLog"
 
     $p = Start-Process -FilePath $pyExe `
-        -ArgumentList @("-u", "-m", "uvicorn", "app.gateway.app:app", "--host", "0.0.0.0", "--port", "$Port") `
+        -ArgumentList @("-u", "-m", "uvicorn", "app.gateway.app:app", "--host", "127.0.0.1", "--port", "$Port") `
         -WorkingDirectory $script:DFBackendDir `
         -PassThru `
         -NoNewWindow `

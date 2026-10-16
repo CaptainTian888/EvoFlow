@@ -1,5 +1,6 @@
 import { parseBrowserLiveToolOutput } from './chat-normalize.js'
 import { buildBrowserStreamPath } from './browser-stream-client.js'
+import { blog } from './browser-unified-log.js'
 import {
   ensureBrowserStage,
   NODE_REPL_BRIDGE_THREAD_ID,
@@ -171,6 +172,12 @@ export function syncBrowserPanelFromAgUiEvent(
   const type = String(aguiEvent.type || '').toUpperCase()
   const toolCallId = String(aguiEvent.toolCallId || '').trim()
   const tc = toolCallId ? toolCalls?.get(toolCallId) : undefined
+  // 浏览器工具事件进统一日志（browser-debug.log），与后端引擎/内核桥时间线对齐。
+  blog(
+    'info',
+    `[tool] ${type} tool=${toolName} id=${toolCallId}` +
+      (tc?.argsText ? ` args=${String(tc.argsText).replace(/\s+/g, ' ').slice(0, 120)}` : ''),
+  )
   // browser-use / node-repl always owns the shared bridge WebView2 session.
   if (toolName === 'mcp__node_repl__js') {
     setBrowserPanelThreadId(NODE_REPL_BRIDGE_THREAD_ID)
@@ -185,6 +192,7 @@ export function syncBrowserPanelFromAgUiEvent(
         : typeof (aguiEvent as { content?: string }).content === 'string'
           ? (aguiEvent as { content?: string }).content
           : null
+    blog('info', `[tool] result for id=${toolCallId}: ${String(result || '').replace(/\s+/g, ' ').slice(0, 200) || '(empty)'}`)
     // Keep the panel open even when the tool result is not a browser_live JSON
     // blob (node-repl returns JS stdout / structured SDK results).
     ensureBrowserStage()

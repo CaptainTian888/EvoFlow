@@ -36,17 +36,67 @@ pub static EMBED_LAST_BOUNDS: std::sync::LazyLock<std::sync::Mutex<HashMap<Strin
 
 /// 主窗口移动/缩放后，把所有 embed 窗口重新贴回面板槽位（ZCode "所见即所控" 对齐）。
 pub fn reposition_embeds_after_main_move(app: &tauri::AppHandle) {
-    let Ok(map) = EMBED_LAST_BOUNDS.lock() else { return };
-    for (label, (x, y, w, h)) in map.iter() {
-        let Some(window) = app.get_webview_window(label) else { continue };
-        match client_to_screen(app, *x, *y) {
-            Ok((sx, sy)) => {
-                let _ = window.set_position(LogicalPosition::new(sx, sy));
-                let _ = window.set_size(LogicalSize::new(w.max(120.0), h.max(80.0)));
+    let Some(parent) = app.get_webview_window("main") else { return };
+    let scale = parent.scale_factor().unwrap_or(1.0).max(0.1);
+    let Ok(phys) = parent.inner_size() else { return };
+    // 主窗口内容区（逻辑 px）——client 坐标系的上界。
+    let iw = (phys.width as f64) / scale;
+    let ih = (phys.height as f64) / scale;
+
+    let mut untracked: Vec<(String, f64, f64, f64, f64)> = Vec::new();
+    {
+        let mut map = match EMBED_LAST_BOUNDS.lock() {
+            Ok(m) => m,
+            Err(_) => return,
+        };
+        // 已登记的：按相对边界重贴，并钳回主窗口内容区（窗口缩小后不能悬在外面）。
+        for (label, (x, y, w, h)) in map.iter() {
+            let Some(window) = app.get_webview_window(label) else { continue };
+            let (cx, cy, cw, ch) = clamp_rect(*x, *y, *w, *h, iw, ih);
+            match client_to_screen(app, cx, cy) {
+                Ok((sx, sy)) => {
+                    let _ = window.set_position(LogicalPosition::new(sx, sy));
+                    let _ = window.set_size(LogicalSize::new(cw.max(120.0), ch.max(80.0)));
+                }
+                Err(_) => continue,
             }
-            Err(_) => continue,
+        }
+        // 未登记的（早路径/引擎兜底创建后面板从未接管）：贴到主窗口右侧停靠位，
+        // 并登记边界——否则这些窗口在主窗口移动时无人搬运，"悬浮脱离客户端"。
+        let tracked: std::collections::HashSet<String> = map.keys().cloned().collect();
+        for (label, window) in app.webview_windows() {
+            if !label.starts_with("browser-embed-") || tracked.contains(&label) {
+                continue;
+            }
+            let w = (iw * 0.45).clamp(480.0, (iw - 16.0).max(120.0));
+            let h = (ih - 96.0).clamp(360.0, (ih - 16.0).max(80.0));
+            let x = (iw - w - 12.0).max(0.0);
+            let y = 64.0f64.min((ih - h).max(0.0));
+            match client_to_screen(app, x, y) {
+                Ok((sx, sy)) => {
+                    let _ = window.set_position(LogicalPosition::new(sx, sy));
+                    let _ = window.set_size(LogicalSize::new(w, h));
+                    browser_cdp_server::log_line(&format!(
+                        "[browser-embed] reposition untracked embed: docked ({x:.0},{y:.0}) {w:.0}x{h:.0}"
+                    ));
+                    untracked.push((label, x, y, w, h));
+                }
+                Err(_) => continue,
+            }
+        }
+        for (label, x, y, w, h) in untracked.drain(..) {
+            map.insert(label, (x, y, w, h));
         }
     }
+}
+
+/// 把客户端相对矩形钳制进主窗口内容区，embed 永远不会停在客户区之外。
+fn clamp_rect(x: f64, y: f64, w: f64, h: f64, iw: f64, ih: f64) -> (f64, f64, f64, f64) {
+    let w = w.clamp(120.0, (iw - 16.0).max(120.0));
+    let h = h.clamp(80.0, (ih - 16.0).max(80.0));
+    let x = x.clamp(0.0, (iw - w).max(0.0));
+    let y = y.clamp(0.0, (ih - h).max(0.0));
+    (x, y, w, h)
 }
 #[cfg(target_os = "windows")]
 use super::browser_cdp_server;
@@ -244,7 +294,7 @@ async fn serve_cdp_client(
         }
     }
     let request = String::from_utf8_lossy(&buf).to_string();
-    eprintln!("[browser-cdp] handshake first line: {:?}", request.lines().next());
+    browser_cdp_server::log_line(&format!("[browser-cdp] handshake first line: {:?}", request.lines().next()));
     if !request.starts_with("GET ") || !request.to_ascii_lowercase().contains("upgrade: websocket")
     {
         return Err("not a websocket handshake".into());
@@ -401,14 +451,14 @@ fn handle_client_frame(app: &tauri::AppHandle, label: &str, raw: &str) -> Option
     let frame: serde_json::Value = match serde_json::from_str(raw) {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("[browser-broker] DROPPED unparseable frame label={label} err={e} raw={:.200}", raw);
+            browser_cdp_server::log_line(&format!("[browser-broker] DROPPED unparseable frame label={label} err={e} raw={:.200}", raw));
             return None;
         }
     };
     let Some(id) = frame.get("id").and_then(serde_json::Value::as_u64) else {
         // A frame with no `id` is a notification; they are not expected here,
         // so say so instead of vanishing.
-        eprintln!("[browser-broker] DROPPED id-less frame label={label} raw={:.200}", raw);
+        browser_cdp_server::log_line(&format!("[browser-broker] DROPPED id-less frame label={label} raw={:.200}", raw));
         return None;
     };
     let method = frame.get("method").and_then(serde_json::Value::as_str).unwrap_or("");
@@ -417,10 +467,10 @@ fn handle_client_frame(app: &tauri::AppHandle, label: &str, raw: &str) -> Option
         .cloned()
         .unwrap_or_else(|| serde_json::Value::Object(Default::default()));
     let params_json = serde_json::to_string(&params).unwrap_or_else(|_| "{}".to_string());
-    eprintln!(
+    browser_cdp_server::log_line(&format!(
         "[browser-broker] -> id={id} method={method} params={:.300}",
         params_json
-    );
+    ));
 
     // WebView2 exposes a single implicit target: `CallDevToolsProtocolMethod`
     // always acts on it, and there is no Target domain to attach to. So the
@@ -434,11 +484,11 @@ fn handle_client_frame(app: &tauri::AppHandle, label: &str, raw: &str) -> Option
         m => match browser_cdp::call_cdp(app, label, m, &params_json) {
             // The COM channel replies with the bare result object as text.
             Ok(body) => {
-                eprintln!("[browser-cdp] <- id={id} ok body={:.300}", body);
+                browser_cdp_server::log_line(&format!("[browser-cdp] <- id={id} ok body={:.300}", body));
                 Ok(serde_json::from_str(&body).unwrap_or(Value::Null))
             }
             Err(message) => {
-                eprintln!("[browser-cdp] <- id={id} ERR method={m} {message}");
+                browser_cdp_server::log_line(&format!("[browser-cdp] <- id={id} ERR method={m} {message}"));
                 Err(serde_json::json!({ "code": -32000, "message": message }))
             }
         },
@@ -448,7 +498,7 @@ fn handle_client_frame(app: &tauri::AppHandle, label: &str, raw: &str) -> Option
         Ok(result) => serde_json::json!({ "id": id, "result": result }),
         Err(error) => serde_json::json!({ "id": id, "error": error }),
     };
-    eprintln!("[browser-broker] <- id={id} reply={:.300}", reply);
+    browser_cdp_server::log_line(&format!("[browser-broker] <- id={id} reply={:.300}", reply));
     Some(reply.to_string())
 }
 
@@ -634,13 +684,13 @@ async fn start_broker(app: tauri::AppHandle) -> Result<String, String> {
     let cdp_state = app.state::<Arc<CdpBrokerState>>().inner().clone();
 
     tauri::async_runtime::spawn(async move {
-        eprintln!("[browser-broker] listening on 127.0.0.1:{port}");
+        browser_cdp_server::log_line(&format!("[browser-broker] listening on 127.0.0.1:{port}"));
         loop {
             let Ok((mut socket, peer)) = listener.accept().await else {
                 tokio::time::sleep(Duration::from_millis(200)).await;
                 continue;
             };
-            eprintln!("[browser-broker] accept from {peer}");
+            browser_cdp_server::log_line(&format!("[browser-broker] accept from {peer}"));
             // The target webview label travels in the request path, so read the
             // request head once up front to route this connection.
             let mut head = vec![0u8; 4096];
@@ -660,7 +710,7 @@ async fn start_broker(app: tauri::AppHandle) -> Result<String, String> {
                 .map(|rest| rest.trim_start_matches('/').to_string())
                 .filter(|value| !value.is_empty())
                 .unwrap_or_default();
-            eprintln!("[browser-broker] path={path:?} -> label={label:?}");
+            browser_cdp_server::log_line(&format!("[browser-broker] path={path:?} -> label={label:?}"));
             if label.is_empty() {
                 continue;
             }
@@ -671,7 +721,7 @@ async fn start_broker(app: tauri::AppHandle) -> Result<String, String> {
                 if let Err(e) =
                     serve_cdp_client(app, broker, cdp_state, label, socket, head[..n].to_vec()).await
                 {
-                    eprintln!("[browser-broker] client ended: {e}");
+                    browser_cdp_server::log_line(&format!("[browser-broker] client ended: {e}"));
                 }
             });
         }
@@ -708,6 +758,24 @@ fn create_embed_window(
     let parent = app
         .get_webview_window("main")
         .ok_or_else(|| "main window not found".to_string())?;
+    // 出生位置钳进主窗口屏幕矩形（逻辑 px）：早路径的估算边界受 DPI/标题栏
+    // 影响可能落在客户区之外，窗口一出生就悬空在客户端外。
+    let (x, y, width, height) = match (parent.outer_position(), parent.outer_size()) {
+        (Ok(pos), Ok(size)) => {
+            let scale = parent.scale_factor().unwrap_or(1.0).max(0.1);
+            let ox = (pos.x as f64) / scale;
+            let oy = (pos.y as f64) / scale;
+            let ow = (size.width as f64) / scale;
+            let oh = (size.height as f64) / scale;
+            let title_bar = 32.0f64;
+            let w2 = width.max(120.0).min((ow - 8.0).max(120.0));
+            let h2 = height.max(80.0).min((oh - title_bar - 8.0).max(80.0));
+            let x2 = x.clamp(ox + 4.0, (ox + ow - w2 - 4.0).max(ox + 4.0));
+            let y2 = y.clamp(oy + title_bar, (oy + oh - h2 - 4.0).max(oy + title_bar));
+            (x2, y2, w2, h2)
+        }
+        _ => (x, y, width.max(120.0), height.max(80.0)),
+    };
     let popup_app = app.clone();
     let popup_label = label.to_string();
     let boot_url = target_url.clone();
@@ -736,11 +804,11 @@ fn create_embed_window(
         let _ = std::fs::create_dir_all(&base);
         base.join(label)
     };
-    eprintln!(
+    browser_cdp_server::log_line(&format!(
         "[browser-embed] create_embed_window: calling WebviewWindow::build() off main thread \
          http_port={http_port} debug_port={debug_port} data_dir={}...",
         data_dir.display()
-    );
+    ));
     let win = WebviewWindow::builder(app, label, WebviewUrl::External(boot_url))
         .parent(&parent)
         .map_err(|e| format!("attach embedded browser parent failed: {e}"))?
@@ -755,7 +823,7 @@ fn create_embed_window(
                 tokio::time::sleep(std::time::Duration::from_millis(150)).await;
                 if let Some(win) = app.get_webview_window(&label) {
                     if let Err(e) = win.navigate(url) {
-                        eprintln!("[browser-embed] popup takeover navigate failed: {e}");
+                        browser_cdp_server::log_line(&format!("[browser-embed] popup takeover navigate failed: {e}"));
                     }
                 }
             });
@@ -783,6 +851,21 @@ fn create_embed_window(
     // Best-effort COM stash + HTTP poller (may no-op on child HWNDs).
     browser_cdp::capture_core_webview2(app, &win, label);
     let _ = win.eval(guest_js);
+    // 从创建那一刻就登记边界（转回客户端相对坐标）：否则面板从未接管的窗口
+    // （早路径/引擎兜底）不在跟随名单里，主窗口一动它就"悬浮脱离客户端"。
+    if let Some(parent) = app.get_webview_window("main") {
+        let scale = parent.scale_factor().unwrap_or(1.0).max(0.1);
+        if let Ok(origin) = parent.outer_position() {
+            let client_x = x - (origin.x as f64) / scale;
+            let client_y = y - (origin.y as f64) / scale;
+            if let Ok(mut map) = EMBED_LAST_BOUNDS.lock() {
+                map.insert(
+                    label.to_string(),
+                    (client_x, client_y, width.max(120.0), height.max(80.0)),
+                );
+            }
+        }
+    }
     Ok(())
 }
 
@@ -1000,10 +1083,10 @@ pub async fn browser_embed_upsert(
         url.as_deref()
     ));
     let target_url = normalize_target_url(url.as_deref().unwrap_or("about:blank"))?;
-    eprintln!(
+    browser_cdp_server::log_line(&format!(
         "[browser-embed] upsert: normalized target_url={} scheme={}",
         target_url, target_url.scheme()
-    );
+    ));
     // `WebviewUrl::External` round-trips the URL through Tauri's URL parser,
     // which rejects `about:blank` with "invalid port number" (it looks for an
     // authority where a scheme-only URL has none). Build the window on a real
@@ -1084,10 +1167,10 @@ pub async fn browser_embed_upsert(
         create_embed_window(&app, &parent, &label, &boot_url, screen_x, screen_y, width, height)?;
     }
 
-    eprintln!(
+    browser_cdp_server::log_line(&format!(
         "[browser-embed] upsert: window ready label={label} url={} screen=({screen_x:.0},{screen_y:.0}) size={width}x{height}",
         target_url
-    );
+    ));
 
     // The window booted on a real origin; point it at the requested page now
     // that it exists. A failure here used to be discarded with `let _ =`, leaving
@@ -1141,17 +1224,17 @@ pub async fn browser_embed_upsert(
 
     let base = start_broker(app.clone()).await?;
     let cdp_ws_url = format!("{base}/{label}");
-    eprintln!("[browser-embed] cdp ready label={label} url={cdp_ws_url}");
+    browser_cdp_server::log_line(&format!("[browser-embed] cdp ready label={label} url={cdp_ws_url}"));
 
     // Start the lightweight HTTP CDP server so the Python backend can drive
     // this WebView2 directly via httpx without going through Playwright's
     // fragile WebSocket broker.  The server is idempotent: a second call is a
     // no-op as long as the port file is still on disk.
     match browser_cdp_server::ensure_http_server(app.clone()).await {
-        Ok(http_port) => eprintln!(
+        Ok(http_port) => browser_cdp_server::log_line(&format!(
             "[browser-embed] http cdp server up on 127.0.0.1:{http_port} label={label}"
-        ),
-        Err(e) => eprintln!("[browser-embed] http cdp server start FAILED: {e}"),
+        )),
+        Err(e) => browser_cdp_server::log_line(&format!("[browser-embed] http cdp server start FAILED: {e}")),
     }
 
     // Read the location back out of the live webview. `window.location.assign`
@@ -1162,10 +1245,10 @@ pub async fn browser_embed_upsert(
     if let Some(win) = app.get_webview_window(&label) {
         let probe = r#"(function(){try{return JSON.stringify({href:location.href,ready:document.readyState,title:document.title,body:(document.body&&document.body.innerText||'').slice(0,60),w:innerWidth,h:innerHeight});}catch(e){return 'probe-error:'+e;}})()"#;
         match win.eval(probe) {
-            Ok(source) => eprintln!(
+            Ok(source) => browser_cdp_server::log_line(&format!(
                 "[browser-embed] page-probe label={label} want={target_url} eval={source:?} (read it via the CDP bridge; this line only confirms the probe was injected)"
-            ),
-            Err(e) => eprintln!("[browser-embed] page-probe FAILED label={label}: {e}"),
+            )),
+            Err(e) => browser_cdp_server::log_line(&format!("[browser-embed] page-probe FAILED label={label}: {e}")),
         }
     }
 
@@ -1208,7 +1291,7 @@ pub async fn browser_embed_set_bounds(
             // Bounds tracking fires on every panel move. A missing window here means
             // the embed was closed underneath us — swallowing that as success is
             // what let a dead window look like a healthy one.
-            eprintln!("[browser-embed] set_bounds SKIPPED: window {label} not found");
+            browser_cdp_server::log_line(&format!("[browser-embed] set_bounds SKIPPED: window {label} not found"));
             return Ok(());
         };
         let (screen_x, screen_y) = client_to_screen(&app, x, y)?;
@@ -1233,7 +1316,7 @@ pub async fn browser_embed_set_bounds(
                 .collect();
             for other in stale {
                 if let Some(w) = app.get_webview_window(&other) {
-                    eprintln!("[browser-embed] closing stale embed window: {other}");
+                    browser_cdp_server::log_line(&format!("[browser-embed] closing stale embed window: {other}"));
                     let _ = w.close();
                 }
                 map.remove(&other);
@@ -1256,10 +1339,10 @@ pub async fn browser_embed_set_bounds(
         if !visible || minimized || got != want {
             log_window_state(&window, "set_bounds");
             if visible && !minimized && got != want {
-                eprintln!(
+                browser_cdp_server::log_line(&format!(
                     "[browser-embed] set_bounds MISMATCH label={label} want={}x{} got={}x{} — window did not accept the resize",
                     want.0, want.1, got.0, got.1
-                );
+                ));
             }
         }
         Ok(())
@@ -1281,11 +1364,11 @@ pub async fn browser_embed_set_bounds(
 #[cfg(target_os = "windows")]
 fn log_window_state(win: &WebviewWindow, phase: &str) {
     let visible = win.is_visible().unwrap_or_else(|e| {
-        eprintln!("[browser-embed] {phase} is_visible() error: {e}");
+        browser_cdp_server::log_line(&format!("[browser-embed] {phase} is_visible() error: {e}"));
         false
     });
     let minimized = win.is_minimized().unwrap_or_else(|e| {
-        eprintln!("[browser-embed] {phase} is_minimized() error: {e}");
+        browser_cdp_server::log_line(&format!("[browser-embed] {phase} is_minimized() error: {e}"));
         false
     });
     let size = win
@@ -1300,10 +1383,10 @@ fn log_window_state(win: &WebviewWindow, phase: &str) {
     // stays blank no matter how many green lines precede it, so make that the
     // loudest thing on the line rather than one field among four.
     let ok = visible && !minimized;
-    eprintln!(
+    browser_cdp_server::log_line(&format!(
         "[browser-embed] {phase} {} visible={visible} minimized={minimized} size={size} pos={pos}",
         if ok { "ON-SCREEN" } else { "OFF-SCREEN <<<<" }
-    );
+    ));
 }
 
 /// Translate a coordinate measured against the main webview's content area into
@@ -1324,8 +1407,31 @@ fn client_to_screen(app: &tauri::AppHandle, x: f64, y: f64) -> Result<(f64, f64)
         .ok()
         .map(|p| p.to_logical::<f64>(scale))
         .unwrap_or(LogicalPosition::new(0.0, 0.0));
-    eprintln!("[browser-embed] client({x:.0},{y:.0}) -> screen({:.0},{:.0}) scale={scale}", origin.x + x, origin.y + y);
+    browser_cdp_server::log_line(&format!("[browser-embed] client({x:.0},{y:.0}) -> screen({:.0},{:.0}) scale={scale}", origin.x + x, origin.y + y));
     Ok((origin.x + x, origin.y + y))
+}
+
+/// 切走浏览器标签时把原生窗口挪出屏幕。
+/// 不能 `hide()`：WebView2 不可见时 CDP 回调经常停泵。窗口保持 visible，只是不在任何显示器上。
+#[tauri::command]
+pub async fn browser_embed_park(app: tauri::AppHandle, thread_id: String) -> Result<(), String> {
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (app, thread_id);
+        return Ok(());
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let label = webview_label_for_thread(&thread_id);
+        let Some(window) = app.get_webview_window(&label) else {
+            return Ok(());
+        };
+        window
+            .set_position(LogicalPosition::new(-32000.0, -32000.0))
+            .map_err(|e| format!("park embedded browser failed: {e}"))?;
+        browser_cdp_server::log_line(&format!("[browser-embed] park label={label}"));
+        Ok(())
+    }
 }
 
 #[tauri::command]

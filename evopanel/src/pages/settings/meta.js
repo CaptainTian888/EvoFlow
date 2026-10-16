@@ -77,11 +77,11 @@ export const TAB_META = {
   about: { title: '关于', desc: '版本信息与更新检查。' },
   'mcp-server-management': {
     title: 'MCP 服务器管理',
-    desc: '已装、可装、配置与运行状态 — 来自 ZCode MCP 设置组件。',
+    desc: '已装、可装、配置与运行状态 — 来自 EvoFlow MCP 设置组件。',
   },
   'plugin-management': {
     title: '插件市场',
-    desc: 'ZCode 插件体系：市场源、安装、启停与组件详情 — 来自 ZCode 原版插件设置组件。',
+    desc: 'EvoFlow 插件体系：市场源、安装、启停与组件详情 — 来自 EvoFlow 原版插件设置组件。',
   },
 }
 

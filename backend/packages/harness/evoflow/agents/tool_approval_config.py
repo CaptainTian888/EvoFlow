@@ -154,6 +154,51 @@ def _knowledge_tool_risk(args: dict[str, Any] | None) -> str:
     return RISK_AUTO
 
 
+# ── MCP 工具风险分级（对齐 ZCode 权限类别）──────────────────
+# ZCode 把 node_repl（Browser Use / Computer Use 共用内核，任意 JS 全权执行）划为
+# high risk ≙ Bash、走 workspace 审批。EvoFlow 此前 MCP 工具落默认 RISK_AUTO 直接
+# 执行；这里补上分级：node_repl → confirm（每次确认），其余外部 MCP → session
+# （每会话首次使用确认，授权后复用），显式放行名单走环境变量。
+_MCP_TOOL_NAME_PREFIX = "mcp__"
+
+_MCP_AUTO_ALLOW_ENV = "EVOFLOW_MCP_AUTO_TOOLS"
+
+
+def _mcp_auto_allow_matched(tool_name: str) -> bool:
+    """环境变量显式放行名单：逗号分隔，支持工具全名或 `server:*` server 级通配。"""
+    import os
+
+    raw = os.environ.get(_MCP_AUTO_ALLOW_ENV, "").strip()
+    if not raw:
+        return False
+    lowered = tool_name.lower()
+    for pattern in raw.split(","):
+        pattern = pattern.strip().lower()
+        if not pattern:
+            continue
+        if pattern.endswith(":*") and lowered.startswith("mcp__" + pattern[:-2] + "__"):
+            return True
+        if lowered == pattern:
+            return True
+    return False
+
+
+def _mcp_tool_risk(tool_name: str) -> str | None:
+    """MCP 工具风险分级；非 MCP 工具返回 None 走原表。"""
+    name = str(tool_name or "").strip().lower()
+    if not name.startswith(_MCP_TOOL_NAME_PREFIX):
+        return None
+    if _mcp_auto_allow_matched(name):
+        return RISK_AUTO
+    server = name[len(_MCP_TOOL_NAME_PREFIX) :].split("__", 1)[0]
+    if server == "node_repl":
+        # Browser Use / Computer Use 内核：任意 JS 全权执行（可驱动浏览器、
+        # 经 CUA 触达 OS），风险级别对齐 ZCode（≙Bash high risk）。
+        return RISK_CONFIRM
+    # 其余外部 MCP 工具：能力未知，宁可用一次确认换边界。
+    return RISK_SESSION
+
+
 def tool_risk_level(tool_name: str, args: dict[str, Any] | None = None) -> str:
     """Return the risk level for a tool: auto | session | confirm."""
     name = canonical_tool_name(str(tool_name or "").strip())
@@ -170,6 +215,25 @@ def tool_risk_level(tool_name: str, args: dict[str, Any] | None = None) -> str:
         return _knowledge_write_risk(args or {})
     if name == "knowledge_ingest":
         return RISK_SESSION
+
+    mcp_risk = _mcp_tool_risk(name)
+    if mcp_risk is not None:
+        # execution_security 的 ask=never 整体放行（与 shell 同一开关），其余级别
+        # 维持 MCP 分级；pause 流程复用既有 tool_approval 中间件，无新 UI。
+        try:
+            from evoflow.execution_security.approval import AskForApproval
+            from evoflow.execution_security.config import (
+                get_execution_security_config,
+                is_execution_security_active,
+                resolved_ask,
+            )
+
+            cfg = get_execution_security_config()
+            if is_execution_security_active(cfg) and resolved_ask(cfg) is AskForApproval.NEVER:
+                return RISK_AUTO
+        except Exception:
+            pass
+        return mcp_risk
 
     level = TOOL_RISK_LEVELS.get(name, RISK_AUTO)
 

@@ -40,11 +40,12 @@ export function ensureRightStageKindsRegistered() {
 
   registerRightStageKind({
     kind: 'browser',
-    render: ({ onClose }) => (
+    render: ({ surface, onClose, active }) => (
       <BrowserPanel
         isOpen
+        surfaceActive={active !== false}
         onClose={() => {
-          closeBrowserStage()
+          closeBrowserStage(surface.id)
           onClose()
         }}
       />
@@ -53,7 +54,7 @@ export function ensureRightStageKindsRegistered() {
 
   registerRightStageKind({
     kind: 'web-embed',
-    render: ({ surface, onClose }) => {
+    render: ({ surface, onClose, active }) => {
       const data = surface.data || {}
       const url = String(data.url || data.href || data.link || '').trim()
       const extensionId = String(data.extensionId || data.extension_id || '').trim()
@@ -65,8 +66,9 @@ export function ensureRightStageKindsRegistered() {
         return (
           <BrowserPanel
             isOpen
+            surfaceActive={active !== false}
             onClose={() => {
-              closeBrowserStage()
+              closeBrowserStage(surface.id || 'primary')
               onClose()
             }}
           />

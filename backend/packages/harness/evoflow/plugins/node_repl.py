@@ -24,6 +24,16 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+
+def _ulog(message: str) -> None:
+    """统一浏览器/插件调试日志（browser-debug.log，三端汇聚）。"""
+    try:
+        from evoflow.tools.builtins.browser_debug_log import browser_debug_log
+
+        browser_debug_log("py", f"[node-repl] {message}")
+    except Exception:
+        pass
+
 _NODE_REPL_HOST_PLUGIN = "node-repl-host"
 _BROWSER_USE_PLUGIN = "browser-use"
 _COMPUTER_USE_PLUGIN = "computer-use"
@@ -48,6 +58,8 @@ const __evoflowBridgeSymbol = Symbol.for("zcode.node-repl.browser-control-bridge
   // EvoFlow 平台桥是本环境权威 provider，必须接管该全局。
   const __gwPort = process.env.EVOFLOW_GATEWAY_PORT || "8070";
   const __gwBase = `http://127.0.0.1:${__gwPort}`;
+  // 浏览器/CUA 命令面共享令牌：网关 _bridge_token_guard 强制校验（缺头/不匹配 → 403）。
+  const __bridgeToken = process.env.EVOFLOW_BROWSER_BRIDGE_TOKEN || "";
   // 内核 worker 是受限环境：无全局 fetch，只能用 node:* 内置模块。
   const __gwFetch = async (path, init) => {
     const http = await import("node:http");
@@ -59,6 +71,7 @@ const __evoflowBridgeSymbol = Symbol.for("zcode.node-repl.browser-control-bridge
           method: init?.method || (body ? "POST" : "GET"),
           headers: {
             "Content-Type": "application/json",
+            "X-EvoFlow-Bridge-Token": __bridgeToken,
             ...(body ? { "Content-Length": String(Buffer.byteLength(body)) } : {}),
             ...(init?.headers || {}),
           },
@@ -80,19 +93,32 @@ const __evoflowBridgeSymbol = Symbol.for("zcode.node-repl.browser-control-bridge
     return JSON.parse(result.text);
   };
   const __docsRoot = process.env.EVOFLOW_BROWSER_DOCS_ROOT || "";
-  const __unavailable = () => {
+  const __unavailable = (detail) => {
     throw new Error(
-      "Browser runtime bridge is unavailable: EvoFlow Gateway browser service unreachable",
+      "Browser runtime bridge is unavailable: EvoFlow Gateway browser service unreachable" +
+      (detail ? ` (${detail})` : ""),
     );
   };
-  const __assert = async () => {
-    let transport = "unknown";
-    try {
-      const info = await __gwFetch("/api/browser/transport");
-      transport = info.transport || "unknown";
-    } catch {
-      __unavailable();
+  // 探测带重试：网关重启窗口/端口双绑定切换时会偶发 403/404/ECONNREFUSED，
+  // 单次探测就把整个 MCP 首调打死。3 次 × 250ms 退避，并把最后一次的
+  // 真实状态带回给调用方（统一日志也能看到原因）。
+  const __probe = async (path) => {
+    let lastErr = "";
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        return await __gwFetch(path);
+      } catch (err) {
+        lastErr = String((err && err.message) || err).slice(0, 200);
+        if (attempt < 3) {
+          await new Promise((r) => setTimeout(r, 250 * attempt));
+        }
+      }
     }
+    __unavailable(`${lastErr} (gw=${__gwBase}, 3 attempts)`);
+  };
+  const __assert = async () => {
+    const info = await __probe("/api/browser/transport");
+    const transport = (info && info.transport) || "unknown";
     // 用户要求：只驱动客户端内置浏览器面板（webview2）；系统 Edge 回退不可接受。
     if (transport !== "webview2") {
       throw new Error(
@@ -259,7 +285,7 @@ def _ensure_host_runtime_copied(storage_root: Path, cache_root: Path) -> None:
             target = cache_root / version_dir.name
             if not (target / _NODE_REPL_SERVER_REL).is_file():
                 shutil.copytree(version_dir, target, dirs_exist_ok=True, ignore=shutil.ignore_patterns(".git"))
-                logger.info("node-repl-host runtime copied from ZCode cache: %s", target)
+                logger.info("node-repl-host runtime copied from EvoFlow cache: %s", target)
             return
 
 
@@ -328,6 +354,14 @@ def _ensure_process() -> subprocess.Popen:
     storage_root = _rsr()
     kernel_env = dict(os.environ)
     kernel_env.setdefault("EVOFLOW_GATEWAY_PORT", os.getenv("EVOFLOW_GATEWAY_PORT", "8070"))
+    # 浏览器/CUA 桥命令面共享令牌：桥 JS 每次请求携带 X-EvoFlow-Bridge-Token 头，
+    # 网关 _bridge_token_guard 强制校验（bridge_auth，持久化 token 重启稳定）。
+    try:
+        from .bridge_auth import get_bridge_token
+
+        kernel_env["EVOFLOW_BROWSER_BRIDGE_TOKEN"] = get_bridge_token()
+    except Exception:
+        logger.warning("bridge token unavailable; kernel bridge requests may be rejected", exc_info=True)
     # 官方插件技能的 bootstrap 依赖插件根目录 env（control-browser 读
     # ZCODE_PLUGIN_ROOT/scripts/browser-client.mjs；computer-use 读
     # ZCODE_CUA_PLUGIN_ROOT/scripts/computer-use-client.mjs）。
@@ -383,12 +417,20 @@ def call_node_repl_js(code: str, timeout_ms: int = 120_000) -> str:
     bootstrap 读取 ``Symbol.for("zcode.node-repl.browser-control-bridge")``，
     桥用 fetch 把 ZCode 浏览器命令转发给 EvoFlow Gateway（本地请求免鉴权）。
     """
-    response = _request(
-        "tools/call",
-        {"name": "js", "arguments": {"code": _BRIDGE_SETUP_JS + "\n" + code, "timeout_ms": min(int(timeout_ms), 120_000)}},
-        timeout_sec=timeout_ms / 1000 + 15,
-    )
+    started = time.monotonic()
+    preview = " ".join(code.split())[:160]
+    _ulog(f"js call start ({len(code)} chars): {preview}")
+    try:
+        response = _request(
+            "tools/call",
+            {"name": "js", "arguments": {"code": _BRIDGE_SETUP_JS + "\n" + code, "timeout_ms": min(int(timeout_ms), 120_000)}},
+            timeout_sec=timeout_ms / 1000 + 15,
+        )
+    except Exception as exc:
+        _ulog(f"js call FAILED after {time.monotonic() - started:.1f}s: {exc}")
+        raise
     if "error" in response:
+        _ulog(f"js call jsonrpc error: {json.dumps(response['error'], ensure_ascii=False)[:200]}")
         raise RuntimeError(f"node_repl js error: {json.dumps(response['error'], ensure_ascii=False)[:400]}")
     result = response.get("result") or {}
     if result.get("isError"):
@@ -397,13 +439,16 @@ def call_node_repl_js(code: str, timeout_ms: int = 120_000) -> str:
             for part in result.get("content") or []
             if isinstance(part, dict)
         ]
-        raise RuntimeError("node_repl js failed: " + "\n".join(parts)[:800])
+        message = "node_repl js failed: " + "\n".join(parts)[:800]
+        _ulog(f"js call isError after {time.monotonic() - started:.1f}s: {message[:200]}")
+        raise RuntimeError(message)
     parts = [
         str(part.get("text") or "")
         for part in result.get("content") or []
         if isinstance(part, dict)
     ]
     text = "\n".join(parts)
+    _ulog(f"js call ok in {time.monotonic() - started:.1f}s, result {len(text)} chars: {' '.join(text.split())[:120]}")
     return text
 
 

@@ -1,4 +1,5 @@
 import { apiUrlAsync } from './api-client.js'
+import { blog } from './browser-unified-log.js'
 
 export type BrowserEmbedInfo = {
   threadId: string
@@ -52,6 +53,10 @@ export async function browserEmbedUpsert(opts: {
   height: number
 }): Promise<BrowserEmbedInfo | null> {
   if (!isDesktopTauri()) return null
+  blog(
+    'info',
+    `[client] upsert tid=${opts.threadId} bounds=(${opts.x},${opts.y} ${opts.width}x${opts.height}) url=${opts.url || 'about:blank'}`,
+  )
   try {
     return await invokeTauri<BrowserEmbedInfo>('browser_embed_upsert', {
       threadId: opts.threadId,
@@ -66,6 +71,7 @@ export async function browserEmbedUpsert(opts: {
     })
   } catch (err) {
     console.warn('[browser-embed] upsert failed', err)
+    blog('warn', `[client] upsert failed tid=${opts.threadId} err=${err}`)
     return null
   }
 }
@@ -78,6 +84,10 @@ export async function browserEmbedSetBounds(opts: {
   height: number
 }): Promise<void> {
   if (!isDesktopTauri()) return
+  blog(
+    'info',
+    `[client] set-bounds tid=${opts.threadId} bounds=(${opts.x},${opts.y} ${opts.width}x${opts.height})`,
+  )
   try {
     await invokeTauri('browser_embed_set_bounds', {
       threadId: opts.threadId,
@@ -91,8 +101,21 @@ export async function browserEmbedSetBounds(opts: {
   }
 }
 
+/** 非当前标签：把原生窗口挪出屏幕，不销毁（CDP 仍可用）。 */
+export async function browserEmbedPark(threadId: string): Promise<void> {
+  const tid = String(threadId || '').trim()
+  if (!isDesktopTauri() || !tid) return
+  blog('info', `[client] park tid=${tid}`)
+  try {
+    await invokeTauri('browser_embed_park', { threadId: tid })
+  } catch {
+    // ignore
+  }
+}
+
 export async function browserEmbedClose(threadId: string): Promise<void> {
   if (!isDesktopTauri()) return
+  blog('info', `[client] close tid=${threadId}`)
   try {
     await invokeTauri('browser_embed_close', { threadId })
   } catch {
@@ -116,6 +139,7 @@ export async function registerBrowserEmbedCdp(threadId: string, cdpUrl: string):
     return res.ok
   } catch (err) {
     console.warn('[browser-embed] register cdp failed', err)
+    blog('warn', `[client] register cdp failed tid=${tid} err=${err}`)
     return false
   }
 }

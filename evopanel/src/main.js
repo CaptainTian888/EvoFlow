@@ -57,7 +57,9 @@ if (isTauri) {
             const payload = ev?.payload || {}
             const tid = String(payload.threadId || 'evoflow-node-repl-bridge').trim()
             const url = String(payload.url || '').trim()
+            const { blog } = await import('./lib/browser-unified-log.js')
             console.log('[browser-panel-request:early]', tid, url || '(none)')
+            blog('info', `[early] panel-request tid=${tid} url=${url || '(none)'}`)
             const {
               applyBrowserCommandResponse,
               ensureBrowserStage,
@@ -76,6 +78,10 @@ if (isTauri) {
             const vh = Math.max(360, Math.floor((window.innerHeight || 800) - 96))
             const vx = Math.max(0, Math.floor((window.innerWidth || 1280) - vw - 12))
             const vy = 64
+            blog(
+              'info',
+              `[early] upsert estimate vw=${vw} vh=${vh} vx=${vx} vy=${vy} inner=${window.innerWidth}x${window.innerHeight}`,
+            )
             const navUrl = url && /^https?:\/\//i.test(url) ? url : 'about:blank'
             const info = await browserEmbedUpsert({
               threadId: bridgeTid,
@@ -88,8 +94,10 @@ if (isTauri) {
             if (info?.cdpUrl) {
               await registerBrowserEmbedCdp(bridgeTid, info.cdpUrl)
               console.log('[browser-panel-request:early] upsert ok', info.webviewLabel || bridgeTid)
+              blog('info', `[early] upsert ok label=${info.webviewLabel || bridgeTid}`)
             } else {
               console.warn('[browser-panel-request:early] upsert returned no cdpUrl', info)
+              blog('warn', '[early] upsert returned no cdpUrl')
             }
             if (navUrl !== 'about:blank') {
               applyBrowserCommandResponse({ threadId: bridgeTid, pageUrl: navUrl })
@@ -98,6 +106,9 @@ if (isTauri) {
             }
           } catch (err) {
             console.warn('[browser-panel-request:early] failed', err)
+            import('./lib/browser-unified-log.js')
+              .then(({ blog }) => blog('warn', `[early] failed ${err}`))
+              .catch(() => {})
           }
         })()
       }),
@@ -694,7 +705,9 @@ async function boot() {
               const payload = ev?.payload || {}
               const tid = String(payload.threadId || 'evoflow-node-repl-bridge').trim()
               const url = String(payload.url || '').trim()
+              const { blog } = await import('./lib/browser-unified-log.js')
               console.log('[browser-panel-request]', tid, url || '(none)')
+              blog('info', `[boot] panel-request tid=${tid} url=${url || '(none)'}`)
               const {
                 applyBrowserCommandResponse,
                 ensureBrowserStage,
@@ -718,6 +731,10 @@ async function boot() {
               const vh = Math.max(360, Math.floor((window.innerHeight || 800) - 96))
               const vx = Math.max(0, Math.floor((window.innerWidth || 1280) - vw - 12))
               const vy = 64
+              blog(
+                'info',
+                `[boot] upsert estimate vw=${vw} vh=${vh} vx=${vx} vy=${vy} inner=${window.innerWidth}x${window.innerHeight}`,
+              )
               const navUrl = url && /^https?:\/\//i.test(url) ? url : 'about:blank'
               const info = await browserEmbedUpsert({
                 threadId: bridgeTid,
@@ -730,8 +747,10 @@ async function boot() {
               if (info?.cdpUrl) {
                 await registerBrowserEmbedCdp(bridgeTid, info.cdpUrl)
                 console.log('[browser-panel-request] upsert ok', info.webviewLabel || bridgeTid)
+                blog('info', `[boot] upsert ok label=${info.webviewLabel || bridgeTid}`)
               } else {
                 console.warn('[browser-panel-request] upsert returned no cdpUrl')
+                blog('warn', '[boot] upsert returned no cdpUrl')
               }
               if (navUrl !== 'about:blank') {
                 applyBrowserCommandResponse({ threadId: bridgeTid, pageUrl: navUrl })
@@ -740,6 +759,9 @@ async function boot() {
               }
             } catch (err) {
               console.warn('[browser-panel-request] handler failed', err)
+              import('./lib/browser-unified-log.js')
+                .then(({ blog }) => blog('warn', `[boot] handler failed ${err}`))
+                .catch(() => {})
             }
           })()
         })

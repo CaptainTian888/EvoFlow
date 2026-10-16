@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from 'react'
 import {
   browserEmbedClose,
+  browserEmbedPark,
   browserEmbedSetBounds,
   browserEmbedSupported,
   browserEmbedSupportedSync,
@@ -641,12 +642,15 @@ async function waitForEmbedBounds(el: HTMLElement | null, timeoutMs = 2400) {
 
 function BrowserEmbedHost({
   isOpen,
+  surfaceActive,
   threadId,
   pageUrl,
   onReady,
   onFailed,
 }: {
   isOpen: boolean
+  /** 右栏当前标签是否是这一页。失活时 HWND 必须挪出屏幕。 */
+  surfaceActive: boolean
   threadId: string
   pageUrl?: string
   onReady?: () => void
@@ -660,7 +664,11 @@ function BrowserEmbedHost({
   // already in flight. Only a different thread genuinely needs a fresh mount.
   const mountedThreadRef = useRef('')
 
+  const surfaceActiveRef = useRef(surfaceActive)
+  surfaceActiveRef.current = surfaceActive
+
   const syncBounds = useCallback(async () => {
+    if (!surfaceActiveRef.current) return
     const tid = String(threadId || '').trim()
     if (!tid || !isOpen) return
     const bounds = readEmbedBounds(slotRef.current)
@@ -788,6 +796,7 @@ function BrowserEmbedHost({
     const tid = String(threadId || '').trim()
     const next = String(pageUrl || '').trim()
     if (!tid || !next || next === lastNavigatedRef.current) return
+    if (!surfaceActiveRef.current) return
     // Re-measure before re-pointing the window. Falling back to a hardcoded
     // origin here used to fling the embedded browser into the top-left corner
     // of the screen whenever the slot had not been laid out yet.
@@ -806,7 +815,22 @@ function BrowserEmbedHost({
   }, [ready, threadId, pageUrl])
 
   useEffect(() => {
-    if (!isOpen || !ready) return
+    const tid = String(threadId || '').trim()
+    if (!tid || !ready || !isOpen) return
+    if (surfaceActive) {
+      void syncBounds()
+      return
+    }
+    // set_bounds 在途时会把窗口拉回槽位；多停一次，保证切走后它不盖在摘要上。
+    void browserEmbedPark(tid)
+    const again = window.setTimeout(() => {
+      if (!surfaceActiveRef.current) void browserEmbedPark(tid)
+    }, 80)
+    return () => window.clearTimeout(again)
+  }, [surfaceActive, ready, isOpen, threadId, syncBounds])
+
+  useEffect(() => {
+    if (!isOpen || !ready || !surfaceActive) return
     const onResize = () => {
       void syncBounds()
     }
@@ -822,7 +846,7 @@ function BrowserEmbedHost({
       window.removeEventListener('resize', onResize)
       ro?.disconnect()
     }
-  }, [isOpen, ready, syncBounds])
+  }, [isOpen, ready, surfaceActive, syncBounds])
 
   useEffect(() => {
     if (isOpen) return
@@ -1100,6 +1124,8 @@ export type BrowserPanelProps = {
   browserMode?: 'evopanel' | 'headed' | 'cdp' | 'headless' | 'embed'
   /** 关闭浏览器这一页（right-stage closeTab），不是收起整栏。 */
   onClose: () => void
+  /** 当前右栏标签是否激活。失活时原生窗口停到屏幕外。 */
+  surfaceActive?: boolean
 }
 
 export const BrowserPanel = memo(function BrowserPanel({
@@ -1111,6 +1137,7 @@ export const BrowserPanel = memo(function BrowserPanel({
   sharedBrowser = false,
   browserMode,
   onClose,
+  surfaceActive = true,
 }: BrowserPanelProps) {
   const runtime = useSyncExternalStore(subscribeBrowserRuntime, getBrowserRuntimeSnapshot)
   // Props win when a parent provides them; runtime store feeds the standalone right-stage mount.
@@ -1788,6 +1815,7 @@ export const BrowserPanel = memo(function BrowserPanel({
         ) : preferEmbeddedBrowser && embedThreadId && !embedFailed ? (
           <BrowserEmbedHost
             isOpen={isOpen}
+            surfaceActive={surfaceActive}
             threadId={embedThreadId}
             pageUrl={effectivePageUrl}
             onReady={handleEmbedReady}

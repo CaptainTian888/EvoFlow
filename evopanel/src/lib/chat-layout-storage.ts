@@ -46,7 +46,10 @@ export type RightPanelLayoutKind = 'half' | 'wide' | 'narrow' | 'workspace-brows
 
 export {
   defaultRightPanelWidth,
+  defaultNarrowRightPanelWidth,
+  defaultWideRightPanelWidth,
   clampRightPanelWidth,
+  isStaleNarrowRightPanelWidth,
   rightStageLayoutToPanelKind,
 } from './right-stage/right-stage-layout.js'
 

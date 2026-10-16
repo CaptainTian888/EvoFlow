@@ -36,6 +36,16 @@ from evoflow.plugins.storage import (
 
 logger = logging.getLogger(__name__)
 
+
+def _ulog(message: str) -> None:
+    """统一浏览器/插件调试日志（browser-debug.log，三端汇聚）。"""
+    try:
+        from evoflow.tools.builtins.browser_debug_log import browser_debug_log
+
+        browser_debug_log("py", f"[plugin-runtime] {message}")
+    except Exception:
+        pass
+
 # Whole-block budget. Metadata entries are tiny; the only heavy payload is an
 # actually-invoked command body, capped per command. Overflow degrades to
 # metadata lines instead of shipping half-cut prose.
@@ -164,7 +174,8 @@ def build_plugin_injection_block(
     root = Path(storage_root) if storage_root else resolve_storage_root()
     try:
         state = load_installed_plugins_state(root)
-    except Exception:
+    except Exception as exc:
+        _ulog(f"injection aborted: load state failed: {exc}")
         return ""
 
     resolved: list[tuple[str, Path]] = []
@@ -172,6 +183,7 @@ def build_plugin_injection_block(
     for ref in refs:
         plugin_id = resolve_plugin_id(ref, state)
         if plugin_id is None or plugin_id in seen or not state.is_enabled(plugin_id):
+            _ulog(f"ref skipped: ref={ref!r} resolved={plugin_id!r} enabled={state.is_enabled(plugin_id) if plugin_id else False}")
             continue
         seen.add(plugin_id)
         record = next((item for item in state.plugins if item.id == plugin_id), None)
@@ -181,6 +193,7 @@ def build_plugin_injection_block(
         if plugin_root.is_dir():
             resolved.append((plugin_id, plugin_root))
     if not resolved:
+        _ulog(f"injection empty: refs={refs}")
         return ""
 
     invoked = _extract_invoked_commands(user_message)
@@ -212,6 +225,9 @@ def build_plugin_injection_block(
     body = intro + "\n".join(sections)
     if truncated:
         body += "\n<!-- plugin_injection truncated: remaining plugins/components exceed the budget; use skill:/commands metadata above -->"
+    _ulog(
+        f"injection built: plugins={[pid for pid, _ in resolved]} chars={len(body)} truncated={truncated}"
+    )
     return body + "\n</plugin_injection>"
 
 

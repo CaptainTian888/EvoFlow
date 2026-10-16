@@ -47,14 +47,20 @@ function Initialize-EvoFlowBackendPaths {
 function Test-EvoFlowPortFree {
     param([int]$Port)
     if ($Port -le 0) { return $false }
-    try {
-        $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $Port)
-        $listener.Start()
-        $listener.Stop()
-        return $true
-    } catch {
-        return $false
+    # uvicorn may bind 0.0.0.0 or 127.0.0.1; probe both. Windows allows
+    # 0.0.0.0:port and 127.0.0.1:port to coexist (wildcard vs specific IP),
+    # so checking only Loopback misses a stale 0.0.0.0 listener and causes
+    # dual-bind → connections randomly split between two processes.
+    foreach ($addr in @([System.Net.IPAddress]::Any, [System.Net.IPAddress]::Loopback)) {
+        try {
+            $listener = [System.Net.Sockets.TcpListener]::new($addr, $Port)
+            $listener.Start()
+            $listener.Stop()
+        } catch {
+            return $false
+        }
     }
+    return $true
 }
 
 function Resolve-EvoFlowPort {
@@ -544,6 +550,14 @@ function Start-EvoFlowBackend {
     $preferredGatewayPort = 8012
     try { $preferredGatewayPort = [int]$script:DFGatewayPort } catch { $preferredGatewayPort = 8012 }
 
+    # Kill stale listeners on the preferred port before probing. Prior runs or a
+    # manual `python -m uvicorn` (system Python) leave a listener that Windows
+    # can dual-bind (0.0.0.0:port + 127.0.0.1:port coexist), randomly distributing
+    # connections to an unbooted process that returns 403/404.
+    Write-Host "  Pre-clearing stale listeners on :$preferredGatewayPort" -ForegroundColor DarkGray
+    Stop-EvoFlowPortProcess -Port $preferredGatewayPort
+    $null = Wait-EvoFlowPortClosed -Port $preferredGatewayPort -TimeoutSec 5
+
     # Default dev cluster (8012–8035). Isolated stacks (e.g. dev-stack-isolated.bat: 8070)
     # fall back near EVOFLOW_GATEWAY_PORT.
     $gwLow = 8012
@@ -687,7 +701,7 @@ $OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
     Write-Host ""
     Write-Host "==> Opening Gateway window (:$($script:DFGatewayPort)) — LangGraph runs in-process" -ForegroundColor Cyan
     Write-Host "    CORS_ORIGINS (desktop web): $cors" -ForegroundColor DarkGray
-    $gwCmd = "$winConsoleUtf8; `$Host.UI.RawUI.WindowTitle = '$gwTitle'; cd '$($script:DFBackendDir)'; `$env:PYTHONPATH='$pythonPathValue'; `$env:PYTHONUTF8='1'; `$env:PYTHONIOENCODING='utf-8'; `$env:PYTHONUNBUFFERED='1'; $fixedEnv $gatewayInternalEventsEnv & '$pyExe' -u -m uvicorn app.gateway.app:app --host 0.0.0.0 --port $gatewayPortInt"
+    $gwCmd = "$winConsoleUtf8; `$Host.UI.RawUI.WindowTitle = '$gwTitle'; cd '$($script:DFBackendDir)'; `$env:PYTHONPATH='$pythonPathValue'; `$env:PYTHONUTF8='1'; `$env:PYTHONIOENCODING='utf-8'; `$env:PYTHONUNBUFFERED='1'; $fixedEnv $gatewayInternalEventsEnv & '$pyExe' -u -m uvicorn app.gateway.app:app --host 127.0.0.1 --port $gatewayPortInt"
     $gateway = Start-Process powershell.exe -ArgumentList @(
         "-NoProfile",
         "-NoExit",

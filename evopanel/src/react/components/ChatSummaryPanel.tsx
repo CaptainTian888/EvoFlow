@@ -1,7 +1,7 @@
 /**
  * 状态面板（对齐 ZCode 形态）
  *
- * 三态：hidden（不渲染） / capsule（右下胶囊浮层） / panel（右栏一条）。
+ * 三态：hidden（不渲染） / capsule（对话列右上角胶囊） / panel（右栏摘要页）。
  * 两区：
  * - 进程：terminal + 子智能体 + 协作子任务 聚合成一条有序列表
  * - 智能体：复用 AgentCapabilityTabs（技能 / 工具 / MCP / 知识库）
@@ -409,7 +409,9 @@ function ChatSummaryPanelInner({
   // 直到新进程启动（running 0→>0）或用户手动展开才恢复自动展开语义。
   // 用 state 而非 ref：displayMode 已是 capsule 时点击收起，父级 setState 值不变
   // 不触发重渲染，必须靠本组件自身 state 变化驱动 effectiveMode 重算。
-  const [userCollapsed, setUserCollapsed] = useState(false)
+  // 初始跟 displayMode：收起后 ChatApp 会把面板从右栏卸掉、在对话列重挂胶囊，
+  // 若这里仍从 false 起步，auto-expand 会立刻把侧栏又撑开。
+  const [userCollapsed, setUserCollapsed] = useState(() => displayMode === 'capsule')
   const prevRunningRef = useRef(summary.running)
 
   const goPanel = useCallback(() => {
@@ -454,6 +456,14 @@ function ChatSummaryPanelInner({
     if (policy === 'auto-expand' && !userCollapsed && (summary.running > 0 || isRunning)) return 'panel'
     return 'capsule'
   }, [displayMode, policy, userCollapsed, summary.running, isRunning])
+
+  // auto-expand 只改了 effectiveMode 时，通知父级切回 panel，
+  // 以便 ChatApp 重新 ensure summary 标签并打开右栏（胶囊已挂在对话列外）。
+  useEffect(() => {
+    if (displayMode !== 'capsule') return
+    if (effectiveMode !== 'panel') return
+    onDisplayModeChange('panel')
+  }, [displayMode, effectiveMode, onDisplayModeChange])
 
   // 面板 tab：智能体固定在最前，产物 / 平台带计数，
   // 岗位 / 任务仅在员工会话且对应 pane 存在时出现，调试仅在观测开启时出现。

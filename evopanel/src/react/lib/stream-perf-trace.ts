@@ -17,6 +17,7 @@
 
 const PHASE_WARN_MS = 4
 const DELTA_WARN_MS = 12
+const SINGLE_ROW_DELTA_WARN_MS = 30
 const WINDOW_SIZE = 200
 const MEM_SAMPLE_INTERVAL = 50
 
@@ -160,13 +161,18 @@ export function streamPerfEndDelta(): void {
 
   const degradation = baselineDeltaTotal > 0 ? total / baselineDeltaTotal : 1
 
-  if (total > DELTA_WARN_MS) {
+  const isSingleRowRender = renderCountThisDelta <= 1
+  const effectiveWarnMs = isSingleRowRender ? SINGLE_ROW_DELTA_WARN_MS : DELTA_WARN_MS
+  if (total > effectiveWarnMs) {
     const breakdown: Record<string, number> = {}
     for (const [phase, ms] of currentDeltaPhases) breakdown[phase] = +ms.toFixed(1)
+    const memoHitStr = visibleRowCountThisDelta > 1
+      ? `${(memoHitRate * 100).toFixed(0)}%`
+      : 'N/A'
     console.warn(
       `[streamperf] delta #${currentDeltaSeq} ${total.toFixed(1)}ms` +
         ` | render=${renderCountThisDelta}/${visibleRowCountThisDelta}行` +
-        ` | memo命中=${(memoHitRate * 100).toFixed(0)}%` +
+        ` | memo命中=${memoHitStr}` +
         ` | 恶化=${degradation.toFixed(1)}x`,
       breakdown,
     )
@@ -183,7 +189,7 @@ export function streamPerfEndDelta(): void {
     )
   }
 
-  if (degradation > 3 && total > DELTA_WARN_MS) {
+  if (degradation > 3 && total > DELTA_WARN_MS && renderCountThisDelta > 1) {
     console.warn(
       `[streamperf] 累积恶化: 当前 ${total.toFixed(1)}ms vs 基线 ${baselineDeltaTotal.toFixed(1)}ms` +
         `（${degradation.toFixed(1)}x，基线 delta #${baselineDeltaSeq}）`,

@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, type CSSProperties } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { formatWorkspacePathForDisplay } from '../../lib/workspace-api-scope.js'
 import {
   isWorkspaceAudioPath,
@@ -19,6 +19,7 @@ import {
   isMarkdownDocumentPath,
   MarkdownDocumentView,
 } from './MarkdownDocumentView.js'
+import { Popover, PopoverContent, PopoverTrigger } from './ui/popover.js'
 
 export type WorkspacePreviewState = {
   path: string
@@ -46,24 +47,27 @@ type PreviewZoomControls = {
   canReset: boolean
 }
 
+type MarkdownViewMode = 'preview' | 'code'
+
 type Props = {
   preview: WorkspacePreviewState | null
   onClose?: () => void
   compact?: boolean
+  /** 嵌在右栏时：无页内 × / 无缩放条，关闭走标签条。 */
+  embedded?: boolean
   /** 弹窗内正文缩放（0.75–2，默认 1） */
   contentZoom?: number
   workspaceRoot?: string
   threadId?: string
-  /** 弹窗模式：缩放控件与文件名同一行 */
+  /** 仅弹窗模式：缩放控件 */
   zoomControls?: PreviewZoomControls | null
   /**
-   * Markdown：是否显示「编辑」并允许改源码。
-   * 默认 false（打开 .md 只渲染预览，与验收场景一致）。
+   * Markdown：是否允许编辑源码（与 ZCode 的「原文」查看分开；原文用 markdownViewMode=code）。
    */
   allowMarkdownEdit?: boolean
   /** Markdown 编辑时回调（需配合 allowMarkdownEdit）。 */
   onMarkdownChange?: (text: string) => void
-  /** 读取失败时重试（预览弹窗）。 */
+  /** 读取失败时重试。 */
   onRetry?: () => void
   /** 代码评论定位：打开后滚动并高亮该 1-based 行（endLine 缺省等于 startLine）。 */
   focusLine?: number
@@ -186,6 +190,7 @@ export function WorkspaceFilePreviewPane({
   preview,
   onClose,
   compact,
+  embedded = false,
   contentZoom = 1,
   workspaceRoot = '',
   threadId = '',
@@ -200,6 +205,9 @@ export function WorkspaceFilePreviewPane({
   const focusLineNum = Number(focusLine) > 0 ? Number(focusLine) : 0
   const zoom = Math.min(2, Math.max(0.75, Number(contentZoom) || 1))
   const zoomStyle = { '--preview-zoom': String(zoom) } as CSSProperties
+  const [markdownViewMode, setMarkdownViewMode] = useState<MarkdownViewMode>('preview')
+  const [wrapLongLines, setWrapLongLines] = useState(false)
+  const [moreOpen, setMoreOpen] = useState(false)
 
   const revealInFolder = useCallback(async () => {
     if (!preview?.path) return
@@ -213,6 +221,17 @@ export function WorkspaceFilePreviewPane({
       /* toast handled inside helper */
     }
   }, [preview?.path, workspaceRoot, threadId])
+
+  const copyPath = useCallback(async (text: string) => {
+    const value = String(text || '').trim()
+    if (!value) return
+    try {
+      await navigator.clipboard.writeText(value)
+    } catch {
+      /* ignore */
+    }
+  }, [])
+
   const isMarkdown = useMemo(
     () =>
       !!(
@@ -248,8 +267,13 @@ export function WorkspaceFilePreviewPane({
 
   if (!preview) return null
 
-  const ext = fileExtLabel(preview.name, preview.path)
   const displayPath = formatWorkspacePathForDisplay(preview.path)
+  const pathSegments = String(displayPath || '')
+    .replace(/\\/g, '/')
+    .split('/')
+    .filter(Boolean)
+  const fileLabel = preview.name || pathSegments[pathSegments.length - 1] || '文件'
+  const parentSegments = pathSegments.length > 1 ? pathSegments.slice(0, -1) : []
   const mediaSrc =
     preview.mediaSrc ||
     (isWorkspaceMediaBinaryPath(preview.path)
@@ -258,39 +282,42 @@ export function WorkspaceFilePreviewPane({
   const showImage = !!(mediaSrc && (preview.mediaKind === 'image' || isWorkspaceImagePath(preview.path)))
   const showVideo = !!(mediaSrc && (preview.mediaKind === 'video' || isWorkspaceVideoPath(preview.path)))
   const showAudio = !!(mediaSrc && (preview.mediaKind === 'audio' || isWorkspaceAudioPath(preview.path)))
+  const showZoom = !embedded && zoomControls
+  const canToggleMarkdown = isMarkdown && !preview.binary && !preview.error
+  const canToggleWrap = !showImage && !showVideo && !showAudio && !preview.binary
+  const hasLocalPath = !!(preview.path && !/^https?:\/\//i.test(preview.path))
+  const showMarkdownPreview = canToggleMarkdown && markdownViewMode === 'preview'
+  const showMarkdownSource = canToggleMarkdown && markdownViewMode === 'code'
 
   return (
     <div
       className={`react-chat-workspace-preview-pane${compact ? ' react-chat-workspace-preview-pane--compact' : ''}${
-        preview.streaming ? ' is-streaming' : ''
-      }${showStreamWaiting ? ' is-waiting' : ''}${zoom !== 1 ? ' has-content-zoom' : ''}`}
+        embedded ? ' is-embedded' : ''
+      }${preview.streaming ? ' is-streaming' : ''}${showStreamWaiting ? ' is-waiting' : ''}${
+        zoom !== 1 ? ' has-content-zoom' : ''
+      }${wrapLongLines ? ' is-wrap-lines' : ''}`}
       style={zoomStyle}
     >
       <div className="react-chat-workspace-preview-pane-header">
-        <div className="react-chat-workspace-preview-pane-heading">
-          <span className="react-chat-workspace-preview-pane-icon" aria-hidden>
-            {isHtml ? '◇' : '◈'}
-          </span>
-          <div className="react-chat-workspace-preview-pane-titles">
-            <div className="react-chat-workspace-preview-pane-title" title={preview.path || preview.name}>
-              {preview.name || '文件预览'}
-            </div>
-            {displayPath ? (
-              <div className="react-chat-workspace-preview-pane-subtitle" title={displayPath}>
-                {displayPath}
-              </div>
-            ) : null}
-          </div>
-        </div>
-        <div className="react-chat-workspace-preview-pane-header-actions">
-          <span className="react-chat-workspace-preview-pane-badge">{ext}</span>
+        <div className="react-chat-workspace-preview-breadcrumb" title={preview.path || fileLabel}>
+          {parentSegments.map((segment, index) => (
+            <Fragment key={`${segment}-${index}`}>
+              <span className="react-chat-workspace-preview-crumb">{segment}</span>
+              <span className="react-chat-workspace-preview-crumb-sep" aria-hidden>
+                /
+              </span>
+            </Fragment>
+          ))}
+          <span className="react-chat-workspace-preview-crumb is-file">{fileLabel}</span>
           {preview.streaming ? (
             <span className="react-chat-workspace-preview-streaming-label">
               <span className="react-chat-workspace-preview-streaming-dot" aria-hidden />
               生成中
             </span>
           ) : null}
-          {zoomControls ? (
+        </div>
+        <div className="react-chat-workspace-preview-pane-header-actions">
+          {showZoom ? (
             <div className="react-chat-workspace-preview-zoom-inline" aria-label="显示比例">
               <button
                 type="button"
@@ -315,29 +342,128 @@ export function WorkspaceFilePreviewPane({
               >
                 +
               </button>
-              <button
-                type="button"
-                className="react-chat-workspace-preview-zoom-reset"
-                title="重置为 100%"
-                disabled={!zoomControls.canReset}
-                onClick={zoomControls.onReset}
-              >
-                100%
-              </button>
             </div>
           ) : null}
-          {preview.path && !/^https?:\/\//i.test(preview.path) ? (
+          <Popover open={moreOpen} onOpenChange={setMoreOpen}>
+            <PopoverTrigger asChild>
+              <button
+                type="button"
+                className="react-chat-workspace-preview-icon-btn"
+                title="更多"
+                aria-label="更多"
+                aria-haspopup="menu"
+              >
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden>
+                  <circle cx="12" cy="12" r="1" />
+                  <circle cx="19" cy="12" r="1" />
+                  <circle cx="5" cy="12" r="1" />
+                </svg>
+              </button>
+            </PopoverTrigger>
+            <PopoverContent align="end" className="w-52 p-1" role="menu">
+              {canToggleMarkdown ? (
+                <>
+                  <div className="react-chat-workspace-preview-menu-label">Markdown</div>
+                  <button
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={markdownViewMode === 'preview'}
+                    className={`react-chat-workspace-preview-menu-item${
+                      markdownViewMode === 'preview' ? ' is-active' : ''
+                    }`}
+                    onClick={() => {
+                      setMarkdownViewMode('preview')
+                      setMoreOpen(false)
+                    }}
+                  >
+                    预览
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={markdownViewMode === 'code'}
+                    className={`react-chat-workspace-preview-menu-item${
+                      markdownViewMode === 'code' ? ' is-active' : ''
+                    }`}
+                    onClick={() => {
+                      setMarkdownViewMode('code')
+                      setMoreOpen(false)
+                    }}
+                  >
+                    原文
+                  </button>
+                  <div className="react-chat-workspace-preview-menu-sep" />
+                </>
+              ) : null}
+              {canToggleWrap ? (
+                <button
+                  type="button"
+                  role="menuitemcheckbox"
+                  aria-checked={wrapLongLines}
+                  className={`react-chat-workspace-preview-menu-item${wrapLongLines ? ' is-active' : ''}`}
+                  onClick={() => {
+                    setWrapLongLines((v) => !v)
+                    setMoreOpen(false)
+                  }}
+                >
+                  自动换行
+                </button>
+              ) : null}
+              {hasLocalPath ? (
+                <>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="react-chat-workspace-preview-menu-item"
+                    onClick={() => {
+                      void copyPath(preview.path)
+                      setMoreOpen(false)
+                    }}
+                  >
+                    复制路径
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="react-chat-workspace-preview-menu-item"
+                    onClick={() => {
+                      void copyPath(displayPath || preview.path)
+                      setMoreOpen(false)
+                    }}
+                  >
+                    复制相对路径
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="react-chat-workspace-preview-menu-item"
+                    onClick={() => {
+                      void revealInFolder()
+                      setMoreOpen(false)
+                    }}
+                  >
+                    在文件夹中显示
+                  </button>
+                </>
+              ) : null}
+            </PopoverContent>
+          </Popover>
+          {hasLocalPath ? (
             <button
               type="button"
-              className="react-chat-workspace-preview-reveal-btn"
-              title="在本地文件管理器中显示"
-              aria-label="打开位置"
+              className="react-chat-workspace-preview-icon-btn"
+              title="在文件夹中显示"
+              aria-label="在文件夹中显示"
               onClick={() => void revealInFolder()}
             >
-              打开位置
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                <polyline points="15 3 21 3 21 9" />
+                <line x1="10" y1="14" x2="21" y2="3" />
+              </svg>
             </button>
           ) : null}
-          {onClose ? (
+          {!embedded && onClose ? (
             <button
               type="button"
               className="react-chat-workspace-preview-pane-close"
@@ -434,7 +560,7 @@ export function WorkspaceFilePreviewPane({
               </pre>
             )}
           </div>
-        ) : isMarkdown ? (
+        ) : showMarkdownPreview ? (
           <div className="react-chat-workspace-preview-md-host">
             {preview.truncated ? (
               <div className="react-chat-workspace-preview-hint">仅显示前 512KB，完整内容请用 Agent 读取</div>
@@ -445,8 +571,18 @@ export function WorkspaceFilePreviewPane({
               allowEdit={allowMarkdownEdit && !preview.streaming}
               onChange={onMarkdownChange}
               readOnly={!!preview.streaming}
+              hideModeSwitch
               testIdPrefix="ws-md"
             />
+          </div>
+        ) : showMarkdownSource || isMarkdown ? (
+          <div className="react-chat-workspace-preview-code-wrap">
+            {preview.truncated ? (
+              <div className="react-chat-workspace-preview-hint">仅显示前 512KB，完整内容请用 Agent 读取</div>
+            ) : null}
+            <pre className="react-chat-workspace-preview-code">
+              <code>{displayContent}</code>
+            </pre>
           </div>
         ) : (
           <div className="react-chat-workspace-preview-code-wrap">

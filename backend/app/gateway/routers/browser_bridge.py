@@ -13,7 +13,7 @@ import asyncio
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from evoflow.authz.http_guard import require_org_admin
@@ -28,12 +28,52 @@ def _org_admin_guard(request: Request) -> None:
     require_org_admin(request)
 
 
+def _bridge_token_guard(request: Request) -> None:
+    """内核桥命令面共享令牌校验（bridge_auth）。
+
+    面板控制走 Tauri 命令、日志走 /api/browser/log，都不经过这些端点；唯一预期
+    调用方是 node-repl 内核桥（env 注入 token）。缺失/不匹配 → 403。
+    """
+    from evoflow.plugins.bridge_auth import verify_bridge_token
+
+    if not verify_bridge_token(request):
+        raise HTTPException(status_code=403, detail="browser bridge token required")
+
+
 router = APIRouter(prefix="/api/browser", tags=["browser-bridge"], dependencies=[Depends(_org_admin_guard)])
 
 
 class BrowserExecuteRequest(BaseModel):
-    command: dict[str, Any] = Field(..., description="ZCode browser command (method + payload fields)")
+    command: dict[str, Any] = Field(..., description="EvoFlow browser command (method + payload fields)")
     threadId: str | None = Field(default=None, description="Optional engine session key")
+
+
+class BrowserLogEntry(BaseModel):
+    ts: str | None = Field(default=None, description="Frontend timestamp (ISO or epoch ms)")
+    level: str = Field(default="info", description="info | warn | error")
+    msg: str = Field(..., description="One log line")
+
+
+class BrowserLogBatch(BaseModel):
+    source: str = Field(default="web", description="Marker for the emitting surface, e.g. web")
+    entries: list[BrowserLogEntry] = Field(default_factory=list)
+
+
+@router.post("/log")
+async def append_browser_log(batch: BrowserLogBatch) -> dict[str, Any]:
+    """前端浏览器日志统一落盘到 browser-debug.log（三端汇聚，见 browser_debug_log）。"""
+    from evoflow.tools.builtins.browser_debug_log import browser_debug_log, install_browser_debug_mirror
+
+    # LangGraph lifespan 的 dictConfig 会摘掉 root 上的镜像 handler；每次浏览器
+    # 请求幂等重挂（自愈），保证引擎日志持续进统一文件。
+    install_browser_debug_mirror()
+    source = str(batch.source or "web").strip() or "web"
+    for entry in batch.entries:
+        msg = str(entry.msg or "").replace("\n", " ")[:2000]
+        level = str(entry.level or "info")
+        prefix = f"{level}:{entry.ts} " if (entry.ts and level != "info") else (entry.ts or "")
+        browser_debug_log(source, f"{prefix}{msg}".strip())
+    return {"ok": True, "count": len(batch.entries)}
 
 
 def _get_engine():
@@ -42,16 +82,25 @@ def _get_engine():
     return get_browser_engine()
 
 
-@router.post("/execute")
+@router.post(
+    "/execute",
+    dependencies=[Depends(_bridge_token_guard)],
+)
 async def execute_command(payload: BrowserExecuteRequest) -> dict[str, Any]:
     """Run one ZCode-style browser command through the browser engine."""
+    from evoflow.tools.builtins.browser_debug_log import install_browser_debug_mirror
+
+    install_browser_debug_mirror()
     engine = _get_engine()
     thread_id = payload.threadId or _BRIDGE_THREAD_ID
     result = await asyncio.to_thread(engine.execute, thread_id, payload.command, _ENGINE_TIMEOUT_SEC)
     return result
 
 
-@router.get("/transport")
+@router.get(
+    "/transport",
+    dependencies=[Depends(_bridge_token_guard)],
+)
 async def get_transport() -> dict[str, Any]:
     """当前浏览器传输通道：webview2（内置面板）或 edge（WebView2 失败后的系统回退）。"""
     import os
@@ -77,7 +126,10 @@ async def get_transport() -> dict[str, Any]:
     return {"transport": transport, "httpPort": port}
 
 
-@router.get("/tabs")
+@router.get(
+    "/tabs",
+    dependencies=[Depends(_bridge_token_guard)],
+)
 async def list_tabs() -> dict[str, Any]:
     """Tab list in the browser-client ``BrowserTabSummary`` shape (single webview model)."""
     engine = _get_engine()
