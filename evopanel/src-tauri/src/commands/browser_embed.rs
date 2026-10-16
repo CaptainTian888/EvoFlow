@@ -8,7 +8,7 @@
 //! services every frame through the COM channel.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -49,6 +49,9 @@ static EMBED_CREATE_LOCK: std::sync::LazyLock<Mutex<()>> =
 static EMBED_PARKED: std::sync::LazyLock<Mutex<std::collections::HashSet<String>>> =
     std::sync::LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
 
+/// 每次停靠加一。贴位如果还拿着旧值，说明切页已经发生，贴完必须再藏起来。
+static SHOW_GEN: AtomicU64 = AtomicU64::new(0);
+
 fn note_writer(label: &str, writer: &str) {
     if let Ok(mut w) = EMBED_LAST_WRITER.lock() {
         w.insert(label.to_string(), format!("{writer}@{}", chrono_now_secs()));
@@ -70,6 +73,124 @@ fn is_parked(label: &str) -> bool {
         .lock()
         .map(|s| s.contains(label))
         .unwrap_or(false)
+}
+
+#[cfg(target_os = "windows")]
+fn hide_embed_hwnd(window: &WebviewWindow) -> Result<(), String> {
+    use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE};
+    let hwnd = window.hwnd().map_err(|e| format!("embed hwnd: {e}"))?;
+    unsafe {
+        let _ = ShowWindow(hwnd, SW_HIDE);
+    }
+    Ok(())
+}
+
+/// UI 线程正在处理拖动/贴位。卡死时这条线程出不了日志，由旁路线程读这两个原子。
+static UI_OP: AtomicU8 = AtomicU8::new(0);
+static UI_SINCE_MS: AtomicU64 = AtomicU64::new(0);
+static UI_STALL_LOGGED_SINCE: AtomicU64 = AtomicU64::new(0);
+static STALL_PENDING: std::sync::LazyLock<Mutex<Vec<String>>> =
+    std::sync::LazyLock::new(|| Mutex::new(Vec::new()));
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn ui_op_name(op: u8) -> &'static str {
+    match op {
+        1 => "main-move",
+        2 => "main-resize",
+        3 => "set-bounds",
+        _ => "ui",
+    }
+}
+
+fn queue_stall(message: String) {
+    browser_cdp_server::log_line(&message);
+    if let Ok(mut q) = STALL_PENDING.lock() {
+        if q.len() < 32 {
+            q.push(message);
+        }
+    }
+}
+
+fn flush_stall_console(app: &tauri::AppHandle) {
+    let pending = match STALL_PENDING.lock() {
+        Ok(mut q) => std::mem::take(&mut *q),
+        Err(_) => return,
+    };
+    if pending.is_empty() {
+        return;
+    }
+    let Some(main) = app.get_webview_window("main") else { return };
+    for message in pending {
+        let _ = main.emit("browser-embed-stall", serde_json::json!({ "message": message }));
+    }
+}
+
+struct UiBusyGuard {
+    app: tauri::AppHandle,
+}
+
+impl UiBusyGuard {
+    fn enter(app: &tauri::AppHandle, op: u8) -> Self {
+        UI_OP.store(op, Ordering::Relaxed);
+        UI_SINCE_MS.store(now_ms(), Ordering::Release);
+        Self { app: app.clone() }
+    }
+}
+
+impl Drop for UiBusyGuard {
+    fn drop(&mut self) {
+        let since = UI_SINCE_MS.swap(0, Ordering::AcqRel);
+        let op = UI_OP.swap(0, Ordering::Relaxed);
+        if since > 0 {
+            let elapsed = now_ms().saturating_sub(since);
+            if elapsed >= 80 {
+                queue_stall(format!(
+                    "[browser-embed] STALL {} finished in {elapsed}ms (UI thread was blocked)",
+                    ui_op_name(op)
+                ));
+            }
+        }
+        flush_stall_console(&self.app);
+    }
+}
+
+/// 主窗口移动/缩放入口。计时包住兜底贴位；超过 80ms 打到控制台。
+pub fn on_main_window_geometry(app: &tauri::AppHandle, resized: bool) {
+    let _guard = UiBusyGuard::enter(app, if resized { 2 } else { 1 });
+    reposition_embeds_after_main_move(app);
+}
+
+fn start_embed_stall_probe() {
+    let spawned = std::thread::Builder::new()
+        .name("embed-stall-probe".into())
+        .spawn(|| loop {
+            std::thread::sleep(Duration::from_millis(100));
+            let since = UI_SINCE_MS.load(Ordering::Acquire);
+            if since == 0 {
+                continue;
+            }
+            let elapsed = now_ms().saturating_sub(since);
+            if elapsed < 200 {
+                continue;
+            }
+            if UI_STALL_LOGGED_SINCE.swap(since, Ordering::Relaxed) == since {
+                continue;
+            }
+            let op = UI_OP.load(Ordering::Relaxed);
+            queue_stall(format!(
+                "[browser-embed] STALL {} still on UI thread for {elapsed}ms — drag/resize handler has not returned",
+                ui_op_name(op)
+            ));
+        });
+    if let Err(e) = spawned {
+        browser_cdp_server::log_line(&format!("[browser-embed] stall probe spawn failed: {e}"));
+    }
 }
 
 fn chrono_now_secs() -> u64 {
@@ -186,6 +307,7 @@ fn clamp_rect(x: f64, y: f64, w: f64, h: f64, iw: f64, ih: f64) -> (f64, f64, f6
 /// （点名 last_writer）并当场吸回槽位。这是"下次再出现"的兜底——无论哪条
 /// 未知路径把窗口挪走，都会被自动纠正并留下完整取证信息。
 pub fn start_embed_watchdog(app: tauri::AppHandle) {
+    start_embed_stall_probe();
     let spawned = std::thread::Builder::new()
         .name("embed-watchdog".into())
         .spawn(move || loop {
@@ -1116,6 +1238,7 @@ fn place_embed_client(
     };
     // 必须 SHOW：子 WebView2 一直 hidden 时 guest poll / CDP 会卡死。
     // 槽位已在 place 前登记进 EMBED_LAST_BOUNDS，看门狗不会再报「无 bounds」。
+    let place_started = now_ms();
     unsafe {
         SetWindowPos(
             hwnd,
@@ -1127,6 +1250,13 @@ fn place_embed_client(
             SWP_NOACTIVATE | SWP_SHOWWINDOW,
         )
         .map_err(|e| format!("SetWindowPos embed failed: {e}"))?;
+    }
+    let place_ms = now_ms().saturating_sub(place_started);
+    if place_ms >= 40 {
+        queue_stall(format!(
+            "[browser-embed] STALL SetWindowPos blocked {place_ms}ms kind={} at=({px},{py} {w:.0}x{h:.0})",
+            if embed_is_ws_child(window) { "WS_CHILD" } else { "POPUP" }
+        ));
     }
     browser_cdp_server::log_line(&format!(
         "[browser-embed] place kind={} client=({x:.0},{y:.0} {w:.0}x{h:.0}) set=({px},{py})",
@@ -1576,7 +1706,7 @@ pub async fn browser_embed_upsert(
         // what left the stage permanently blank.
         // 估算路径（managed_only=true）不显影：隐藏创建的窗口保持隐藏，
         // 由面板的 set_bounds → show 接管显影；面板路径照常 show。
-        if !managed_only.unwrap_or(false) {
+        if !managed_only.unwrap_or(false) && !is_parked(&label) {
             let _ = existing.show();
             let _ = existing.unminimize();
         }
@@ -1614,6 +1744,14 @@ pub async fn browser_embed_upsert(
                 (x, y, width, height),
             );
             note_writer(&label, if managed_only.unwrap_or(false) { "estimate-upsert" } else { "panel-upsert" });
+            if managed_only.unwrap_or(false) {
+                mark_parked(&label, true);
+                let _ = hide_embed_hwnd(&existing);
+                let _ = existing.hide();
+                browser_cdp_server::log_line(&format!(
+                    "[browser-embed] upsert estimate kept hidden label={label}"
+                ));
+            }
             if !managed_only.unwrap_or(false) {
                 if let Ok(mut map) = EMBED_LAST_BOUNDS.lock() {
                     map.insert(
@@ -1811,15 +1949,28 @@ pub async fn browser_embed_set_bounds(
     height: f64,
     viewport_width: Option<f64>,
     viewport_height: Option<f64>,
+    present: Option<bool>,
 ) -> Result<(), String> {
     #[cfg(not(target_os = "windows"))]
     {
-        let _ = (app, thread_id, x, y, width, height, viewport_width, viewport_height);
+        let _ = (app, thread_id, x, y, width, height, viewport_width, viewport_height, present);
         return Err("Embedded browser panel is only supported on Windows WebView2 builds".into());
     }
     #[cfg(target_os = "windows")]
     {
+        let _ui = UiBusyGuard::enter(&app, 3);
         let label = webview_label_for_thread(&thread_id);
+        // present=false：面板没在前台，不要把停靠的窗口再显示出来。
+        // present=true：当前就是浏览器页，允许解除停靠。中途如果又被 park，
+        // SHOW_GEN 会变，贴完再藏回去。
+        if !present.unwrap_or(false) {
+            browser_cdp_server::log_line(&format!(
+                "[browser-embed] set_bounds skip label={label} present=false parked={}",
+                is_parked(&label)
+            ));
+            return Ok(());
+        }
+        let show_gen = SHOW_GEN.load(Ordering::Acquire);
         let Some(window) = app.get_webview_window(&label) else {
             // Bounds tracking fires on every panel move. A missing window here means
             // the embed was closed underneath us — swallowing that as success is
@@ -1839,11 +1990,25 @@ pub async fn browser_embed_set_bounds(
             viewport_width.unwrap_or(0.0),
             viewport_height.unwrap_or(0.0),
         );
+        if SHOW_GEN.load(Ordering::Acquire) != show_gen {
+            browser_cdp_server::log_line(&format!(
+                "[browser-embed] set_bounds aborted label={label} (hidden while measuring)"
+            ));
+            return Ok(());
+        }
         mark_parked(&label, false);
         let _ = window.show();
         let _ = window.unminimize();
         nest_embed_into_main(&window, &main)?;
         place_embed_client(&window, &main, x, y, width, height)?;
+        if SHOW_GEN.load(Ordering::Acquire) != show_gen || is_parked(&label) {
+            mark_parked(&label, true);
+            let _ = hide_embed_hwnd(&window);
+            browser_cdp_server::log_line(&format!(
+                "[browser-embed] set_bounds re-hid label={label} (park won the race)"
+            ));
+            return Ok(());
+        }
         log_region_diag(
             "set-bounds",
             &label,
@@ -1955,10 +2120,10 @@ fn client_origin_physical(parent: &WebviewWindow) -> Result<(i32, i32), String> 
     Ok((ip.x, ip.y))
 }
 
-/// 切走浏览器标签 / 切会话时把原生窗口挪出可视区。
-/// 不能 `hide()`：WebView2 不可见时 CDP 回调经常停泵。窗口保持 visible，坐标移出父客户区。
-/// WS_CHILD 的 SetWindowPos 是父客户区相对坐标，-32000 会被裁切而不绘制；
-/// 同时打 PARKED 标记，避免 follow/watchdog 又贴回槽位。
+/// 切走浏览器标签 / 切会话时隐藏原生窗口。
+///
+/// 子窗口坐标是相对父客户区的，挪到负数会被系统裁回可见区域，所以看起来「没消失」。
+/// 这里直接 `ShowWindow(SW_HIDE)`。回到该标签时由 set_bounds(present) 再显示。
 #[tauri::command]
 pub async fn browser_embed_park(app: tauri::AppHandle, thread_id: String) -> Result<(), String> {
     #[cfg(not(target_os = "windows"))]
@@ -1968,34 +2133,21 @@ pub async fn browser_embed_park(app: tauri::AppHandle, thread_id: String) -> Res
     }
     #[cfg(target_os = "windows")]
     {
-        use windows::Win32::UI::WindowsAndMessaging::{
-            SetWindowPos, HWND_BOTTOM, SWP_NOACTIVATE, SWP_NOSIZE,
-        };
         let label = webview_label_for_thread(&thread_id);
-        let Some(window) = app.get_webview_window(&label) else {
-            return Ok(());
-        };
+        SHOW_GEN.fetch_add(1, Ordering::AcqRel);
         mark_parked(&label, true);
         note_writer(&label, "park");
-        if embed_is_ws_child(&window) {
-            let hwnd = window.hwnd().map_err(|e| format!("embed hwnd: {e}"))?;
-            unsafe {
-                let _ = SetWindowPos(
-                    hwnd,
-                    Some(HWND_BOTTOM),
-                    -10000,
-                    -10000,
-                    0,
-                    0,
-                    SWP_NOACTIVATE | SWP_NOSIZE,
-                );
-            }
-        } else {
-            window
-                .set_position(tauri::PhysicalPosition::new(-32000, -32000))
-                .map_err(|e| format!("park embedded browser failed: {e}"))?;
-        }
-        browser_cdp_server::log_line(&format!("[browser-embed] park label={label} child={}", embed_is_ws_child(&window)));
+        let Some(window) = app.get_webview_window(&label) else {
+            browser_cdp_server::log_line(&format!("[browser-embed] park SKIP no window label={label}"));
+            return Ok(());
+        };
+        browser_cdp_server::log_line(&format!(
+            "[browser-embed] park ENTER label={label} child={}",
+            embed_is_ws_child(&window)
+        ));
+        hide_embed_hwnd(&window)?;
+        let _ = window.hide();
+        browser_cdp_server::log_line(&format!("[browser-embed] park HIDDEN label={label}"));
         Ok(())
     }
 }

@@ -2,8 +2,6 @@
  * 右栏按会话缓存：切会话时整表换出 / 换回，标签实例语义对齐「浏览器标签页」。
  * 不落盘 localStorage——进程内 Map，最多保留最近 N 个会话。
  */
-import { browserEmbedPark } from '../browser-embed-client.js'
-import { NODE_REPL_BRIDGE_THREAD_ID } from '../browser-panel-store.js'
 import {
   rightStageStore,
   type RightStageSessionMemory,
@@ -53,8 +51,6 @@ export function switchRightStageSession(
     return
   }
   if (from) saveRightStageSessionMemory(from)
-  // 切会话立刻停靠原生浏览器：目标会话可能没有浏览器标签，或激活的是通报/其它页。
-  // 等 React 卸载再 park 会晚一帧，HWND 会闪在新会话上。
-  void browserEmbedPark(NODE_REPL_BRIDGE_THREAD_ID)
+  // 换入目标会话的标签缓存后，browser-embed-surface 根据激活页决定显示或隐藏。
   restoreRightStageSessionMemory(to || null)
 }

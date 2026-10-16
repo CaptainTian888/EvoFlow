@@ -332,7 +332,12 @@ function buildCuaDetailsModel(
 export function isCuaToolCall(
   toolCall: ToolCallBlockRenderContext["toolCallNode"]["toolCall"],
 ): boolean {
-  return collectToolNames(toolCall).some(isZCodeCuaToolName);
+  if (collectToolNames(toolCall).some(isZCodeCuaToolName)) return true;
+  // EvoFlow：CUA 调用经 node_repl js 单元执行，row.toolName 是 "mcp__node_repl__js"；
+  // 结果携带 kind:"cua" display 块时同样按 CUA 卡片渲染（ZCode 主链路按工具名命中，
+  // 这里补 display 命中，两条路都收敛到同一个渲染器）。
+  const display = readToolResultDisplay(toolCall.raw);
+  return display?.kind === "cua";
 }
 
 interface CuaSummaryPresentation {

@@ -43,6 +43,7 @@ export function ensureRightStageKindsRegistered() {
     render: ({ surface, onClose, active }) => (
       <BrowserPanel
         isOpen
+        stageId={surface.id}
         surfaceActive={active !== false}
         onClose={() => {
           closeBrowserStage(surface.id)
@@ -66,6 +67,7 @@ export function ensureRightStageKindsRegistered() {
         return (
           <BrowserPanel
             isOpen
+            stageId={surface.id || 'primary'}
             surfaceActive={active !== false}
             onClose={() => {
               closeBrowserStage(surface.id || 'primary')

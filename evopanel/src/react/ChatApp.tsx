@@ -12491,6 +12491,13 @@ useEffect(() => {
     ensureSummaryStage({ sessionKey: selectedSessionKey })
   }, [infoRailOpen, selectedSessionKey, isHomeSurface, isMobileChat, chatPanelMode])
 
+  // 首页不应出现右侧摘要/侧边面板：进入首页时主动折叠右栏（保留 tabs 缓存，
+  // 离开首页后由既有 ensureSummaryStage effect 决定是否恢复）。
+  useEffect(() => {
+    if (!isHomeSurface) return
+    collapseRightStage()
+  }, [isHomeSurface, collapseRightStage])
+
   // Rust CDP path emits this when the agent drives the browser before the
   // AG-UI TOOL_CALL_START has opened the side panel. Mount the bridge WebView2
   // immediately so ensure_webview_for_cdp can reuse a healthy HWND.

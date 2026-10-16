@@ -1,14 +1,12 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from 'react'
 import {
   browserEmbedClose,
-  browserEmbedPark,
-  browserEmbedSetBounds,
   browserEmbedSupported,
   browserEmbedSupportedSync,
-  browserEmbedUpsert,
   clearBrowserEmbedCdp,
   registerBrowserEmbedCdp,
 } from '../../lib/browser-embed-client.js'
+import { ensureNativeEmbed, reportEmbedSlot } from '../../lib/browser-embed-surface.js'
 import {
   buildBrowserStreamPath,
   connectBrowserStream,
@@ -670,14 +668,16 @@ async function waitForEmbedBounds(el: HTMLElement | null, timeoutMs = 2400) {
 function BrowserEmbedHost({
   isOpen,
   surfaceActive,
+  stageId,
   threadId,
   pageUrl,
   onReady,
   onFailed,
 }: {
   isOpen: boolean
-  /** 右栏当前标签是否是这一页。失活时 HWND 必须挪出屏幕。 */
+  /** 右栏当前标签是否是这一页。显隐由 browser-embed-surface 决定，这里只在前台时上报槽位。 */
   surfaceActive: boolean
+  stageId: string
   threadId: string
   pageUrl?: string
   onReady?: () => void
@@ -704,14 +704,22 @@ function BrowserEmbedHost({
   onFailedRef.current = onFailed
   const syncBoundsRef = useRef<() => Promise<void>>(async () => {})
 
+  const stageIdRef = useRef(stageId)
+  stageIdRef.current = stageId
+
   const syncBounds = useCallback(async () => {
-    if (!surfaceActiveRef.current) return
-    const tid = String(threadId || '').trim()
-    if (!tid || !isOpen) return
+    if (!surfaceActiveRef.current || !isOpen) return
     const bounds = readEmbedBounds(slotRef.current)
     if (!bounds) return
-    await browserEmbedSetBounds({ threadId: tid, ...bounds })
-  }, [isOpen, threadId])
+    const started = performance.now()
+    reportEmbedSlot(stageIdRef.current, bounds)
+    const elapsed = Math.round(performance.now() - started)
+    if (elapsed >= 200) {
+      console.warn(
+        `[browser-embed] STALL setBounds ${elapsed}ms slot=(${Math.round(bounds.x)},${Math.round(bounds.y)} ${Math.round(bounds.width)}x${Math.round(bounds.height)})`,
+      )
+    }
+  }, [isOpen])
   syncBoundsRef.current = syncBounds
 
   useLayoutEffect(() => {
@@ -798,10 +806,11 @@ function BrowserEmbedHost({
       dbgLog(
         `[browser-embed] upsert thread=${tid} bounds=${JSON.stringify(boundsLogged)} url=${pageUrlNow || '(none — boot blank, navigate on result)'}`,
       )
-      const info = await browserEmbedUpsert({
-        threadId: tid,
+      const info = await ensureNativeEmbed({
         url: pageUrlNow,
-        ...bounds,
+        slot: bounds,
+        stageId: stageIdRef.current,
+        reason: 'panel-mount',
       })
       dbgLog(`[browser-embed] upsert done cdpUrl=${info?.cdpUrl ? 'OK' : 'MISSING'} label=${info?.webviewLabel || '-'}`)
       if (!info?.cdpUrl) {
@@ -818,6 +827,7 @@ function BrowserEmbedHost({
         return
       }
       dbgLog(`[browser-embed] ready thread=${tid}`)
+      if (!surfaceActiveRef.current) return
       finishReady()
     }
 
@@ -856,43 +866,27 @@ function BrowserEmbedHost({
     }
     lastNavigatedRef.current = next
     dbgLog(`[browser-embed] navigate thread=${tid} url=${next} bounds=${JSON.stringify(bounds)}`)
-    void browserEmbedUpsert({ threadId: tid, url: next, ...bounds }).then((info) => {
+    void ensureNativeEmbed({
+      url: next,
+      slot: bounds,
+      stageId: stageIdRef.current,
+      reason: 'navigate',
+    }).then((info) => {
       if (info?.cdpUrl) void registerBrowserEmbedCdp(tid, info.cdpUrl)
     })
   }, [ready, threadId, pageUrl])
 
   useEffect(() => {
-    const tid = String(threadId || '').trim()
-    if (!tid || !ready || !isOpen) return
-    if (surfaceActive) {
-      void syncBounds()
-      return
-    }
-    // 切到其它右栏标签（通报/摘要等）：停靠 HWND，不能留在槽位上。
-    // set_bounds 在途时会把窗口拉回槽位；多停一次。
-    dbgLog(`[browser-embed] park (surface inactive) tid=${tid}`)
-    void browserEmbedPark(tid)
-    const again = window.setTimeout(() => {
-      if (!surfaceActiveRef.current) void browserEmbedPark(tid)
-    }, 80)
-    return () => window.clearTimeout(again)
-  }, [surfaceActive, ready, isOpen, threadId, syncBounds])
+    if (!ready || !isOpen || !surfaceActive) return
+    void syncBounds()
+  }, [surfaceActive, ready, isOpen, syncBounds])
 
-  // 卸载 / 折叠右栏 / 切会话卸掉面板：必须停靠，否则 HWND 仍盖在聊天上。
-  useEffect(() => {
-    return () => {
-      const tid = String(threadIdRef.current || '').trim()
-      if (!tid) return
-      dbgLog(`[browser-embed] park (host unmount) tid=${tid}`)
-      void browserEmbedPark(tid)
-    }
-  }, [])
-
-  // 右栏缓存换到「这个浏览器 ID」时才贴回；切走由 gate 停靠。
+  // 显隐不在这里做。browser-embed-surface 看到激活页离开浏览器 id 就会隐藏。
   useEffect(() => {
     const onGate = (ev: Event) => {
       const detail = (ev as CustomEvent<{ show?: boolean; id?: string }>).detail
       if (!detail?.show) return
+      if (detail.id && detail.id !== stageIdRef.current) return
       if (!surfaceActiveRef.current) return
       dbgLog(`[browser-embed] gate show id=${detail.id || '(none)'} → sync bounds`)
       void syncBoundsRef.current()
@@ -936,7 +930,12 @@ function BrowserEmbedHost({
       try {
         const { listen } = await import('@tauri-apps/api/event')
         if (cancelled) return
-        unlisten = await listen<{
+        const unlistenStall = await listen<{ message?: string }>('browser-embed-stall', (ev) => {
+          const message = String(ev.payload?.message || '')
+          if (!message) return
+          console.warn(message)
+        })
+        const unlistenCoords = await listen<{
           phase?: string
           kind?: string
           slotClient?: { x: number; y: number; w: number; h: number }
@@ -976,6 +975,10 @@ function BrowserEmbedHost({
           console.log(wvMsg + align)
           dbgLog(`[browser-embed] ${slotMsg} | ${wvMsg}${align}`)
         })
+        unlisten = () => {
+          unlistenStall()
+          unlistenCoords()
+        }
       } catch (err) {
         console.warn('[browser-embed] coords listen failed', err)
       }
@@ -1263,8 +1266,10 @@ export type BrowserPanelProps = {
   browserMode?: 'evopanel' | 'headed' | 'cdp' | 'headless' | 'embed'
   /** 关闭浏览器这一页（right-stage closeTab），不是收起整栏。 */
   onClose: () => void
-  /** 当前右栏标签是否激活。失活时原生窗口停到屏幕外。 */
+  /** 当前右栏标签是否激活。失活时由 browser-embed-surface 隐藏原生窗。 */
   surfaceActive?: boolean
+  /** 右栏浏览器页 id。多个页共用一扇原生窗，只有和前台 id 一致时才贴位。 */
+  stageId?: string
 }
 
 export const BrowserPanel = memo(function BrowserPanel({
@@ -1277,6 +1282,7 @@ export const BrowserPanel = memo(function BrowserPanel({
   browserMode,
   onClose,
   surfaceActive = true,
+  stageId = 'primary',
 }: BrowserPanelProps) {
   const runtime = useSyncExternalStore(subscribeBrowserRuntime, getBrowserRuntimeSnapshot)
   // Props win when a parent provides them; runtime store feeds the standalone right-stage mount.
@@ -1890,6 +1896,7 @@ export const BrowserPanel = memo(function BrowserPanel({
           <BrowserEmbedHost
             isOpen={isOpen}
             surfaceActive={surfaceActive}
+            stageId={stageId}
             threadId={embedThreadId}
             pageUrl={effectivePageUrl}
             onReady={handleEmbedReady}

@@ -92,11 +92,13 @@ export async function browserEmbedSetBounds(opts: {
   height: number
   viewportWidth?: number
   viewportHeight?: number
+  /** 当前右栏就是这个浏览器页。false 时 Rust 不会把窗口再显示出来。 */
+  present?: boolean
 }): Promise<void> {
   if (!isDesktopTauri()) return
   blog(
     'info',
-    `[client] set-bounds tid=${opts.threadId} bounds=(${opts.x},${opts.y} ${opts.width}x${opts.height})`,
+    `[client] set-bounds tid=${opts.threadId} present=${opts.present === true} bounds=(${opts.x},${opts.y} ${opts.width}x${opts.height})`,
   )
   try {
     await invokeTauri('browser_embed_set_bounds', {
@@ -107,9 +109,10 @@ export async function browserEmbedSetBounds(opts: {
       height: opts.height,
       viewportWidth: opts.viewportWidth ?? null,
       viewportHeight: opts.viewportHeight ?? null,
+      present: opts.present === true,
     })
-  } catch {
-    // ignore resize races while panel animates
+  } catch (err) {
+    console.warn('[browser-embed] setBounds failed', err)
   }
 }
 
@@ -120,8 +123,9 @@ export async function browserEmbedPark(threadId: string): Promise<void> {
   blog('info', `[client] park tid=${tid}`)
   try {
     await invokeTauri('browser_embed_park', { threadId: tid })
-  } catch {
-    // ignore
+  } catch (err) {
+    console.warn('[browser-embed] park failed', err)
+    blog('warn', `[client] park failed tid=${tid} err=${err}`)
   }
 }
 

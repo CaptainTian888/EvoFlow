@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 BUILTIN_DIR = Path(__file__).parent / "builtin"
 
-SEED_MANIFEST_VERSION = 8
+SEED_MANIFEST_VERSION = 9  # v9: computer-use 加入 defaultEnabled（存量安装补装）
 
 # 面向用户展示的 listing 文案统一使用 EvoFlow 品牌（这是 EvoFlow 平台的市场）。
 # 仅替换文本字段；插件 name slug、icon URL 等标识保持原样。
@@ -79,8 +79,11 @@ def _rebrand_entry_text(entry: dict[str, Any]) -> None:
 EXCLUDED_OFFICIAL_PLUGINS = {"node-repl-host", "zcode-guide", "hello-command", "evoflow-skill-kit"}
 
 # ZCode ``defaultEnabled`` content-only plugins — auto-installed + enabled.
+# computer-use：产品决策默认启用（ZCode 官方默认关，EvoFlow 打开——helper 运行时
+# 首次调用时自愈复制，无 ZCode 安装的机器走 v1 视觉兜底，不阻塞启动）。
 DEFAULT_ENABLED_OFFICIAL_PLUGINS = {
     "browser-use",
+    "computer-use",
     "documents",
     "pdf",
     "presentations",

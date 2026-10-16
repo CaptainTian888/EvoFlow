@@ -66,37 +66,20 @@ if (isTauri) {
               setBrowserPanelThreadId,
               NODE_REPL_BRIDGE_THREAD_ID,
             } = await import('./lib/browser-panel-store.js')
-            const { browserEmbedUpsert, registerBrowserEmbedCdp } = await import(
-              './lib/browser-embed-client.js'
+            const { registerBrowserEmbedCdp } = await import('./lib/browser-embed-client.js')
+            const { ensureNativeEmbed, estimateEmbedSlot } = await import(
+              './lib/browser-embed-surface.js'
             )
             const bridgeTid = tid || NODE_REPL_BRIDGE_THREAD_ID
             setBrowserPanelThreadId(bridgeTid)
             if (!String(window.location.hash || '').includes('/chat')) {
               navigate('/chat')
             }
-            const iw = window.innerWidth || 1280
-            const ih = window.innerHeight || 800
-            // CSS 像素。Rust 用客户区 / viewport 换算，这里不要再乘 devicePixelRatio。
-            const vw = Math.max(480, Math.floor(iw * 0.45))
-            const vh = Math.max(360, Math.floor(ih - 96))
-            const vx = Math.max(0, Math.floor(iw - vw - 12))
-            const vy = 64
-            blog(
-              'info',
-              `[early] upsert estimate vw=${vw} vh=${vh} vx=${vx} vy=${vy} inner=${window.innerWidth}x${window.innerHeight}`,
-            )
             const navUrl = url && /^https?:\/\//i.test(url) ? url : 'about:blank'
-            const info = await browserEmbedUpsert({
-              threadId: bridgeTid,
+            const info = await ensureNativeEmbed({
               url: navUrl,
-              x: vx,
-              y: vy,
-              width: vw,
-              height: vh,
-              viewportWidth: iw,
-              viewportHeight: ih,
-              // 估算边界：面板接管后不得移动窗口（Rust managed_only 守卫）
-              respectManagedBounds: true,
+              slot: estimateEmbedSlot(),
+              reason: 'early',
             })
             if (info?.cdpUrl) {
               await registerBrowserEmbedCdp(bridgeTid, info.cdpUrl)
@@ -721,42 +704,21 @@ async function boot() {
                 setBrowserPanelThreadId,
                 NODE_REPL_BRIDGE_THREAD_ID,
               } = await import('./lib/browser-panel-store.js')
-              const {
-                browserEmbedUpsert,
-                registerBrowserEmbedCdp,
-              } = await import('./lib/browser-embed-client.js')
+              const { registerBrowserEmbedCdp } = await import('./lib/browser-embed-client.js')
+              const { ensureNativeEmbed, estimateEmbedSlot } = await import(
+                './lib/browser-embed-surface.js'
+              )
               const bridgeTid = tid || NODE_REPL_BRIDGE_THREAD_ID
               setBrowserPanelThreadId(bridgeTid)
               if (!String(window.location.hash || '').includes('/chat')) {
                 navigate('/chat')
               }
-              // CRITICAL: do NOT wait for BrowserPanel layout. Agent CDP is already
-              // blocked on ensure_webview_for_cdp; a 0×0 slot would miss the window.
-              // Upsert with approximate right-half bounds now — BrowserPanel will
-              // reposition the same HWND when it mounts.
-              const iw = window.innerWidth || 1280
-              const ih = window.innerHeight || 800
-              // CSS 像素。Rust 用客户区 / viewport 换算，这里不要再乘 devicePixelRatio。
-              const vw = Math.max(480, Math.floor(iw * 0.45))
-              const vh = Math.max(360, Math.floor(ih - 96))
-              const vx = Math.max(0, Math.floor(iw - vw - 12))
-              const vy = 64
-              blog(
-                'info',
-                `[boot] upsert estimate vw=${vw} vh=${vh} vx=${vx} vy=${vy} inner=${window.innerWidth}x${window.innerHeight}`,
-              )
+              // 不等面板布局。窗口是否显示由 browser-embed-surface 决定。
               const navUrl = url && /^https?:\/\//i.test(url) ? url : 'about:blank'
-              const info = await browserEmbedUpsert({
-                threadId: bridgeTid,
+              const info = await ensureNativeEmbed({
                 url: navUrl,
-                x: vx,
-                y: vy,
-                width: vw,
-                height: vh,
-                viewportWidth: iw,
-                viewportHeight: ih,
-                // 估算边界：面板接管后不得移动窗口（Rust managed_only 守卫）
-                respectManagedBounds: true,
+                slot: estimateEmbedSlot(),
+                reason: 'boot',
               })
               if (info?.cdpUrl) {
                 await registerBrowserEmbedCdp(bridgeTid, info.cdpUrl)

@@ -226,15 +226,14 @@ function installLongTaskMonitor(): void {
       for (const entry of list.getEntries()) {
         const dur = entry.duration
         const snap = lastDeltaSnapshot
-        if (snap) {
+        if (snap && snap.visibleRows > 0) {
           console.warn(
             `[streamperf] long task ${dur.toFixed(0)}ms — delta #${snap.seq} ${snap.total}ms` +
               ` | render=${snap.renderRows}/${snap.visibleRows}行 | 恶化=${snap.degradation}x`,
             snap.phases,
           )
-        } else {
-          console.warn(`[streamperf] long task ${dur.toFixed(0)}ms（无 delta 上下文）`)
         }
+
       }
     })
     longTaskObserver.observe({ type: 'longtask', buffered: true })

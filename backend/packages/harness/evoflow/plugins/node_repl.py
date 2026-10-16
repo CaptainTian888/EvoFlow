@@ -202,25 +202,30 @@ const __evoflowBridgeSymbol = Symbol.for("zcode.node-repl.browser-control-bridge
       }
     },
   };
-  // ── CUA 桥（computer-use 插件）：覆盖宿主自带的死桥（本构建 CUA fail-closed）──
+  // ── CUA 桥（computer-use 插件）──
+  // 宿主自带的桥只在 ZCODE_CUA_PERMISSION_BROKER_SOCKET 存在时可用（此时它是
+  // 权威 provider：14 个工具面 + UIA 无障碍树 + 应用图标 + 会话租约全部原生），
+  // 必须保留；缺失时回退 EvoFlow v1 视觉桥（网关 → cua_exec.ps1，截图 + SendInput）。
   const __cuaSymbol = Symbol.for("zcode.node-repl.computer-use-bridge");
-  globalThis[__cuaSymbol] = {
-    documentationRoot: __docsRoot,
-    assertAvailable: async () => {},
-    call: async (method, methodInput) => {
-      try {
-        const resp = await __gwFetch("/api/cua/execute", {
-          method: "POST",
-          body: JSON.stringify({ method, input: methodInput || {} }),
-        });
-        __logCmd({ kind: `cua:${method}`, ok: resp?.ok !== false });
-        return resp; // CallToolResult 形状（content / isError）
-      } catch (err) {
-        __logCmd({ kind: `cua:${method}`, ok: false, error: String(err).slice(0, 160) });
-        throw err;
-      }
-    },
-  };
+  if (!process.env.ZCODE_CUA_PERMISSION_BROKER_SOCKET) {
+    globalThis[__cuaSymbol] = {
+      documentationRoot: __docsRoot,
+      assertAvailable: async () => {},
+      call: async (method, methodInput) => {
+        try {
+          const resp = await __gwFetch("/api/cua/execute", {
+            method: "POST",
+            body: JSON.stringify({ method, input: methodInput || {} }),
+          });
+          __logCmd({ kind: `cua:${method}`, ok: resp?.ok !== false });
+          return resp; // CallToolResult 形状（content / isError）
+        } catch (err) {
+          __logCmd({ kind: `cua:${method}`, ok: false, error: String(err).slice(0, 160) });
+          throw err;
+        }
+      },
+    };
+  }
 }
 """
 
@@ -228,17 +233,26 @@ _lock = threading.Lock()
 _proc: subprocess.Popen | None = None
 _next_id = 3  # ids 1/2 reserved for the probe-free startup
 _responses: dict[int, dict[str, Any]] = {}
+_response_events: dict[int, threading.Event] = {}
 _reader_thread: threading.Thread | None = None
 
 
-def _meta_envelope() -> dict[str, Any]:
-    # session_id：宿主浏览器桥用它做会话绑定（requestContext）；单桌面单会话语义。
+def _meta_envelope(session_id: str | None = None) -> dict[str, Any]:
+    # session_id：宿主 CUA broker 的 requestContext 依赖它（com.zcode/request-context，
+    # desktop 版宿主为 .strict() schema；缺 session_id 时 broker 直接拒绝请求）。
+    # 真实会话（EvoFlow thread_id）传入后，broker 的控制器租约（CONTROLLER_BUSY）、
+    # 每会话状态（无障碍树基线、kill switch）都按会话隔离——多个对话同时操作桌面时
+    # 只有持有租约的那个会成功，其余收到明确的忙错误而不是互相打断。
+    sid = str(session_id or "").strip() or "evoflow-main"
     return {
         _META_KEY: _PROTOCOL_VERSION,
         "io.modelcontextprotocol/clientCapabilities": {"tools": {}},
         "io.modelcontextprotocol/clientInfo": {"name": "evoflow", "version": "1.0.0"},
-        "session_id": "evoflow-main",
-        "runtime_scope": "main",
+        "com.zcode/request-context": {
+            "session_id": sid,
+            "runtime_scope": "main",
+            "workspace_key": sid,
+        },
     }
 
 
@@ -320,17 +334,25 @@ def is_node_repl_available(storage_root: Path | None = None) -> bool:
 
 def _pump_stdout(proc: subprocess.Popen) -> None:
     assert proc.stdout is not None
-    for line in proc.stdout:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            message = json.loads(line)
-        except ValueError:
-            continue
-        request_id = message.get("id")
-        if isinstance(request_id, int):
-            _responses[request_id] = message
+    try:
+        for line in proc.stdout:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                message = json.loads(line)
+            except ValueError:
+                continue
+            request_id = message.get("id")
+            if isinstance(request_id, int):
+                _responses[request_id] = message
+                event = _response_events.get(request_id)
+                if event is not None:
+                    event.set()
+    finally:
+        # 内核退出：唤醒所有在途等待，让调用方拿到"内核已退出"而不是傻等超时。
+        for event in list(_response_events.values()):
+            event.set()
 
 
 def _latest_plugin_root(storage_root: Path, plugin_name: str) -> Path | None:
@@ -355,6 +377,7 @@ def _ensure_process() -> subprocess.Popen:
     if server_js is None:
         raise RuntimeError("node-repl-host runtime is not available in the plugin cache")
     _responses.clear()
+    _response_events.clear()
     from .storage import resolve_storage_root as _rsr
 
     storage_root = _rsr()
@@ -380,6 +403,15 @@ def _ensure_process() -> subprocess.Popen:
             plugin_root = _latest_plugin_root(storage_root, plugin_name)
             if plugin_root:
                 kernel_env[env_key] = str(plugin_root)
+    # CUA 原生链路：helper 运行时可用时注入 broker socket + fork 配方，
+    # 激活宿主自带的 broker（14 工具面 + UIA + 图标 + 会话租约）。
+    # 不可用时保持无 socket，内核桥 JS 会回退到网关 v1 视觉桥。
+    try:
+        from .cua_helper import kernel_env_overlay
+
+        kernel_env.update(kernel_env_overlay(storage_root))
+    except Exception:  # noqa: BLE001
+        logger.warning("cua helper overlay unavailable; CUA stays on visual bridge", exc_info=True)
     _proc = subprocess.Popen(
         ["node", str(server_js)],
         stdin=subprocess.PIPE,
@@ -396,32 +428,64 @@ def _ensure_process() -> subprocess.Popen:
     return _proc
 
 
-def _request(method: str, params: dict[str, Any], timeout_sec: float) -> dict[str, Any]:
+def _request(
+    method: str,
+    params: dict[str, Any],
+    timeout_sec: float,
+    session_id: str | None = None,
+) -> dict[str, Any]:
+    """Send one JSON-RPC request; concurrent callers wait on per-id events.
+
+    写入只在锁内做一行（快进快出），等待在锁外按 id 挂起——一个 CUA 调用跑 120s
+    不会再阻塞其它会话的浏览器调用；宿主侧按 request-context 的 session_id 做
+    每会话队列与 CUA 控制器租约。
+    """
     global _next_id
     with _lock:
         proc = _ensure_process()
         request_id = _next_id
         _next_id += 1
-        params = {**params, "_meta": _meta_envelope()}
-        assert proc.stdin is not None
-        proc.stdin.write(json.dumps({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}) + "\n")
-        proc.stdin.flush()
-        deadline = time.monotonic() + timeout_sec
-        while time.monotonic() < deadline:
-            if request_id in _responses:
-                return _responses.pop(request_id)
-            if proc.poll() is not None:
-                raise RuntimeError("node-repl-host kernel exited unexpectedly")
-            time.sleep(0.05)
+        event = threading.Event()
+        _response_events[request_id] = event
+        try:
+            payload = {**params, "_meta": _meta_envelope(session_id)}
+            assert proc.stdin is not None
+            proc.stdin.write(json.dumps({"jsonrpc": "2.0", "id": request_id, "method": method, "params": payload}) + "\n")
+            proc.stdin.flush()
+        except Exception:
+            _response_events.pop(request_id, None)
+            _responses.pop(request_id, None)
+            raise
+    completed = event.wait(timeout_sec)
+    _response_events.pop(request_id, None)
+    if not completed:
+        if proc.poll() is not None:
+            raise RuntimeError("node-repl-host kernel exited unexpectedly")
         raise TimeoutError(f"node-repl-host {method} timed out after {timeout_sec}s")
+    response = _responses.pop(request_id, None)
+    if response is None:
+        raise RuntimeError("node-repl-host kernel exited unexpectedly")
+    return response
 
 
-def call_node_repl_js(code: str, timeout_ms: int = 120_000) -> str:
-    """Execute JavaScript in the node-repl-host kernel; returns the text result.
+def call_node_repl_js_structured(
+    code: str,
+    timeout_ms: int = 120_000,
+    session_id: str | None = None,
+) -> dict[str, Any]:
+    """Execute JavaScript in the node-repl-host kernel; return the full result.
 
-    每次 call 都先注入浏览器桥 setup（幂等 ``??=``）：control-browser 技能的
-    bootstrap 读取 ``Symbol.for("zcode.node-repl.browser-control-bridge")``，
-    桥用 fetch 把 ZCode 浏览器命令转发给 EvoFlow Gateway（本地请求免鉴权）。
+    返回 ``{"text", "images", "meta", "is_error"}``：
+
+    - ``text`` — 全部 text block 拼接（模型可见正文）。
+    - ``images`` — ``[{"data": <base64>, "mime_type": "image/png"}]``；宿主的
+      structured sink（getAXStateAndScreenshot / getScreenshot 的 emit）会把截图作为
+      image block 放进 content，v1 驱动把它丢掉导致视觉闭环断裂，这里必须保留。
+    - ``meta`` — 结果 ``_meta``（ZCode 的 ``zcode/nodeReplCuaApp`` 目标应用身份、
+      帧完整性签名等宿主专用元数据），供展示层构建 target-app 卡片；模型面不消费。
+
+    ``session_id`` 传真实会话（thread）id：broker 按会话隔离状态并仲裁桌面控制器
+    租约；缺省回退 "evoflow-main"。
     """
     started = time.monotonic()
     preview = " ".join(code.split())[:160]
@@ -431,6 +495,7 @@ def call_node_repl_js(code: str, timeout_ms: int = 120_000) -> str:
             "tools/call",
             {"name": "js", "arguments": {"code": _BRIDGE_SETUP_JS + "\n" + code, "timeout_ms": min(int(timeout_ms), 120_000)}},
             timeout_sec=timeout_ms / 1000 + 15,
+            session_id=session_id,
         )
     except Exception as exc:
         _ulog(f"js call FAILED after {time.monotonic() - started:.1f}s: {exc}")
@@ -439,23 +504,56 @@ def call_node_repl_js(code: str, timeout_ms: int = 120_000) -> str:
         _ulog(f"js call jsonrpc error: {json.dumps(response['error'], ensure_ascii=False)[:200]}")
         raise RuntimeError(f"node_repl js error: {json.dumps(response['error'], ensure_ascii=False)[:400]}")
     result = response.get("result") or {}
-    if result.get("isError"):
-        parts = [
-            str(part.get("text") or "")
-            for part in result.get("content") or []
-            if isinstance(part, dict)
-        ]
-        message = "node_repl js failed: " + "\n".join(parts)[:800]
-        _ulog(f"js call isError after {time.monotonic() - started:.1f}s: {message[:200]}")
-        raise RuntimeError(message)
-    parts = [
-        str(part.get("text") or "")
-        for part in result.get("content") or []
-        if isinstance(part, dict)
+    blocks = [block for block in result.get("content") or [] if isinstance(block, dict)]
+
+    def _is_frame_authority(block: dict[str, Any]) -> bool:
+        # broker 附着在结果里的帧凭证（{"image_ref": {...}}，单键 JSON）是宿主专用
+        # 元数据：ZCode 侧从不把它展示给模型，这里同样过滤。
+        if block.get("type") != "text" or not isinstance(block.get("text"), str):
+            return False
+        try:
+            parsed = json.loads(block["text"])
+        except ValueError:
+            return False
+        return isinstance(parsed, dict) and list(parsed.keys()) == ["image_ref"]
+
+    text = "\n".join(
+        str(block.get("text") or "")
+        for block in blocks
+        if block.get("type") == "text" and not _is_frame_authority(block)
+    )
+    images = [
+        {"data": str(block["data"]), "mime_type": str(block.get("mimeType") or "image/png")}
+        for block in blocks
+        if block.get("type") == "image" and isinstance(block.get("data"), str) and block["data"]
     ]
-    text = "\n".join(parts)
-    _ulog(f"js call ok in {time.monotonic() - started:.1f}s, result {len(text)} chars: {' '.join(text.split())[:120]}")
-    return text
+    meta = result.get("_meta") if isinstance(result.get("_meta"), dict) else None
+    if result.get("isError"):
+        message = "node_repl js failed: " + text[:800]
+        _ulog(f"js call isError after {time.monotonic() - started:.1f}s: {message[:200]}")
+        return {"text": text, "images": images, "meta": meta, "is_error": True, "error": message}
+    _ulog(
+        f"js call ok in {time.monotonic() - started:.1f}s, text {len(text)} chars, "
+        f"images {len(images)}, meta {'yes' if meta else 'no'}"
+    )
+    return {"text": text, "images": images, "meta": meta, "is_error": False, "error": None}
+
+
+def call_node_repl_js(
+    code: str,
+    timeout_ms: int = 120_000,
+    session_id: str | None = None,
+) -> str:
+    """Execute JavaScript in the node-repl-host kernel; returns the text result.
+
+    每次 call 都先注入浏览器桥 setup（幂等 ``??=``）：control-browser 技能的
+    bootstrap 读取 ``Symbol.for("zcode.node-repl.browser-control-bridge")``，
+    桥用 fetch 把 ZCode 浏览器命令转发给 EvoFlow Gateway（本地请求免鉴权）。
+    """
+    structured = call_node_repl_js_structured(code, timeout_ms, session_id=session_id)
+    if structured["is_error"]:
+        raise RuntimeError(structured["error"] or "node_repl js failed")
+    return structured["text"]
 
 
 def shutdown() -> None:

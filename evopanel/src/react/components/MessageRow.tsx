@@ -983,7 +983,7 @@ export function MessageRow({
           <div className="msg-meta msg-turn-assistant-meta">
             <div className="msg-assistant-actions">
               {!isStreamingEffective && displayRow.durationStr ? (
-                <span className="msg-duration">⏱ {displayRow.durationStr}</span>
+                <span className="msg-duration">{displayRow.durationStr}</span>
               ) : null}
               {displayRow.tokenStr ? (
                 <>

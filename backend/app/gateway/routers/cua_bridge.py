@@ -140,3 +140,130 @@ def _to_call_tool_result(method: str, raw: dict[str, Any]) -> dict[str, Any]:
         content: list[dict[str, Any]] = [{"type": "text", "text": state_text}]
         return {"content": content + [{"type": "image", "data": result["base64"], "mimeType": result.get("mime", "image/png")}]}
     return {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}]}
+
+
+# ---------------------------------------------------------------------------
+# 应用图标解析（target-app-display 徽标）
+#
+# ZCode 桌面端在 main 进程原生解析 iconLocators；EvoFlow 面板是 Tauri WebView，
+# 直接走网关：PowerShell 提取（win32 exe 用 ExtractAssociatedIcon；AUMID 尽力
+# 解析 Appx 清单 logo），结果按 locator 值做进程内 LRU 缓存。
+# ---------------------------------------------------------------------------
+
+class AppIconLocator(BaseModel):
+    kind: str = Field(..., description="darwin-bundle-id | windows-executable-path | windows-aumid")
+    value: str = Field(..., min_length=1, max_length=32768)
+
+
+class AppIconRequestBody(BaseModel):
+    locators: list[AppIconLocator] = Field(..., min_length=1, max_length=3)
+
+
+_ICON_CACHE: dict[str, str | None] = {}
+_ICON_CACHE_LIMIT = 256
+
+_APP_ICON_PS = r"""
+param([string]$Kind, [string]$Value)
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Drawing
+$bytes = $null
+if ($Kind -eq 'windows-executable-path') {
+    $exe = [IO.Path]::GetFullPath($Value)
+    $name = [IO.Path]::GetFileName($exe).ToLower()
+    if ($name -eq 'applicationframehost.exe') { exit 0 }
+    $icon = [System.Drawing.Icon]::ExtractAssociatedIcon($exe)
+    if ($icon) {
+        $ms = New-Object IO.MemoryStream
+        $icon.ToBitmap().Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
+        $bytes = $ms.ToArray()
+    }
+} elseif ($Kind -eq 'windows-aumid') {
+    $family = ($Value -split '!')[0]
+    $pkg = Get-AppxPackage -ErrorAction SilentlyContinue | Where-Object { $_.PackageFamilyName -eq $family } | Select-Object -First 1
+    if ($pkg) {
+        $manifest = Join-Path $pkg.InstallLocation 'AppxManifest.xml'
+        [xml]$xml = Get-Content -LiteralPath $manifest
+        $ve = $xml.Package.Applications.Application.VisualElements | Select-Object -First 1
+        if ($ve) {
+            $logo = $ve.Square44x44Logo
+            if (-not $logo) { $logo = $ve.Square150x150Logo }
+            if ($logo) {
+                $base = Join-Path $pkg.InstallLocation $logo
+                $dir = Split-Path $base -Parent
+                $stem = [IO.Path]::GetFileNameWithoutExtension($base)
+                $best = Get-ChildItem -LiteralPath $dir -Filter "$stem*" -ErrorAction SilentlyContinue |
+                    Where-Object { $_.Extension -match '^\.(png|jpg|jpeg)$' } |
+                    Sort-Object Length -Descending | Select-Object -First 1
+                if ($best) { $bytes = [IO.File]::ReadAllBytes($best.FullName) }
+            }
+        }
+    }
+}
+if ($bytes) { [Convert]::ToBase64String($bytes) }
+"""
+
+
+def _read_icon_via_powershell(kind: str, value: str) -> str | None:
+    import subprocess
+    import tempfile
+
+    with tempfile.NamedTemporaryFile("w", suffix=".ps1", delete=False, encoding="utf-8-sig") as handle:
+        handle.write(_APP_ICON_PS)
+        script_path = handle.name
+    try:
+        proc = subprocess.run(
+            [
+                "powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                "-File", script_path, "-Kind", kind, "-Value", value,
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=15,
+        )
+        data = (proc.stdout or "").strip()
+        if proc.returncode == 0 and data and len(data) < 400_000:
+            return data
+        return None
+    finally:
+        try:
+            os.unlink(script_path)
+        except OSError:
+            pass
+
+
+@router.post(
+    "/app-icon",
+    summary="Resolve an application icon (base64 data URL) for target-app display",
+)
+async def app_icon(payload: AppIconRequestBody) -> dict[str, Any] | None:
+    """按 locator 顺序解析应用图标；全部失败返回 null（面板回退通用图标）。"""
+    from fastapi.responses import JSONResponse
+
+    for locator in payload.locators:
+        kind = locator.kind.strip()
+        value = locator.value.strip()
+        if kind not in ("windows-executable-path", "windows-aumid", "darwin-bundle-id"):
+            continue
+        if kind == "darwin-bundle-id":
+            continue  # macOS 图标走平台原生实现（未接线前回退）
+        cache_key = f"{kind}:{value.lower()}"
+        if cache_key in _ICON_CACHE:
+            cached = _ICON_CACHE[cache_key]
+        else:
+            if kind == "windows-executable-path":
+                from pathlib import Path as _Path
+
+                candidate = _Path(value)
+                if not candidate.is_absolute() or not candidate.is_file():
+                    _ICON_CACHE[cache_key] = None
+                    continue
+            data = await asyncio.to_thread(_read_icon_via_powershell, kind, value)
+            if len(_ICON_CACHE) >= _ICON_CACHE_LIMIT:
+                _ICON_CACHE.pop(next(iter(_ICON_CACHE)))
+            _ICON_CACHE[cache_key] = data
+            cached = data
+        if cached:
+            return {"iconDataUrl": f"data:image/png;base64,{cached}"}
+    return JSONResponse(content=None)

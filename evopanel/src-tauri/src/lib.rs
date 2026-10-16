@@ -46,8 +46,10 @@ pub fn run() {
             // 在 Moved 里 SetWindowPos 会重入拖动循环，把整个客户端卡死。
             if let WindowEvent::Moved(_) | WindowEvent::Resized(_) = event {
                 if window.label() == "main" {
-                    commands::browser_embed::reposition_embeds_after_main_move(
+                    let resized = matches!(event, WindowEvent::Resized(_));
+                    commands::browser_embed::on_main_window_geometry(
                         &window.app_handle(),
+                        resized,
                     );
                 }
             }
