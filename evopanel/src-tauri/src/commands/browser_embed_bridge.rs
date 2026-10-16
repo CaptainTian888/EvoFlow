@@ -141,6 +141,42 @@ pub fn embed_guest_init_script(http_port: u16, webview_label: &str) -> String {
   window.__evoEmbedHttpBridgeInstalled = true;
   var PORT = {http_port};
   var LABEL = '{label}';
+  // Keep window.open / target=_blank inside this WebView2. WebView2 otherwise
+  // hosts them in an unmanaged popup ("Web Viewer") that is not the side-panel slot.
+  function sameWindow(url) {{
+    var href = url == null ? '' : String(url);
+    if (!href || href === 'about:blank') return;
+    try {{ location.assign(href); }} catch (_e) {{}}
+  }}
+  try {{
+    Object.defineProperty(window, 'open', {{
+      configurable: false,
+      writable: false,
+      value: function(url) {{ sameWindow(url); return window; }}
+    }});
+  }} catch (_e) {{
+    window.open = function(url) {{ sameWindow(url); return window; }};
+  }}
+  document.addEventListener('click', function(ev) {{
+    var el = ev.target;
+    var a = el && el.closest ? el.closest('a[href]') : null;
+    if (!a) return;
+    var t = (a.getAttribute('target') || '').toLowerCase();
+    if (t === '_blank' || t === '_new' || ev.ctrlKey || ev.metaKey || ev.shiftKey) {{
+      ev.preventDefault();
+      ev.stopPropagation();
+      sameWindow(a.href);
+    }}
+  }}, true);
+  document.addEventListener('auxclick', function(ev) {{
+    if (ev.button !== 1) return;
+    var el = ev.target;
+    var a = el && el.closest ? el.closest('a[href]') : null;
+    if (!a) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    sameWindow(a.href);
+  }}, true);
   function ping(msg) {{
     try {{
       var u = 'http://127.0.0.1:' + PORT + '/browser-cdp/guest-ping?label='

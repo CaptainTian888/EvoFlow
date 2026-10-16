@@ -51,6 +51,9 @@ export async function browserEmbedUpsert(opts: {
   y: number
   width: number
   height: number
+  /** 页面 innerWidth/innerHeight。有值时 Rust 按客户区/视口把 CSS 像素换成物理像素。 */
+  viewportWidth?: number
+  viewportHeight?: number
   /** 早处理器/引擎兜底的估算边界调用必须置 true：面板接管后估算值不得移动窗口。 */
   respectManagedBounds?: boolean
 }): Promise<BrowserEmbedInfo | null> {
@@ -70,6 +73,8 @@ export async function browserEmbedUpsert(opts: {
       y: opts.y,
       width: opts.width,
       height: opts.height,
+      viewportWidth: opts.viewportWidth ?? null,
+      viewportHeight: opts.viewportHeight ?? null,
       managedOnly: opts.respectManagedBounds === true ? true : null,
     })
   } catch (err) {
@@ -85,6 +90,8 @@ export async function browserEmbedSetBounds(opts: {
   y: number
   width: number
   height: number
+  viewportWidth?: number
+  viewportHeight?: number
 }): Promise<void> {
   if (!isDesktopTauri()) return
   blog(
@@ -98,6 +105,8 @@ export async function browserEmbedSetBounds(opts: {
       y: opts.y,
       width: opts.width,
       height: opts.height,
+      viewportWidth: opts.viewportWidth ?? null,
+      viewportHeight: opts.viewportHeight ?? null,
     })
   } catch {
     // ignore resize races while panel animates

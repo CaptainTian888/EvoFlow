@@ -26,32 +26,50 @@ using System.Runtime.InteropServices;
 public class BDEnum {
   public delegate bool EnumProc(IntPtr hWnd, IntPtr lParam);
   [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr lParam);
+  [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr parent, EnumProc cb, IntPtr lParam);
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT r);
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern int GetWindowText(IntPtr hWnd, StringBuilder sb, int max);
+  [DllImport("user32.dll")] public static extern int GetWindowLong(IntPtr hWnd, int nIndex);
+  [DllImport("user32.dll")] public static extern IntPtr GetParent(IntPtr hWnd);
   public struct RECT { public int L, T, R, B; }
 }
 '@
 $out = @()
+function Describe-Win($h, $tag) {
+  $r = New-Object BDEnum+RECT
+  [BDEnum]::GetWindowRect($h, [ref]$r) | Out-Null
+  if ((($r.R - $r.L) -lt 120) -or (($r.B - $r.T) -lt 80)) { return }
+  $sb = New-Object System.Text.StringBuilder 256
+  [BDEnum]::GetWindowText($h, $sb, 256) | Out-Null
+  $t = $sb.ToString()
+  if ($t.Length -gt 24) { $t = $t.Substring(0, 24) }
+  $style = [BDEnum]::GetWindowLong($h, -16)
+  $child = (($style -band 0x40000000) -ne 0)
+  $parent = [BDEnum]::GetParent($h)
+  $script:out += "$tag hwnd=$h vis=$([BDEnum]::IsWindowVisible($h)) child=$child parent=$parent title='$t' rect=($($r.L),$($r.T),$($r.R),$($r.B)) size=$($r.R-$r.L)x$($r.B-$r.T)"
+}
+$tops = @()
 $cb = {
   param($h, $l)
   $p = 0
   [BDEnum]::GetWindowThreadProcessId($h, [ref]$p) | Out-Null
-  if ($p -eq $args[0]) {
-    $r = New-Object BDEnum+RECT
-    [BDEnum]::GetWindowRect($h, [ref]$r) | Out-Null
-    if ((($r.R - $r.L) -gt 120) -and (($r.B - $r.T) -gt 80)) {
-      $sb = New-Object System.Text.StringBuilder 256
-      [BDEnum]::GetWindowText($h, $sb, 256) | Out-Null
-      $t = $sb.ToString()
-      if ($t.Length -gt 24) { $t = $t.Substring(0, 24) }
-      $script:out += "hwnd=$h vis=$([BDEnum]::IsWindowVisible($h)) title='$t' rect=($($r.L),$($r.T),$($r.R),$($r.B)) size=$($r.R-$r.L)x$($r.B-$r.T)"
-    }
+  if ($p -eq __PID__) {
+    Describe-Win $h 'top'
+    $script:tops += $h
   }
   return $true
 }
-[BDEnum]::EnumWindows($cb, [IntPtr]$args[0]) | Out-Null
+[BDEnum]::EnumWindows($cb, [IntPtr]::Zero) | Out-Null
+foreach ($top in $tops) {
+  $childCb = {
+    param($h, $l)
+    Describe-Win $h 'child'
+    return $true
+  }
+  [BDEnum]::EnumChildWindows($top, $childCb, [IntPtr]::Zero) | Out-Null
+}
 $out
 """
 
@@ -69,15 +87,16 @@ def evoflow_pids() -> list[int]:
     ps = subprocess.run(
         ["powershell", "-NoProfile", "-Command",
          "(Get-Process evoflow -ErrorAction SilentlyContinue).Id"],
-        capture_output=True, text=True, timeout=30,
+        capture_output=True, text=True, timeout=30, encoding="utf-8", errors="replace",
     )
     return [int(x) for x in ps.stdout.split() if x.strip().isdigit()]
 
 
 def enumerate_windows(pid: int) -> list[str]:
+    ps_src = PS_ENUM.replace("__PID__", str(pid))
     ps = subprocess.run(
-        ["powershell", "-NoProfile", "-Command", PS_ENUM, str(pid)],
-        capture_output=True, text=True, timeout=60,
+        ["powershell", "-NoProfile", "-Command", ps_src],
+        capture_output=True, text=True, timeout=60, encoding="utf-8", errors="replace",
     )
     return [ln for ln in ps.stdout.splitlines() if ln.startswith("hwnd=")]
 

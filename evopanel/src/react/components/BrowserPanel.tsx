@@ -618,16 +618,43 @@ function SurfaceTabChipInner({
 
 const SurfaceTabChip = memo(SurfaceTabChipInner)
 
-function readEmbedBounds(el: HTMLElement | null) {
+let lastRegionLogAt = 0
+let lastRegionKey = ''
+let lastCoordsConsoleAt = 0
+let lastCoordsPhase = ''
+
+function readEmbedBounds(el: HTMLElement | null, opts?: { forceRegionLog?: boolean }) {
   if (!el) return null
   const rect = el.getBoundingClientRect()
   if (rect.width < 8 || rect.height < 8) return null
-  return {
-    x: rect.left,
-    y: rect.top,
-    width: rect.width,
-    height: rect.height,
+  // 槽位坐标 = getBoundingClientRect，和主窗口客户区同一套像素。
+  // 不要再乘 devicePixelRatio。实测 dpr=1.75 时 CSS 槽位已是 (894,97 532x706)，
+  // 乘完变成 (1565,169 932x1236)，主客户区只有约 1440x810，窗口被推到主窗口外面。
+  const dpr = window.devicePixelRatio || 1
+  const bounds = {
+    x: Math.round(rect.left),
+    y: Math.round(rect.top),
+    width: Math.round(rect.width),
+    height: Math.round(rect.height),
+    // Rust 用主窗口客户区像素 / 这个视口，把 CSS 槽位换成 SetWindowPos 坐标。
+    viewportWidth: Math.round(window.innerWidth || rect.width),
+    viewportHeight: Math.round(window.innerHeight || rect.height),
   }
+  const key = `${bounds.x},${bounds.y},${bounds.width},${bounds.height}`
+  const now = Date.now()
+  if (opts?.forceRegionLog || key !== lastRegionKey || now - lastRegionLogAt > 500) {
+    lastRegionKey = key
+    lastRegionLogAt = now
+    const screenLeft = Math.round((window.screenX || 0) + rect.left)
+    const screenTop = Math.round((window.screenY || 0) + rect.top)
+    const msg =
+      `[右侧区域] css=(${bounds.x},${bounds.y} ${bounds.width}x${bounds.height}) ` +
+      `screen≈=(${screenLeft},${screenTop} ${bounds.width}x${bounds.height}) ` +
+      `dpr=${dpr} viewport=(${bounds.viewportWidth}x${bounds.viewportHeight})`
+    dbgLog(`[browser-embed] ${msg}`)
+    console.log(msg)
+  }
+  return bounds
 }
 
 async function waitForEmbedBounds(el: HTMLElement | null, timeoutMs = 2400) {
@@ -663,9 +690,17 @@ function BrowserEmbedHost({
   // `syncBounds` identity can drift, but neither should tear down a mount that is
   // already in flight. Only a different thread genuinely needs a fresh mount.
   const mountedThreadRef = useRef('')
+  const readyRef = useRef(false)
 
   const surfaceActiveRef = useRef(surfaceActive)
   surfaceActiveRef.current = surfaceActive
+  const pageUrlRef = useRef(pageUrl)
+  pageUrlRef.current = pageUrl
+  const onReadyRef = useRef(onReady)
+  onReadyRef.current = onReady
+  const onFailedRef = useRef(onFailed)
+  onFailedRef.current = onFailed
+  const syncBoundsRef = useRef<() => Promise<void>>(async () => {})
 
   const syncBounds = useCallback(async () => {
     if (!surfaceActiveRef.current) return
@@ -675,31 +710,32 @@ function BrowserEmbedHost({
     if (!bounds) return
     await browserEmbedSetBounds({ threadId: tid, ...bounds })
   }, [isOpen, threadId])
+  syncBoundsRef.current = syncBounds
 
   useLayoutEffect(() => {
     let cancelled = false
     const tid = String(threadId || '').trim()
-    // Unconditional: this is the only place that proves the embed host actually
-    // mounted, so every early-return path has to be visible.
     dbgLog(
       `[browser-embed] effect enter isOpen=${isOpen} tid=${tid || '(empty)'} ` +
-        `mountedRef=${mountedThreadRef.current || '(empty)'}`,
+        `mountedRef=${mountedThreadRef.current || '(empty)'} ready=${readyRef.current}`,
     )
     if (!isOpen || !tid) {
-      // Use requestAnimationFrame to defer state updates outside of effect body
       requestAnimationFrame(() => {
         if (!cancelled) {
           dbgLog(`[browser-embed] effect idle-reset isOpen=${isOpen} tid=${tid || '(empty)'}`)
           setReady(false)
+          readyRef.current = false
           setError('')
         }
       })
       return
     }
-    // Already mounting (or mounted) for this thread: let the in-flight mount
-    // finish instead of cancelling and restarting it. `mount()` spends up to
-    // ~2.4s waiting for layout, and restarting on every unrelated prop change
-    // means it never gets there.
+    // Already successfully mounted for this thread — do not recreate.
+    if (mountedThreadRef.current === tid && readyRef.current) {
+      dbgLog(`[browser-embed] effect skip (already ready) tid=${tid}`)
+      return
+    }
+    // In-flight for this thread (Strict Mode / short re-entry): let it finish.
     if (mountedThreadRef.current === tid) {
       dbgLog(`[browser-embed] effect skip (already mounting) tid=${tid}`)
       return
@@ -707,50 +743,68 @@ function BrowserEmbedHost({
     mountedThreadRef.current = tid
     dbgLog(`[browser-embed] effect start mount tid=${tid}`)
 
+    const failMount = (message: string, userError: string) => {
+      if (mountedThreadRef.current === tid) mountedThreadRef.current = ''
+      if (cancelled) return
+      setError(userError)
+      onFailedRef.current?.(message)
+    }
+
+    const finishReady = () => {
+      // HWND already exists after upsert — always claim the slot even if this
+      // effect instance was cleaned up (React Strict Mode / prop churn). Leaving
+      // ready=false here is what made the 10s iframe steal the surface while
+      // CDP kept driving the unmanaged popup.
+      setError('')
+      setReady(true)
+      readyRef.current = true
+      onReadyRef.current?.()
+      void syncBoundsRef.current()
+      for (const delay of [300, 1000, 3000]) {
+        window.setTimeout(() => {
+          void syncBoundsRef.current()
+        }, delay)
+      }
+    }
+
     const mount = async () => {
       const supported = await browserEmbedSupported()
-      dbgLog(`[browser-embed] supported=${supported} tid=${tid} pageUrl=${pageUrl || '(none)'}`)
+      const pageUrlNow = pageUrlRef.current
+      dbgLog(`[browser-embed] supported=${supported} tid=${tid} pageUrl=${pageUrlNow || '(none)'}`)
       if (!supported) {
         dbgWarn(`[browser-embed] unsupported in this runtime thread=${tid}`)
-        if (!cancelled) {
-          setError('当前环境不支持内嵌浏览器')
-          onFailed?.('embed unsupported')
-        }
+        failMount('embed unsupported', '当前环境不支持内嵌浏览器')
         return
       }
-      // 面板展开动画期间 slot 会从小变大：等它稳定到合理尺寸再创建原生窗口，
-      // 否则窗口会按动画中间态的小边界创建，缩在面板左上角。
       const settleStart = Date.now()
       while (Date.now() - settleStart < 5000) {
         const b = readEmbedBounds(slotRef.current)
         if (b && b.width >= 320 && b.height >= 220) break
         await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
-        if (cancelled) return
+        if (cancelled && !readyRef.current) {
+          // Cleared latch below in cleanup; abort before creating a HWND.
+          return
+        }
       }
       const bounds = await waitForEmbedBounds(slotRef.current)
       if (!bounds) {
         dbgWarn(`[browser-embed] slot has no layout box yet thread=${tid}`)
-        if (!cancelled) {
-          setError('浏览器区域尚未就绪')
-          onFailed?.('embed bounds unavailable')
-        }
+        failMount('embed bounds unavailable', '浏览器区域尚未就绪')
         return
       }
+      const boundsLogged = readEmbedBounds(slotRef.current, { forceRegionLog: true }) || bounds
       dbgLog(
-        `[browser-embed] upsert thread=${tid} bounds=${JSON.stringify(bounds)} url=${pageUrl || '(none — boot blank, navigate on result)'}`,
+        `[browser-embed] upsert thread=${tid} bounds=${JSON.stringify(boundsLogged)} url=${pageUrlNow || '(none — boot blank, navigate on result)'}`,
       )
       const info = await browserEmbedUpsert({
         threadId: tid,
-        url: pageUrl,
+        url: pageUrlNow,
         ...bounds,
       })
       dbgLog(`[browser-embed] upsert done cdpUrl=${info?.cdpUrl ? 'OK' : 'MISSING'} label=${info?.webviewLabel || '-'}`)
       if (!info?.cdpUrl) {
         dbgWarn(`[browser-embed] upsert returned no cdpUrl thread=${tid} info=${JSON.stringify(info)}`)
-        if (!cancelled) {
-          setError('内嵌浏览器启动失败')
-          onFailed?.('embed upsert failed')
-        }
+        failMount('embed upsert failed', '内嵌浏览器启动失败')
         return
       }
       dbgLog(`[browser-embed] cdp ready thread=${tid} label=${info.webviewLabel}`)
@@ -758,33 +812,24 @@ function BrowserEmbedHost({
       dbgLog(`[browser-embed] cdp register ok=${ok} url=${info.cdpUrl.slice(0, 60)}`)
       if (!ok) {
         dbgWarn(`[browser-embed] cdp register rejected by backend thread=${tid}`)
-        if (!cancelled) {
-          setError('无法注册浏览器 CDP')
-          onFailed?.('embed cdp register failed')
-        }
+        failMount('embed cdp register failed', '无法注册浏览器 CDP')
         return
       }
       dbgLog(`[browser-embed] ready thread=${tid}`)
-      if (!cancelled) {
-        setError('')
-        setReady(true)
-        onReady?.()
-        void syncBounds()
-        // WebView2 刚创建时常不立即接受 resize：分几次强制校正边界，
-        // 防止窗口停在创建瞬间的中间态尺寸（缩在左上角）。
-        for (const delay of [300, 1000, 3000]) {
-          window.setTimeout(() => {
-            if (!cancelled) void syncBounds()
-          }, delay)
-        }
-      }
+      finishReady()
     }
 
     void mount()
     return () => {
       cancelled = true
+      // Drop the "already mounting" latch when ready never arrived, so the next
+      // effect run (Strict Mode remount) can retry instead of skipping forever.
+      if (!readyRef.current && mountedThreadRef.current === tid) {
+        mountedThreadRef.current = ''
+        dbgLog(`[browser-embed] effect cleanup cleared mount latch tid=${tid}`)
+      }
     }
-  }, [isOpen, threadId, pageUrl, onReady, onFailed, syncBounds])
+  }, [isOpen, threadId])
 
   // Once the webview exists, agent navigations only need to re-point the existing
   // window — `browser_embed_upsert` detects the live label and navigates in place.
@@ -848,6 +893,65 @@ function BrowserEmbedHost({
     }
   }, [isOpen, ready, surfaceActive, syncBounds])
 
+  // Rust 回传 WebView 实际屏幕矩形 → 控制台对照右侧区域
+  useEffect(() => {
+    if (!isOpen) return
+    let cancelled = false
+    let unlisten: (() => void) | undefined
+    void (async () => {
+      try {
+        const { listen } = await import('@tauri-apps/api/event')
+        if (cancelled) return
+        unlisten = await listen<{
+          phase?: string
+          kind?: string
+          slotClient?: { x: number; y: number; w: number; h: number }
+          webviewScreen?: { x: number; y: number; w: number; h: number }
+          expectScreen?: { x: number; y: number; w: number; h: number }
+          delta?: { x: number; y: number }
+          matchesSlot?: boolean
+          fitsClient?: boolean
+        }>('browser-embed-coords', (ev) => {
+          const p = ev.payload || {}
+          const phase = String(p.phase || '')
+          const now = Date.now()
+          // 拖动主窗口时 follow 很密，控制台节流；贴位/创建立刻打
+          if (
+            phase.startsWith('follow') &&
+            now - lastCoordsConsoleAt < 200 &&
+            lastCoordsPhase === phase
+          ) {
+            return
+          }
+          lastCoordsConsoleAt = now
+          lastCoordsPhase = phase
+          const slot = p.slotClient
+          const wv = p.webviewScreen
+          const exp = p.expectScreen
+          const slotMsg = slot
+            ? `[右侧区域→传给WebView] client=(${Math.round(slot.x)},${Math.round(slot.y)} ${Math.round(slot.w)}x${Math.round(slot.h)})`
+            : '[右侧区域→传给WebView] (无)'
+          const wvMsg = wv
+            ? `[WebView实际] screen=(${Math.round(wv.x)},${Math.round(wv.y)} ${Math.round(wv.w)}x${Math.round(wv.h)}) kind=${p.kind || '?'} phase=${phase || '?'}`
+            : '[WebView实际] (读不到)'
+          const align =
+            exp && wv
+              ? ` delta=(${Math.round(p.delta?.x || 0)},${Math.round(p.delta?.y || 0)}) matches=${p.matchesSlot} fits=${p.fitsClient}`
+              : ''
+          console.log(slotMsg)
+          console.log(wvMsg + align)
+          dbgLog(`[browser-embed] ${slotMsg} | ${wvMsg}${align}`)
+        })
+      } catch (err) {
+        console.warn('[browser-embed] coords listen failed', err)
+      }
+    })()
+    return () => {
+      cancelled = true
+      unlisten?.()
+    }
+  }, [isOpen])
+
   useEffect(() => {
     if (isOpen) return
     const tid = String(threadId || '').trim()
@@ -856,6 +960,7 @@ function BrowserEmbedHost({
     void clearBrowserEmbedCdp(tid)
     // Panel is gone: allow a future mount for this thread to run again.
     mountedThreadRef.current = ''
+    readyRef.current = false
     // Defer state update to avoid cascading renders
     requestAnimationFrame(() => {
       setReady(false)
@@ -1594,17 +1699,11 @@ export const BrowserPanel = memo(function BrowserPanel({
   const showStreamPreviewLabel = showSharedBrowserHint && hasStream
   const zoomVisible = hasStream && !useEmbeddedBrowser
 
-  // 右栏外壳已迁到 RightStagePanel；本组件只负责浏览器内容 + 引擎内网页标签。
+  // 内嵌 WebView2 可用时不要再铺一层 iframe。iframe 只显示打开时的地址
+  // （例如百度首页），CDP 仍驱动槽外的原生窗口去搜索，两扇窗各看各的。
   useEffect(() => {
-    if (!isOpen) return
-    if (!preferEmbeddedBrowser || embedReady || embedFailed) return
-    const t = window.setTimeout(() => {
-      dbgWarn('[browser-panel] embed not ready in 10s — switching to iframe fallback')
-      setIframeFallback(true)
-      setIframeSrc((prev) => prev || effectivePageUrl || '')
-    }, 10000)
-    return () => window.clearTimeout(t)
-  }, [isOpen, preferEmbeddedBrowser, embedReady, embedFailed, effectivePageUrl, embedThreadId])
+    if (preferEmbeddedBrowser && iframeFallback) setIframeFallback(false)
+  }, [preferEmbeddedBrowser, iframeFallback])
 
   const engineTabs = useMemo(() => {
     if (!hasStream) return [] as SurfaceTabRender[]
@@ -1753,7 +1852,17 @@ export const BrowserPanel = memo(function BrowserPanel({
         ) : null}
         {!(iframeSrc || effectivePageUrl) ? (
           <BrowserEmptyState />
-        ) : iframeFallback || !embedSupported || (!effectiveThreadId && !hasStream) ? (
+        ) : preferEmbeddedBrowser && embedThreadId && !embedFailed ? (
+          <BrowserEmbedHost
+            isOpen={isOpen}
+            surfaceActive={surfaceActive}
+            threadId={embedThreadId}
+            pageUrl={effectivePageUrl}
+            onReady={handleEmbedReady}
+            onFailed={handleEmbedFailed}
+          />
+        ) : !preferEmbeddedBrowser &&
+          (iframeFallback || !embedSupported || (!effectiveThreadId && !hasStream)) ? (
             <div className="browser-panel-iframe-host">
               <iframe
                 key={`iframe-${iframeNonce}-${iframeSrc || effectivePageUrl}`}
@@ -1812,15 +1921,6 @@ export const BrowserPanel = memo(function BrowserPanel({
               disabled={preferEmbeddedBrowser}
             />
           </div>
-        ) : preferEmbeddedBrowser && embedThreadId && !embedFailed ? (
-          <BrowserEmbedHost
-            isOpen={isOpen}
-            surfaceActive={surfaceActive}
-            threadId={embedThreadId}
-            pageUrl={effectivePageUrl}
-            onReady={handleEmbedReady}
-            onFailed={handleEmbedFailed}
-          />
         ) : (
           <BrowserEmptyState />
         )}

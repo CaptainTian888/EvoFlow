@@ -33,7 +33,7 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Manager, WebviewWindow};
 use webview2_com::{
     CallDevToolsProtocolMethodCompletedHandler, CoTaskMemPWSTR, CompletedClosure,
-    DevToolsProtocolEventReceivedEventHandler,
+    DevToolsProtocolEventReceivedEventHandler, NewWindowRequestedEventHandler,
 };
 use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2;
 // The WebView2 COM bindings are generated against `windows-core`; the
@@ -99,6 +99,64 @@ fn embed_debug_port(label: &str) -> Option<u16> {
         .and_then(|g| g.get(label).copied())
 }
 
+/// Swallow `window.open` / `target=_blank` into the existing embed WebView2.
+///
+/// Tauri's `on_new_window(Deny)` only sets `Handled` via a deferred wry
+/// callback. WebView2's unmanaged default host ("Web Viewer") can still appear
+/// if Handled/NewWindow are unset when the event settles. Registering a
+/// synchronous COM handler that marks Handled and navigates the opener keeps
+/// every popup inside the right-panel embed.
+fn install_same_window_popup_takeover(webview: &ICoreWebView2, label: &str) {
+    let label_owned = label.to_string();
+    let handler = NewWindowRequestedEventHandler::create(Box::new(move |sender, args| {
+        let Some(args) = args else {
+            return Ok(());
+        };
+        let mut uri_raw = PWSTR::null();
+        let uri = if unsafe { args.Uri(&mut uri_raw) }.is_ok() {
+            CoTaskMemPWSTR::from(uri_raw).to_string()
+        } else {
+            String::new()
+        };
+        crate::commands::browser_cdp_server::log_line(&format!(
+            "[browser-cdp] NewWindowRequested same-window takeover label={label_owned} uri={uri}"
+        ));
+        // Handled without NewWindow: no floating host. Navigate the opener so
+        // the URL still loads in the embed (same pattern as WinForms OPENSAME).
+        if let Err(e) = unsafe { args.SetHandled(true) } {
+            crate::commands::browser_cdp_server::log_line(&format!(
+                "[browser-cdp] NewWindowRequested SetHandled failed: {e}"
+            ));
+        }
+        if !uri.is_empty() {
+            if let Some(wv) = sender.as_ref() {
+                let uri_pw = CoTaskMemPWSTR::from(uri.as_str());
+                if let Err(e) = unsafe { wv.Navigate(*uri_pw.as_ref().as_pcwstr()) } {
+                    crate::commands::browser_cdp_server::log_line(&format!(
+                        "[browser-cdp] NewWindowRequested Navigate failed: {e}"
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }));
+    let mut token = 0i64;
+    match unsafe { webview.add_NewWindowRequested(&handler, &mut token) } {
+        Ok(()) => {
+            // Handler must outlive the webview; leak deliberately (panel lifetime).
+            std::mem::forget(handler);
+            crate::commands::browser_cdp_server::log_line(&format!(
+                "[browser-cdp] same-window popup takeover installed label={label} token={token}"
+            ));
+        }
+        Err(e) => {
+            crate::commands::browser_cdp_server::log_line(&format!(
+                "[browser-cdp] add_NewWindowRequested failed label={label}: {e}"
+            ));
+        }
+    }
+}
+
 /// Capture CoreWebView2 right after embed create. Must pump on the main thread.
 pub fn capture_core_webview2(app: &AppHandle, window: &WebviewWindow, label: &str) {
     let (tx, rx) = std::sync::mpsc::sync_channel::<bool>(1);
@@ -113,6 +171,7 @@ pub fn capture_core_webview2(app: &AppHandle, window: &WebviewWindow, label: &st
                 flag.store(true, Ordering::SeqCst);
                 match unsafe { platform.controller().CoreWebView2() } {
                     Ok(wv) => {
+                        install_same_window_popup_takeover(&wv, &label_cb);
                         if let Ok(mut g) = core_webview_store().lock() {
                             g.insert(label_cb.clone(), SendableCoreWebView(wv));
                         }
@@ -311,6 +370,45 @@ fn call_cdp_locked(
             .and_then(|v| v.get("url").and_then(|u| u.as_str()).map(str::to_string))
             .unwrap_or_else(|| "about:blank".to_string());
         let outcome = native_navigate(app, &window, label, &url);
+        write_cdp_trace(&trace_path, label, method, &outcome);
+        return outcome;
+    }
+    // Single-surface embed: never let CDP spawn a second target/window.
+    // Playwright / browser-use `Target.createTarget` becomes navigate-in-place.
+    if method == "Target.createTarget" {
+        let url = serde_json::from_str::<Value>(params_json)
+            .ok()
+            .and_then(|v| v.get("url").and_then(|u| u.as_str()).map(str::to_string))
+            .unwrap_or_default();
+        if !url.is_empty() {
+            let nav = native_navigate(app, &window, label, &url);
+            if let Err(e) = &nav {
+                crate::commands::browser_cdp_server::log_line(&format!(
+                    "[browser-cdp] Target.createTarget→navigate failed: {e}"
+                ));
+            }
+        }
+        let target_id = format!("evoflow-embed-{label}");
+        let outcome = Ok(json!({ "targetId": target_id }).to_string());
+        write_cdp_trace(&trace_path, label, method, &outcome);
+        return outcome;
+    }
+    if method == "Target.getTargets" {
+        let url = app
+            .try_state::<crate::commands::browser_embed_bridge::EmbedBridge>()
+            .and_then(|b| b.cached_url(label))
+            .unwrap_or_else(|| "about:blank".to_string());
+        let outcome = Ok(json!({
+            "targetInfos": [{
+                "targetId": format!("evoflow-embed-{label}"),
+                "type": "page",
+                "title": "EvoFlow Browser",
+                "url": url,
+                "attached": true,
+                "canAccessOpener": false
+            }]
+        })
+        .to_string());
         write_cdp_trace(&trace_path, label, method, &outcome);
         return outcome;
     }
@@ -1052,7 +1150,10 @@ pub fn browser_cdp_command(
             None => false,
         };
         if !window_ok {
-            let can_ensure = matches!(method.as_str(), "Page.navigate" | "Page.reload");
+            let can_ensure = matches!(
+                method.as_str(),
+                "Page.navigate" | "Page.reload" | "Target.createTarget"
+            );
             if !can_ensure {
                 crate::commands::browser_cdp_server::log_line(&format!(
                     "[browser-cdp] webview not ready for {method}; skip ensure (navigate first)"
@@ -1086,7 +1187,11 @@ pub fn browser_cdp_command(
     // lock across evaluate storms used to starve navigate and HTTP workers.
     let unlocked = matches!(
         method.as_str(),
-        "Page.navigate" | "Page.reload" | "Runtime.evaluate"
+        "Page.navigate"
+            | "Page.reload"
+            | "Runtime.evaluate"
+            | "Target.createTarget"
+            | "Target.getTargets"
     );
     crate::commands::browser_cdp_server::log_line("[browser-cdp] about to call_cdp");
     let body = if unlocked {

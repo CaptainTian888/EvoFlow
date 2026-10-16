@@ -74,9 +74,12 @@ if (isTauri) {
             if (!String(window.location.hash || '').includes('/chat')) {
               navigate('/chat')
             }
-            const vw = Math.max(480, Math.floor((window.innerWidth || 1280) * 0.45))
-            const vh = Math.max(360, Math.floor((window.innerHeight || 800) - 96))
-            const vx = Math.max(0, Math.floor((window.innerWidth || 1280) - vw - 12))
+            const iw = window.innerWidth || 1280
+            const ih = window.innerHeight || 800
+            // CSS 像素。Rust 用客户区 / viewport 换算，这里不要再乘 devicePixelRatio。
+            const vw = Math.max(480, Math.floor(iw * 0.45))
+            const vh = Math.max(360, Math.floor(ih - 96))
+            const vx = Math.max(0, Math.floor(iw - vw - 12))
             const vy = 64
             blog(
               'info',
@@ -90,6 +93,8 @@ if (isTauri) {
               y: vy,
               width: vw,
               height: vh,
+              viewportWidth: iw,
+              viewportHeight: ih,
               // 估算边界：面板接管后不得移动窗口（Rust managed_only 守卫）
               respectManagedBounds: true,
             })
@@ -729,9 +734,12 @@ async function boot() {
               // blocked on ensure_webview_for_cdp; a 0×0 slot would miss the window.
               // Upsert with approximate right-half bounds now — BrowserPanel will
               // reposition the same HWND when it mounts.
-              const vw = Math.max(480, Math.floor((window.innerWidth || 1280) * 0.45))
-              const vh = Math.max(360, Math.floor((window.innerHeight || 800) - 96))
-              const vx = Math.max(0, Math.floor((window.innerWidth || 1280) - vw - 12))
+              const iw = window.innerWidth || 1280
+              const ih = window.innerHeight || 800
+              // CSS 像素。Rust 用客户区 / viewport 换算，这里不要再乘 devicePixelRatio。
+              const vw = Math.max(480, Math.floor(iw * 0.45))
+              const vh = Math.max(360, Math.floor(ih - 96))
+              const vx = Math.max(0, Math.floor(iw - vw - 12))
               const vy = 64
               blog(
                 'info',
@@ -745,6 +753,8 @@ async function boot() {
                 y: vy,
                 width: vw,
                 height: vh,
+                viewportWidth: iw,
+                viewportHeight: ih,
                 // 估算边界：面板接管后不得移动窗口（Rust managed_only 守卫）
                 respectManagedBounds: true,
               })

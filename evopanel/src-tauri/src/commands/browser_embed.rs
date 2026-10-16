@@ -16,7 +16,7 @@ use serde::Serialize;
 use serde_json::Value;
 use tauri::{Emitter, Manager, State, WebviewWindow};
 #[cfg(target_os = "windows")]
-use tauri::{LogicalPosition, LogicalSize};
+
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
@@ -39,6 +39,11 @@ pub static EMBED_LAST_BOUNDS: std::sync::LazyLock<std::sync::Mutex<HashMap<Strin
 pub static EMBED_LAST_WRITER: std::sync::LazyLock<std::sync::Mutex<HashMap<String, String>>> =
     std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
 
+/// 同一个 label 只能有一次 WebView2 build。估算路径和面板路径同时建，
+/// 先完成的估算矩形会把槽位盖掉。
+static EMBED_CREATE_LOCK: std::sync::LazyLock<Mutex<()>> =
+    std::sync::LazyLock::new(|| Mutex::new(()));
+
 fn note_writer(label: &str, writer: &str) {
     if let Ok(mut w) = EMBED_LAST_WRITER.lock() {
         w.insert(label.to_string(), format!("{writer}@{}", chrono_now_secs()));
@@ -55,11 +60,13 @@ fn chrono_now_secs() -> u64 {
 /// 主窗口移动/缩放后，把所有 embed 窗口重新贴回面板槽位（ZCode "所见即所控" 对齐）。
 pub fn reposition_embeds_after_main_move(app: &tauri::AppHandle) {
     let Some(parent) = app.get_webview_window("main") else { return };
-    let scale = parent.scale_factor().unwrap_or(1.0).max(0.1);
+    if parent.is_minimized().unwrap_or(false) {
+        return;
+    }
     let Ok(phys) = parent.inner_size() else { return };
-    // 主窗口内容区（逻辑 px）——client 坐标系的上界。
-    let iw = (phys.width as f64) / scale;
-    let ih = (phys.height as f64) / scale;
+    // 主窗口内容区（物理 px）——client 坐标系的上界（前端上报的就是物理 px）。
+    let iw = phys.width as f64;
+    let ih = phys.height as f64;
 
     let mut untracked: Vec<(String, f64, f64, f64, f64)> = Vec::new();
     {
@@ -71,14 +78,10 @@ pub fn reposition_embeds_after_main_move(app: &tauri::AppHandle) {
         for (label, (x, y, w, h)) in map.iter() {
             let Some(window) = app.get_webview_window(label) else { continue };
             let (cx, cy, cw, ch) = clamp_rect(*x, *y, *w, *h, iw, ih);
-            match client_to_screen(app, cx, cy) {
-                Ok((sx, sy)) => {
-                    let _ = window.set_position(LogicalPosition::new(sx, sy));
-                    let _ = window.set_size(LogicalSize::new(cw.max(120.0), ch.max(80.0)));
-                    note_writer(label, "follow-main-move");
-                }
-                Err(_) => continue,
-            }
+            let _ = nest_embed_into_main(&window, &parent);
+            let _ = place_embed_client(&window, &parent, cx, cy, cw, ch);
+            log_region_diag("follow-main-move", label, &parent, &window, (cx, cy, cw, ch));
+            note_writer(label, "follow-main-move");
         }
         // 未登记的（早路径/引擎兜底创建后面板从未接管）：可见的贴到主窗口右侧
         // 停靠位并登记；隐藏的保持隐藏（面板不开就不显示），仅登记边界。
@@ -93,17 +96,13 @@ pub fn reposition_embeds_after_main_move(app: &tauri::AppHandle) {
             let x = (iw - w - 12.0).max(0.0);
             let y = 64.0f64.min((ih - h).max(0.0));
             if visible {
-                match client_to_screen(app, x, y) {
-                    Ok((sx, sy)) => {
-                        let _ = window.set_position(LogicalPosition::new(sx, sy));
-                        let _ = window.set_size(LogicalSize::new(w, h));
-                        browser_cdp_server::log_line(&format!(
-                            "[browser-embed] reposition untracked embed: docked ({x:.0},{y:.0}) {w:.0}x{h:.0}"
-                        ));
-                        untracked.push((label, x, y, w, h));
-                    }
-                    Err(_) => continue,
-                }
+                let _ = nest_embed_into_main(&window, &parent);
+                let _ = place_embed_client(&window, &parent, x, y, w, h);
+                log_region_diag("reposition-untracked", &label, &parent, &window, (x, y, w, h));
+                browser_cdp_server::log_line(&format!(
+                    "[browser-embed] reposition untracked embed: docked ({x:.0},{y:.0}) {w:.0}x{h:.0}"
+                ));
+                untracked.push((label, x, y, w, h));
             } else {
                 browser_cdp_server::log_line(&format!(
                     "[browser-embed] untracked embed hidden: record bounds only ({x:.0},{y:.0}) {w:.0}x{h:.0}"
@@ -146,7 +145,6 @@ fn embed_watchdog_tick(app: &tauri::AppHandle) {
     if parent.is_minimized().unwrap_or(false) {
         return;
     }
-    let scale = parent.scale_factor().unwrap_or(1.0).max(0.1);
     let bounds_map = match EMBED_LAST_BOUNDS.lock() {
         Ok(m) => m,
         Err(_) => return,
@@ -164,20 +162,25 @@ fn embed_watchdog_tick(app: &tauri::AppHandle) {
             .unwrap_or_else(|| "(unknown)".into());
         match (visible, expected) {
             (true, Some((ex, ey, ew, eh))) => {
-                // 不变量：可见窗口必须贴合登记槽位（屏幕坐标差 > 12px 即漂移）
-                let (sx, sy) = match client_to_screen(app, ex, ey) {
-                    Ok(v) => v,
+                // 不变量：可见窗口必须贴合登记槽位。
+                // 实测：Tauri 对 WS_CHILD 的 outer_position() 也返回屏幕坐标
+                // （REGION 诊断：actual_screen == origin + slot_client，delta=0），
+                // 因此检测统一用屏幕坐标：expected_screen = client_origin + 槽位。
+                // 之前按父相对比较导致 358px 恒定误差 → ANOMALY 每 2 秒误报。
+                let (sx, sy) = match client_origin_physical(&parent) {
+                    Ok((ox, oy)) => (ox as f64 + ex, oy as f64 + ey),
                     Err(_) => continue,
                 };
                 if let Ok(p) = window.outer_position() {
-                    let px = (p.x as f64) / scale;
-                    let py = (p.y as f64) / scale;
+                    let px = p.x as f64;
+                    let py = p.y as f64;
                     if (px - sx).abs() > 12.0 || (py - sy).abs() > 12.0 {
                         browser_cdp_server::log_line(&format!(
-                            "[browser-embed] ANOMALY: visible window off slot —                              expected=({sx:.0},{sy:.0}) actual=({px:.0},{py:.0})                              last_writer={writer} — snapping back"
+                            "[browser-embed] ANOMALY: visible window off slot — expected=({sx:.0},{sy:.0}) actual=({px:.0},{py:.0}) last_writer={writer} — snapping back"
                         ));
-                        let _ = window.set_position(LogicalPosition::new(sx, sy));
-                        let _ = window.set_size(LogicalSize::new(ew.max(120.0), eh.max(80.0)));
+                        let _ = nest_embed_into_main(&window, &parent);
+                        let _ = place_embed_client(&window, &parent, ex, ey, ew, eh);
+                        log_region_diag("watchdog-snap", &label, &parent, &window, (ex, ey, ew, eh));
                     }
                 }
             }
@@ -353,6 +356,9 @@ const CDP_WS_PATH: &str = "/devtools/browser";
 /// implicit target and `CallDevToolsProtocolMethod` needs no session routing, so
 /// the id only has to satisfy Playwright's "attach returned a session" check.
 const SYNTHETIC_SESSION_ID: &str = "evopanel-embedded-target";
+
+/// Single synthetic page target for the embed (no second HWND / "Web Viewer").
+const SYNTHETIC_TARGET_ID: &str = "evoflow-embed-target";
 
 /// Serve one WebSocket client: perform the HTTP upgrade by hand (no ws crate in
 /// the dependency set), then pump frames in both directions.
@@ -566,12 +572,33 @@ fn handle_client_frame(app: &tauri::AppHandle, label: &str, raw: &str) -> Option
     ));
 
     // WebView2 exposes a single implicit target: `CallDevToolsProtocolMethod`
-    // always acts on it, and there is no Target domain to attach to. So the
-    // Target calls Playwright makes while wiring up are answered locally —
+    // always acts on it. Answer Target.* locally so clients never spawn a
+    // second page/window (unmanaged WebView2 "Web Viewer" host).
     // `attachToTarget` still has to hand back a session id, because
     // `new_cdp_session` refuses to continue without one.
     let outcome: Result<serde_json::Value, serde_json::Value> = match method {
         "Target.attachToTarget" => Ok(serde_json::json!({ "sessionId": SYNTHETIC_SESSION_ID })),
+        "Target.createTarget" => match browser_cdp::call_cdp(app, label, method, &params_json) {
+            Ok(body) => Ok(serde_json::from_str(&body).unwrap_or_else(|_| {
+                serde_json::json!({ "targetId": SYNTHETIC_TARGET_ID })
+            })),
+            Err(message) => Err(serde_json::json!({ "code": -32000, "message": message })),
+        },
+        "Target.getTargets" => match browser_cdp::call_cdp(app, label, method, &params_json) {
+            Ok(body) => Ok(serde_json::from_str(&body).unwrap_or_else(|_| {
+                serde_json::json!({
+                    "targetInfos": [{
+                        "targetId": SYNTHETIC_TARGET_ID,
+                        "type": "page",
+                        "title": "EvoFlow Browser",
+                        "url": "about:blank",
+                        "attached": true,
+                        "canAccessOpener": false
+                    }]
+                })
+            })),
+            Err(message) => Err(serde_json::json!({ "code": -32000, "message": message })),
+        },
         m if m.starts_with("Target.") => Ok(serde_json::json!({})),
         "" => Ok(serde_json::json!({})),
         m => match browser_cdp::call_cdp(app, label, m, &params_json) {
@@ -824,6 +851,231 @@ async fn start_broker(app: tauri::AppHandle) -> Result<String, String> {
 }
 
 #[cfg(target_os = "windows")]
+fn embed_is_ws_child(embed: &WebviewWindow) -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{GetWindowLongW, GWL_STYLE, WS_CHILD};
+    let Ok(hwnd) = embed.hwnd() else {
+        return false;
+    };
+    unsafe { (GetWindowLongW(hwnd, GWL_STYLE) as u32) & WS_CHILD.0 != 0 }
+}
+
+/// Slot vs HWND geometry — one line you can grep: `[browser-embed] REGION`.
+/// Answers: where is the slot, where is the native window, inside or outside.
+#[cfg(target_os = "windows")]
+fn log_region_diag(
+    phase: &str,
+    label: &str,
+    main: &WebviewWindow,
+    embed: &WebviewWindow,
+    slot_client: (f64, f64, f64, f64),
+) {
+    let (sx, sy, sw, sh) = slot_client;
+    let (ox, oy) = client_origin_physical(main).unwrap_or((0, 0));
+    let expect_screen_x = ox as f64 + sx;
+    let expect_screen_y = oy as f64 + sy;
+    let kind = if embed_is_ws_child(embed) {
+        "WS_CHILD"
+    } else {
+        "WS_POPUP/TOP"
+    };
+    let (ax, ay) = embed
+        .outer_position()
+        .map(|p| (p.x as f64, p.y as f64))
+        .unwrap_or((f64::NAN, f64::NAN));
+    let (aw, ah) = embed
+        .outer_size()
+        .map(|s| (s.width as f64, s.height as f64))
+        .unwrap_or((0.0, 0.0));
+    let (cw, ch) = main
+        .inner_size()
+        .map(|s| (s.width as f64, s.height as f64))
+        .unwrap_or((0.0, 0.0));
+    let dx = ax - expect_screen_x;
+    let dy = ay - expect_screen_y;
+    let matches_slot = dx.abs() <= 12.0
+        && dy.abs() <= 12.0
+        && (aw - sw).abs() <= 24.0
+        && (ah - sh).abs() <= 24.0;
+    let fits_client = sx >= -1.0
+        && sy >= -1.0
+        && sx + sw <= cw + 2.0
+        && sy + sh <= ch + 2.0
+        && ax >= ox as f64 - 2.0
+        && ay >= oy as f64 - 2.0
+        && ax + aw <= ox as f64 + cw + 8.0
+        && ay + ah <= oy as f64 + ch + 8.0;
+    browser_cdp_server::log_line(&format!(
+        "[browser-embed] REGION phase={phase} label={label} kind={kind} \
+         slot_client=({sx:.0},{sy:.0} {sw:.0}x{sh:.0}) \
+         main_client=({cw:.0}x{ch:.0}) origin_screen=({ox},{oy}) \
+         expect_screen=({expect_screen_x:.0},{expect_screen_y:.0} {sw:.0}x{sh:.0}) \
+         actual_screen=({ax:.0},{ay:.0} {aw:.0}x{ah:.0}) \
+         delta=({dx:.0},{dy:.0}) matches_slot={matches_slot} fits_client={fits_client}"
+    ));
+    // 推到前端控制台：右侧槽位 vs WebView 实际屏幕矩形
+    let _ = main.emit(
+        "browser-embed-coords",
+        serde_json::json!({
+            "phase": phase,
+            "label": label,
+            "kind": kind,
+            "slotClient": { "x": sx, "y": sy, "w": sw, "h": sh },
+            "webviewScreen": { "x": ax, "y": ay, "w": aw, "h": ah },
+            "expectScreen": { "x": expect_screen_x, "y": expect_screen_y, "w": sw, "h": sh },
+            "mainClient": { "w": cw, "h": ch },
+            "originScreen": { "x": ox, "y": oy },
+            "delta": { "x": dx, "y": dy },
+            "matchesSlot": matches_slot,
+            "fitsClient": fits_client,
+        }),
+    );
+}
+
+/// Turn the embed into a real child of the main frame.
+///
+/// `WebviewWindowBuilder::parent` on Windows only sets an owner, so the browser
+/// stays a `WS_POPUP` with a caption and floats above the slot. `WS_CHILD` is
+/// clipped to the main client area and moves with it.
+#[cfg(target_os = "windows")]
+fn nest_embed_into_main(embed: &WebviewWindow, main: &WebviewWindow) -> Result<(), String> {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongW, SetParent, SetWindowLongW, SetWindowPos, GWL_STYLE, HWND_TOP,
+        SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, WS_CAPTION, WS_CHILD, WS_POPUP,
+        WS_SYSMENU, WS_THICKFRAME,
+    };
+    let child = embed.hwnd().map_err(|e| format!("embed hwnd: {e}"))?;
+    let owner = main.hwnd().map_err(|e| format!("main hwnd: {e}"))?;
+    unsafe {
+        let style = GetWindowLongW(child, GWL_STYLE) as u32;
+        if style & WS_CHILD.0 == 0 {
+            let stripped =
+                (style & !(WS_POPUP.0 | WS_CAPTION.0 | WS_THICKFRAME.0 | WS_SYSMENU.0)) | WS_CHILD.0;
+            SetWindowLongW(child, GWL_STYLE, stripped as i32);
+            SetParent(child, Some(owner)).map_err(|e| format!("SetParent failed: {e}"))?;
+            let _ = SetWindowPos(
+                child,
+                Some(HWND_TOP),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+            );
+            browser_cdp_server::log_line(&format!(
+                "[browser-embed] nested popup into main client hwnd={child:?} parent={owner:?}"
+            ));
+        } else {
+            let _ = SetWindowPos(
+                child,
+                Some(HWND_TOP),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            );
+        }
+    }
+    Ok(())
+}
+
+/// CSS 像素 → 主窗口客户区像素（和 GetClientRect / SetWindowPos 同一套）。
+///
+/// 页面 `getBoundingClientRect` 和 `innerWidth` 是 CSS 像素。
+/// `viewport_w/h` 为 0 时，传入坐标已经是客户区像素（引擎兜底、看门狗重贴）。
+#[cfg(target_os = "windows")]
+fn to_client_px(
+    main: &WebviewWindow,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    viewport_w: f64,
+    viewport_h: f64,
+) -> (f64, f64, f64, f64) {
+    let (iw, ih) = main
+        .inner_size()
+        .map(|s| (s.width as f64, s.height as f64))
+        .unwrap_or((0.0, 0.0));
+    let (x, y, w, h) = if viewport_w > 8.0 && viewport_h > 8.0 && iw > 8.0 && ih > 8.0 {
+        let sx = iw / viewport_w;
+        let sy = ih / viewport_h;
+        let (px, py, pw, ph) = (x * sx, y * sy, w * sx, h * sy);
+        browser_cdp_server::log_line(&format!(
+            "[browser-embed] SCALE css=({x:.0},{y:.0} {w:.0}x{h:.0}) \
+             viewport=({viewport_w:.0}x{viewport_h:.0}) client=({iw:.0}x{ih:.0}) \
+             scale=({sx:.3},{sy:.3}) physical=({px:.0},{py:.0} {pw:.0}x{ph:.0})"
+        ));
+        (px, py, pw, ph)
+    } else {
+        (x, y, w, h)
+    };
+    if iw > 8.0 && ih > 8.0 {
+        clamp_rect(x, y, w, h, iw, ih)
+    } else {
+        (x, y, w.max(120.0), h.max(80.0))
+    }
+}
+
+/// Place the embed into the panel slot.
+///
+/// `x`/`y`/`w`/`h` are main-client px (already scaled). WS_CHILD uses those as
+/// parent-relative; if nesting failed and the HWND is still a popup, convert to screen.
+/// Raw SetWindowPos: tauri `set_size` adds a decoration offset and can miss the slot.
+#[cfg(target_os = "windows")]
+fn place_embed_client(
+    window: &WebviewWindow,
+    main: &WebviewWindow,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+) -> Result<(), String> {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SetWindowPos, HWND_TOP, SWP_NOACTIVATE, SWP_SHOWWINDOW,
+    };
+    let (iw, ih) = main
+        .inner_size()
+        .map(|s| (s.width as f64, s.height as f64))
+        .unwrap_or((0.0, 0.0));
+    let (x, y, w, h) = if iw > 8.0 && ih > 8.0 {
+        clamp_rect(x, y, w, h, iw, ih)
+    } else {
+        (x, y, w.max(120.0), h.max(80.0))
+    };
+    let hwnd = window.hwnd().map_err(|e| format!("embed hwnd: {e}"))?;
+    let (px, py) = if embed_is_ws_child(window) {
+        (x as i32, y as i32)
+    } else {
+        let (ox, oy) = client_origin_physical(main)?;
+        browser_cdp_server::log_line(&format!(
+            "[browser-embed] place FALLBACK screen coords (not WS_CHILD) \
+             slot_client=({x:.0},{y:.0}) + origin=({ox},{oy})"
+        ));
+        (ox + x as i32, oy + y as i32)
+    };
+    // 必须 SHOW：子 WebView2 一直 hidden 时 guest poll / CDP 会卡死。
+    // 槽位已在 place 前登记进 EMBED_LAST_BOUNDS，看门狗不会再报「无 bounds」。
+    unsafe {
+        SetWindowPos(
+            hwnd,
+            Some(HWND_TOP),
+            px,
+            py,
+            w as i32,
+            h as i32,
+            SWP_NOACTIVATE | SWP_SHOWWINDOW,
+        )
+        .map_err(|e| format!("SetWindowPos embed failed: {e}"))?;
+    }
+    browser_cdp_server::log_line(&format!(
+        "[browser-embed] place kind={} client=({x:.0},{y:.0} {w:.0}x{h:.0}) set=({px},{py})",
+        if embed_is_ws_child(window) { "WS_CHILD" } else { "POPUP" }
+    ));
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
 fn create_embed_window(
     app: &tauri::AppHandle,
     _parent: &WebviewWindow,
@@ -834,7 +1086,11 @@ fn create_embed_window(
     width: f64,
     height: f64,
     start_visible: bool,
+    http_port: u16,
 ) -> Result<(), String> {
+    let _create_guard = EMBED_CREATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     browser_cdp_server::log_line(&format!(
         "[browser-embed] create_embed_window: label={} url={} pos=({},{}) size={}x{} visible={start_visible}",
         label, target_url, x, y, width, height
@@ -844,42 +1100,48 @@ fn create_embed_window(
     // a blocked main thread cannot run. Build on the caller thread (async
     // command worker or HTTP ensure path) instead; then wait_webview2_ready
     // hops onto main with an explicit PeekMessage pump.
+    // 窗口已在（引擎兜底先建出来）时，面板这次带来的才是槽位。估算调用不要再挪它。
     if let Some(win) = app.get_webview_window(label) {
-        let _ = win.show();
-        let _ = win.unminimize();
+        if start_visible {
+            let parent = app
+                .get_webview_window("main")
+                .ok_or_else(|| "main window not found".to_string())?;
+            let _ = win.show();
+            let _ = win.unminimize();
+            nest_embed_into_main(&win, &parent)?;
+            place_embed_client(&win, &parent, x, y, width, height)?;
+            log_region_diag("create-reuse", label, &parent, &win, (x, y, width, height));
+            if let Ok(mut map) = EMBED_LAST_BOUNDS.lock() {
+                map.insert(label.to_string(), (x, y, width.max(120.0), height.max(80.0)));
+            }
+            note_writer(label, "panel-create-reuse");
+        }
         return Ok(());
     }
     let parent = app
         .get_webview_window("main")
         .ok_or_else(|| "main window not found".to_string())?;
-    // 出生位置钳进主窗口屏幕矩形（逻辑 px）：早路径的估算边界受 DPI/标题栏
-    // 影响可能落在客户区之外，窗口一出生就悬空在客户端外。
-    let (x, y, width, height) = match (parent.outer_position(), parent.outer_size()) {
-        (Ok(pos), Ok(size)) => {
-            let scale = parent.scale_factor().unwrap_or(1.0).max(0.1);
-            let ox = (pos.x as f64) / scale;
-            let oy = (pos.y as f64) / scale;
-            let ow = (size.width as f64) / scale;
-            let oh = (size.height as f64) / scale;
-            let title_bar = 32.0f64;
-            let w2 = width.max(120.0).min((ow - 8.0).max(120.0));
-            let h2 = height.max(80.0).min((oh - title_bar - 8.0).max(80.0));
-            let x2 = x.clamp(ox + 4.0, (ox + ow - w2 - 4.0).max(ox + 4.0));
-            let y2 = y.clamp(oy + title_bar, (oy + oh - h2 - 4.0).max(oy + title_bar));
+    let parent_hwnd = parent.hwnd().map_err(|e| format!("main hwnd: {e}"))?;
+    // x/y 是主窗口客户区物理 px。子窗口坐标相对父客户区，不能再加屏幕原点。
+    let (x, y, width, height) = match parent.inner_size() {
+        Ok(ins) => {
+            let iw = ins.width as f64;
+            let ih = ins.height as f64;
+            let w2 = width.max(120.0).min((iw - 8.0).max(120.0));
+            let h2 = height.max(80.0).min((ih - 8.0).max(80.0));
+            let x2 = x.clamp(0.0, (iw - w2).max(0.0));
+            let y2 = y.clamp(0.0, (ih - h2).max(0.0));
             (x2, y2, w2, h2)
         }
-        _ => (x, y, width.max(120.0), height.max(80.0)),
+        Err(_) => (x, y, width.max(120.0), height.max(80.0)),
     };
     let popup_app = app.clone();
     let popup_label = label.to_string();
     let boot_url = target_url.clone();
     let width = width.max(120.0);
     let height = height.max(80.0);
-    // HTTP CDP must be up before inject so the guest poller knows the port.
-    let http_port = tauri::async_runtime::block_on(browser_cdp_server::ensure_http_server(
-        app.clone(),
-    ))
-    .unwrap_or(0);
+    // 端口由调用方准备好。在 async 命令里 block_on 会和当前运行时互锁，
+    // 面板这次创建永远回不来，窗口就停在引擎的估算矩形上。
     let guest_js = super::browser_embed_bridge::embed_guest_init_script(http_port, label);
     if let Some(bridge) = app.try_state::<super::browser_embed_bridge::EmbedBridge>() {
         bridge.note_url(label, target_url.as_str());
@@ -903,22 +1165,35 @@ fn create_embed_window(
          http_port={http_port} debug_port={debug_port} data_dir={}...",
         data_dir.display()
     ));
+    let scale = parent.scale_factor().unwrap_or(1.0).max(1.0);
     let win = WebviewWindow::builder(app, label, WebviewUrl::External(boot_url))
-        .parent(&parent)
-        .map_err(|e| format!("attach embedded browser parent failed: {e}"))?
+        .parent_raw(parent_hwnd)
         .initialization_script(guest_js.clone())
         .data_directory(data_dir)
         .additional_browser_args(&browser_args)
         .on_new_window(move |url, _features| {
-            let url = url.clone();
+            // Return Deny before any navigate. wry applies Handled only after
+            // this closure returns; navigating here re-enters WebView2 while
+            // the unmanaged "Web Viewer" host is still allowed to appear.
             let app = popup_app.clone();
             let label = popup_label.clone();
+            let url = url.clone();
             tauri::async_runtime::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-                if let Some(win) = app.get_webview_window(&label) {
-                    if let Err(e) = win.navigate(url) {
-                        browser_cdp_server::log_line(&format!("[browser-embed] popup takeover navigate failed: {e}"));
-                    }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                let Some(win) = app.get_webview_window(&label) else {
+                    browser_cdp_server::log_line(&format!(
+                        "[browser-embed] popup takeover: embed '{label}' missing for {url}"
+                    ));
+                    return;
+                };
+                if let Err(e) = win.navigate(url.clone()) {
+                    browser_cdp_server::log_line(&format!(
+                        "[browser-embed] popup takeover navigate failed: {e}"
+                    ));
+                } else {
+                    browser_cdp_server::log_line(&format!(
+                        "[browser-embed] popup takeover navigate ok label={label} url={url}"
+                    ));
                 }
             });
             tauri::webview::NewWindowResponse::Deny
@@ -932,11 +1207,23 @@ fn create_embed_window(
         // 面板不开就不显示，set_bounds 接管时再 show。HTTP CDP 不依赖可见性。
         .visible(start_visible)
         .focused(false)
-        .position(x, y)
-        .inner_size(width, height)
+        // builder 的 position/inner_size 是逻辑像素。传入值已经是客户区物理像素，
+        // 再乘 scale_factor 会把窗口推到槽位外面（实测 1563 → 屏幕 2880）。
+        .position(x / scale.max(1.0), y / scale.max(1.0))
+        .inner_size(width / scale.max(1.0), height / scale.max(1.0))
         .devtools(false)
         .build()
         .map_err(|e| format!("create embedded browser failed: {e}"))?;
+    // 先登记槽位再贴位/显影，避免看门狗在中间看到「可见无 bounds」。
+    if let Ok(mut map) = EMBED_LAST_BOUNDS.lock() {
+        map.insert(
+            label.to_string(),
+            (x, y, width.max(120.0), height.max(80.0)),
+        );
+    }
+    nest_embed_into_main(&win, &parent)?;
+    place_embed_client(&win, &parent, x, y, width, height)?;
+    log_region_diag("create", label, &parent, &win, (x, y, width, height));
     log_window_state(&win, "create built off main thread");
     // 仅可见创建需要 re-assert show；隐藏创建（估算路径）保持隐藏，
     // 由面板的 set_bounds → show 接管显影。
@@ -949,21 +1236,6 @@ fn create_embed_window(
     // Best-effort COM stash + HTTP poller (may no-op on child HWNDs).
     browser_cdp::capture_core_webview2(app, &win, label);
     let _ = win.eval(guest_js);
-    // 从创建那一刻就登记边界（转回客户端相对坐标）：否则面板从未接管的窗口
-    // （早路径/引擎兜底）不在跟随名单里，主窗口一动它就"悬浮脱离客户端"。
-    if let Some(parent) = app.get_webview_window("main") {
-        let scale = parent.scale_factor().unwrap_or(1.0).max(0.1);
-        if let Ok(origin) = parent.outer_position() {
-            let client_x = x - (origin.x as f64) / scale;
-            let client_y = y - (origin.y as f64) / scale;
-            if let Ok(mut map) = EMBED_LAST_BOUNDS.lock() {
-                map.insert(
-                    label.to_string(),
-                    (client_x, client_y, width.max(120.0), height.max(80.0)),
-                );
-            }
-        }
-    }
     Ok(())
 }
 
@@ -996,6 +1268,16 @@ pub fn ensure_webview_for_cdp(
         .lock()
         .map_err(|_| "ensure_webview lock poisoned".to_string())?;
     let label = webview_label_for_thread(thread_id);
+    // 窗口已存在：直接返回，绝不 emit。此前每次 Page.navigate 都无条件 emit
+    // browser-panel-request，早/boot 两个处理器每 2 秒用估算边界重复 upsert，
+    // 把面板贴好的窗口拽来拽去（"不受控浮窗"）。
+    if let Some(existing) = app.get_webview_window(&label) {
+        browser_cdp_server::log_line(&format!(
+            "[browser-embed] ensure_webview: window exists label={label} visible={} — no emit",
+            existing.is_visible().unwrap_or(false)
+        ));
+        return Ok(());
+    }
     // tauri-agent pattern: emit to the instrumented main shell and wait for
     // the guest (main.js → browser_embed_upsert) to create the window label.
     // Do NOT probe/destroy via with_webview — that COM path hangs on child
@@ -1074,16 +1356,13 @@ pub fn ensure_webview_for_cdp(
     let parent = app
         .get_webview_window("main")
         .ok_or_else(|| "main window not found".to_string())?;
-    let (px, py, pw, ph) = match (parent.outer_position(), parent.outer_size()) {
-        (Ok(pos), Ok(size)) => {
-            let scale = parent.scale_factor().unwrap_or(1.0);
-            let x = (pos.x as f64) / scale;
-            let y = (pos.y as f64) / scale;
-            let w = (size.width as f64) / scale;
-            let h = (size.height as f64) / scale;
-            (x + w * 0.5, y + 72.0, (w * 0.48).max(480.0), (h - 96.0).max(360.0))
+    let (px, py, pw, ph) = match parent.inner_size() {
+        Ok(ins) => {
+            let w = ins.width as f64;
+            let h = ins.height as f64;
+            ((w * 0.52).max(0.0), 96.0, (w * 0.45).max(480.0), (h - 160.0).max(360.0))
         }
-        _ => (120.0, 120.0, 960.0, 720.0),
+        Err(_) => (480.0, 96.0, 960.0, 720.0),
     };
     browser_cdp_server::log_line(&format!(
         "[browser-embed] ensure_webview agent fallback (8s cap) label={label} \
@@ -1102,6 +1381,10 @@ pub fn ensure_webview_for_cdp(
                     return;
                 }
             };
+            let http_port = tauri::async_runtime::block_on(
+                browser_cdp_server::ensure_http_server(app_create.clone()),
+            )
+            .unwrap_or(0);
             let r = create_embed_window(
                 &app_create,
                 &parent,
@@ -1113,6 +1396,7 @@ pub fn ensure_webview_for_cdp(
                 ph,
                 // 引擎兜底创建：估算边界 → 隐藏窗口（面板接管时显影）
                 false,
+                http_port,
             );
             let _ = tx.send(r);
         })
@@ -1169,11 +1453,13 @@ pub async fn browser_embed_upsert(
     y: f64,
     width: f64,
     height: f64,
+    viewport_width: Option<f64>,
+    viewport_height: Option<f64>,
     managed_only: Option<bool>,
 ) -> Result<BrowserEmbedInfo, String> {
     #[cfg(not(target_os = "windows"))]
     {
-        let _ = (app, state, thread_id, url, x, y, width, height, managed_only);
+        let _ = (app, state, thread_id, url, x, y, width, height, viewport_width, viewport_height, managed_only);
         return Err("Embedded browser panel is only supported on Windows WebView2 builds".into());
     }
     #[cfg(target_os = "windows")]
@@ -1203,12 +1489,17 @@ pub async fn browser_embed_upsert(
     let parent = app
         .get_webview_window("main")
         .ok_or_else(|| "main window not found".to_string())?;
+    let (x, y, width, height) = to_client_px(
+        &parent,
+        x,
+        y,
+        width,
+        height,
+        viewport_width.unwrap_or(0.0),
+        viewport_height.unwrap_or(0.0),
+    );
 
-    // `getBoundingClientRect()` yields coordinates relative to the main webview's
-    // content area, while `WebviewWindow::position` expects screen coordinates.
-    // See `client_to_screen`.
-    let (screen_x, screen_y) = client_to_screen(&app, x, y)?;
-
+    // 这里的 x/y/width/height 已经是主窗口客户区像素。
     if let Some(existing) = app.get_webview_window(&label) {
         // A reused window is not necessarily on screen. It reaches this branch
         // after a previous close (the panel was dismissed and reopened), and
@@ -1243,28 +1534,26 @@ pub async fn browser_embed_upsert(
                  incoming=({x:.0},{y:.0} {width:.0}x{height:.0})"
             ));
         } else {
-            existing
-                .set_position(LogicalPosition::new(screen_x, screen_y))
-                .map_err(|e| format!("position embedded browser failed: {e}"))?;
-            existing
-                .set_size(LogicalSize::new(width.max(120.0), height.max(80.0)))
-                .map_err(|e| format!("resize embedded browser failed: {e}"))?;
+            nest_embed_into_main(&existing, &parent)?;
+            place_embed_client(&existing, &parent, x, y, width, height)?;
+            log_region_diag(
+                if managed_only.unwrap_or(false) {
+                    "upsert-estimate"
+                } else {
+                    "upsert-panel"
+                },
+                &label,
+                &parent,
+                &existing,
+                (x, y, width, height),
+            );
             note_writer(&label, if managed_only.unwrap_or(false) { "estimate-upsert" } else { "panel-upsert" });
-            // 面板驱动的贴位（managed_only=false）当场登记：否则面板挂载 upsert
-            // 挪了窗口但跟随表为空，下一次估算 upsert 仍会把窗口拽出槽位。
             if !managed_only.unwrap_or(false) {
-                if let Some(main) = app.get_webview_window("main") {
-                    let scale = main.scale_factor().unwrap_or(1.0).max(0.1);
-                    if let Ok(origin) = main.outer_position() {
-                        let client_x = screen_x - (origin.x as f64) / scale;
-                        let client_y = screen_y - (origin.y as f64) / scale;
-                        if let Ok(mut map) = EMBED_LAST_BOUNDS.lock() {
-                            map.insert(
-                                label.clone(),
-                                (client_x, client_y, width.max(120.0), height.max(80.0)),
-                            );
-                        }
-                    }
+                if let Ok(mut map) = EMBED_LAST_BOUNDS.lock() {
+                    map.insert(
+                        label.clone(),
+                        (x, y, width.max(120.0), height.max(80.0)),
+                    );
                 }
             }
         }
@@ -1303,22 +1592,48 @@ pub async fn browser_embed_upsert(
             });
         }
     } else {
-        create_embed_window(
-            &app,
-            &parent,
-            &label,
-            &boot_url,
-            screen_x,
-            screen_y,
-            width,
-            height,
-            // 估算路径（managed_only）创建隐藏窗口；面板路径创建可见窗口。
-            !managed_only.unwrap_or(false),
-        )?;
+        let http_port = browser_cdp_server::ensure_http_server(app.clone())
+            .await
+            .unwrap_or(0);
+        // build() 不能跑在这个 async 命令所在的运行时上，否则和主线程泵互锁，
+        // 引擎兜底会一直等到超时。独立线程和 ensure_webview 的创建路径相同。
+        let app_create = app.clone();
+        let label_create = label.clone();
+        let boot_create = boot_url.clone();
+        let start_visible = !managed_only.unwrap_or(false);
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        std::thread::Builder::new()
+            .name("embed-panel-create".into())
+            .spawn(move || {
+                let parent = match app_create.get_webview_window("main") {
+                    Some(p) => p,
+                    None => {
+                        let _ = tx.send(Err("main window not found".into()));
+                        return;
+                    }
+                };
+                let r = create_embed_window(
+                    &app_create,
+                    &parent,
+                    &label_create,
+                    &boot_create,
+                    x,
+                    y,
+                    width,
+                    height,
+                    start_visible,
+                    http_port,
+                );
+                let _ = tx.send(r);
+            })
+            .map_err(|e| format!("spawn embed create failed: {e}"))?;
+        rx.recv_timeout(Duration::from_secs(15))
+            .map_err(|_| format!("embed create timed out for '{label}'"))?
+            ?;
     }
 
     browser_cdp_server::log_line(&format!(
-        "[browser-embed] upsert: window ready label={label} url={} screen=({screen_x:.0},{screen_y:.0}) size={width}x{height}",
+        "[browser-embed] upsert: window ready label={label} url={} client=({x:.0},{y:.0}) size={width}x{height}",
         target_url
     ));
 
@@ -1428,10 +1743,12 @@ pub async fn browser_embed_set_bounds(
     y: f64,
     width: f64,
     height: f64,
+    viewport_width: Option<f64>,
+    viewport_height: Option<f64>,
 ) -> Result<(), String> {
     #[cfg(not(target_os = "windows"))]
     {
-        let _ = (app, thread_id, x, y, width, height);
+        let _ = (app, thread_id, x, y, width, height, viewport_width, viewport_height);
         return Err("Embedded browser panel is only supported on Windows WebView2 builds".into());
     }
     #[cfg(target_os = "windows")]
@@ -1444,19 +1761,29 @@ pub async fn browser_embed_set_bounds(
             browser_cdp_server::log_line(&format!("[browser-embed] set_bounds SKIPPED: window {label} not found"));
             return Ok(());
         };
-        let (screen_x, screen_y) = client_to_screen(&app, x, y)?;
-        // Same reuse hazard as `browser_embed_upsert`: bounds tracking runs on every
-        // panel move/resize, and a window that is hidden or mid-teardown accepts
-        // `set_position`/`set_size` without painting anything. Make it visible before
-        // placing it, so a bounds sync can never leave a live-but-invisible window.
+        let Some(main) = app.get_webview_window("main") else {
+            return Err("main window not found".into());
+        };
+        let (x, y, width, height) = to_client_px(
+            &main,
+            x,
+            y,
+            width,
+            height,
+            viewport_width.unwrap_or(0.0),
+            viewport_height.unwrap_or(0.0),
+        );
         let _ = window.show();
         let _ = window.unminimize();
-        window
-            .set_position(LogicalPosition::new(screen_x, screen_y))
-            .map_err(|e| format!("position embedded browser failed: {e}"))?;
-        window
-            .set_size(LogicalSize::new(width.max(120.0), height.max(80.0)))
-            .map_err(|e| format!("resize embedded browser failed: {e}"))?;
+        nest_embed_into_main(&window, &main)?;
+        place_embed_client(&window, &main, x, y, width, height)?;
+        log_region_diag(
+            "set-bounds",
+            &label,
+            &main,
+            &window,
+            (x, y, width.max(120.0), height.max(80.0)),
+        );
         note_writer(&label, "panel-set-bounds");
         if let Ok(mut map) = EMBED_LAST_BOUNDS.lock() {
             // 单窗口语义：只保留当前 label 的 embed，关闭其他线程遗留的悬浮窗口
@@ -1548,18 +1875,17 @@ fn log_window_state(win: &WebviewWindow, phase: &str) {
 /// coordinates, so passing the former straight through drops the embedded window
 /// at the top-left of the desktop — visible as a stray unstyled white panel.
 #[cfg(target_os = "windows")]
-fn client_to_screen(app: &tauri::AppHandle, x: f64, y: f64) -> Result<(f64, f64), String> {
-    let parent = app
-        .get_webview_window("main")
-        .ok_or_else(|| "main window not found".to_string())?;
-    let scale = parent.scale_factor().unwrap_or(1.0).max(0.1);
-    let origin = parent
-        .outer_position()
-        .ok()
-        .map(|p| p.to_logical::<f64>(scale))
-        .unwrap_or(LogicalPosition::new(0.0, 0.0));
-    browser_cdp_server::log_line(&format!("[browser-embed] client({x:.0},{y:.0}) -> screen({:.0},{:.0}) scale={scale}", origin.x + x, origin.y + y));
-    Ok((origin.x + x, origin.y + y))
+/// 主窗口客户区原点（屏幕物理 px）。前端上报的槽位矩形是
+/// getBoundingClientRect × devicePixelRatio = 客户区物理坐标；
+/// 屏幕物理 = 客户区原点物理 + 客户区坐标。全程物理像素，不碰 scale_factor
+/// ——混合 DPI 多显示器下 scale_factor 返回主屏缩放（曾返回 1.75 而窗口所在
+/// 屏是 1.0），所有逻辑换算都被放大 75%，embed 窗口因此悬浮到客户端之外。
+fn client_origin_physical(parent: &WebviewWindow) -> Result<(i32, i32), String> {
+    // 对齐 tauri-agent-plugin：inner_position() 直接给出客户区原点的物理像素
+    // （getBoundingClientRect × devicePixelRatio 的坐标系原点就是它），
+    // 不做外框+标题栏内边距的近似，也不碰 scale_factor。
+    let ip = parent.inner_position().map_err(|e| format!("inner_position failed: {e}"))?;
+    Ok((ip.x, ip.y))
 }
 
 /// 切走浏览器标签时把原生窗口挪出屏幕。
@@ -1578,7 +1904,7 @@ pub async fn browser_embed_park(app: tauri::AppHandle, thread_id: String) -> Res
             return Ok(());
         };
         window
-            .set_position(LogicalPosition::new(-32000.0, -32000.0))
+            .set_position(tauri::PhysicalPosition::new(-32000, -32000))
             .map_err(|e| format!("park embedded browser failed: {e}"))?;
         browser_cdp_server::log_line(&format!("[browser-embed] park label={label}"));
         Ok(())
