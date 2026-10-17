@@ -1,5 +1,6 @@
 import { createPortal } from 'react-dom'
 import { memo, useCallback, useEffect, useState } from 'react'
+import { useGlobalOverlayWhen } from '../hooks/useGlobalOverlayWhen.js'
 import { ObjectUrlImg } from './ObjectUrlImg.js'
 
 export type ImagePreviewItem = {
@@ -28,6 +29,7 @@ function ImagePreviewModalInner({
   const [current, setCurrent] = useState(index)
   const total = images.length
   const safeCurrent = total > 0 ? Math.min(current, total - 1) : 0
+  useGlobalOverlayWhen(total > 0, 'image-preview')
 
   const goPrev = useCallback(() => {
     setCurrent((c) => (c - 1 + total) % total)

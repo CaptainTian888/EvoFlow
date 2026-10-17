@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { createPortal } from 'react-dom'
+import { useGlobalOverlayWhen } from '../hooks/useGlobalOverlayWhen.js'
 import AgentAvatar from './AgentAvatar.js'
 import {
   buildTagPickerEntries,
@@ -32,6 +33,7 @@ export function AgentPickerModal({
   const [draft, setDraft] = useState<string>(selected || '')
   const [activeTag, setActiveTag] = useState<string | null>(null)
   const searchRef = useRef<HTMLInputElement | null>(null)
+  useGlobalOverlayWhen(open, 'agent-picker')
 
   useEffect(() => {
     if (!open) return

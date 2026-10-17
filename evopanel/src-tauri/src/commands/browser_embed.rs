@@ -1122,8 +1122,8 @@ fn log_region_diag(
 fn nest_embed_into_main(embed: &WebviewWindow, main: &WebviewWindow) -> Result<(), String> {
     use windows::Win32::UI::WindowsAndMessaging::{
         GetWindowLongW, SetParent, SetWindowLongW, SetWindowPos, GWL_STYLE, HWND_TOP,
-        SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, WS_CAPTION, WS_CHILD, WS_POPUP,
-        WS_SYSMENU, WS_THICKFRAME,
+        SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_CAPTION,
+        WS_CHILD, WS_POPUP, WS_SYSMENU, WS_THICKFRAME,
     };
     let child = embed.hwnd().map_err(|e| format!("embed hwnd: {e}"))?;
     let owner = main.hwnd().map_err(|e| format!("main hwnd: {e}"))?;
@@ -1134,6 +1134,7 @@ fn nest_embed_into_main(embed: &WebviewWindow, main: &WebviewWindow) -> Result<(
                 (style & !(WS_POPUP.0 | WS_CAPTION.0 | WS_THICKFRAME.0 | WS_SYSMENU.0)) | WS_CHILD.0;
             SetWindowLongW(child, GWL_STYLE, stripped as i32);
             SetParent(child, Some(owner)).map_err(|e| format!("SetParent failed: {e}"))?;
+            // 首次嵌套需要抬到主 WebView 之上，否则槽位被整页 WebView 挡住。
             let _ = SetWindowPos(
                 child,
                 Some(HWND_TOP),
@@ -1147,14 +1148,15 @@ fn nest_embed_into_main(embed: &WebviewWindow, main: &WebviewWindow) -> Result<(
                 "[browser-embed] nested popup into main client hwnd={child:?} parent={owner:?}"
             ));
         } else {
+            // 已是子窗口：不要每次 nest 再 HWND_TOP，避免无谓抬升。
             let _ = SetWindowPos(
                 child,
-                Some(HWND_TOP),
+                None,
                 0,
                 0,
                 0,
                 0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER,
             );
         }
     }
@@ -1214,7 +1216,7 @@ fn place_embed_client(
     h: f64,
 ) -> Result<(), String> {
     use windows::Win32::UI::WindowsAndMessaging::{
-        SetWindowPos, HWND_TOP, SWP_NOACTIVATE, SWP_SHOWWINDOW,
+        SetWindowPos, HWND_TOP, SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW,
     };
     let (iw, ih) = main
         .inner_size()
@@ -1237,18 +1239,32 @@ fn place_embed_client(
         (ox + x as i32, oy + y as i32)
     };
     // 必须 SHOW：子 WebView2 一直 hidden 时 guest poll / CDP 会卡死。
-    // 槽位已在 place 前登记进 EMBED_LAST_BOUNDS，看门狗不会再报「无 bounds」。
+    // 已是子窗口时不改 Z 序：每次 HWND_TOP 会把它抬过同级窗口。
+    // 全局弹窗靠前端 overlay 计数去 park（SW_HIDE），不靠 CSS z-index。
+    let child = embed_is_ws_child(window);
     let place_started = now_ms();
     unsafe {
-        SetWindowPos(
-            hwnd,
-            Some(HWND_TOP),
-            px,
-            py,
-            w as i32,
-            h as i32,
-            SWP_NOACTIVATE | SWP_SHOWWINDOW,
-        )
+        if child {
+            SetWindowPos(
+                hwnd,
+                None,
+                px,
+                py,
+                w as i32,
+                h as i32,
+                SWP_NOACTIVATE | SWP_NOZORDER | SWP_SHOWWINDOW,
+            )
+        } else {
+            SetWindowPos(
+                hwnd,
+                Some(HWND_TOP),
+                px,
+                py,
+                w as i32,
+                h as i32,
+                SWP_NOACTIVATE | SWP_SHOWWINDOW,
+            )
+        }
         .map_err(|e| format!("SetWindowPos embed failed: {e}"))?;
     }
     let place_ms = now_ms().saturating_sub(place_started);
