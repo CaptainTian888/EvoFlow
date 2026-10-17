@@ -15,7 +15,7 @@
  * 关闭时所有函数空操作，零开销。
  */
 
-const PHASE_WARN_MS = 4
+const PHASE_WARN_MS = 30
 const DELTA_WARN_MS = 12
 const SINGLE_ROW_DELTA_WARN_MS = 30
 const WINDOW_SIZE = 200

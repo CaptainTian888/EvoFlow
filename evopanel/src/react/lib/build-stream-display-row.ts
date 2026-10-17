@@ -357,14 +357,7 @@ export function buildStreamDisplayRow(
     // 正文只在 structural 事件时才一次性刷新 → 用户看到"积累一大段才显示"。
     // 渲染频率由上游 Rust 50ms 合并窗口（≤20Hz）+ MarkdownHtml rAF(16ms)
     // paint 节流兜底，不会造成 per-token 渲染风暴。
-    const _t0 = performance.now()
-    const ts = turnStateForStreamDisplay(s)
-    const _t1 = performance.now()
-    const p = isolateStreamProjection(ts, priorTurnStrip)
-    const _t2 = performance.now()
-    if (_t2 - _t0 > 50) {
-      console.warn(`[buildRow-diag] turnState=${(_t1-_t0).toFixed(1)}ms isolate=${(_t2-_t1).toFixed(1)}ms textLen=${textLen} compacted=${s.compactedParts?.length ?? 0} aguiMsgs=${s.aguiTurn?.messages?.size ?? 0} aguiOrder=${s.aguiTurn?.order?.length ?? 0}`)
-    }
+    const p = isolateStreamProjection(turnStateForStreamDisplay(s), priorTurnStrip)
     const cleaned = sanitizeLiveStreamDisplayFields(
       {
         text: p.text,
@@ -411,17 +404,8 @@ export function buildStreamDisplayRow(
     return row
   }
 
-  const _t0f = performance.now()
-  const tsf = turnStateForStreamDisplay(s)
-  const _t1f = performance.now()
-  const p = isolateStreamProjection(tsf, priorTurnStrip)
-  const _t2f = performance.now()
+  const p = isolateStreamProjection(turnStateForStreamDisplay(s), priorTurnStrip)
   const row = finalizeStreamRow(s, p, priorTurnStrip, liveTurnTokenStr, suppressStreamFiles, isSending)
-  const _t3f = performance.now()
-  if (_t3f - _t0f > 50) {
-    const agui = s.aguiTurn
-    console.warn(`[buildRow-diag] FULL REBUILD turnState=${(_t1f-_t0f).toFixed(1)}ms isolate=${(_t2f-_t1f).toFixed(1)}ms finalize=${(_t3f-_t2f).toFixed(1)}ms textLen=${textLen} compacted=${s.compactedParts?.length ?? 0} aguiOrder=${agui?.order?.length ?? 0} aguiMsgs=${agui?.messages?.size ?? 0} aguiToolCalls=${agui?.toolCalls?.size ?? 0} aguiCompatSegs=${agui?.compatSegments?.length ?? 0} tools=${s.turn?.tools?.length ?? 0} cachedSk=${cached?.structuralKey?.slice(0,80) ?? 'none'} newSk=${sk?.slice(0,80)}`)
-  }
   if (sessionKey && row?.role === '_stream') {
     logStreamCompareAgUiInternals({
       sessionKey,
