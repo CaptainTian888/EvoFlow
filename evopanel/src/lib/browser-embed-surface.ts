@@ -197,9 +197,16 @@ export async function ensureNativeEmbed(opts: {
   reason: string
   /** 切签时 true：location.replace，不往共用 history 压栈。 */
   replace?: boolean
+  /**
+   * 后台会话导航：只保证 HWND/CDP 可用，绝不贴到当前 UI 右栏。
+   * （多会话共用 primary id 时，否则会误判 present=true。）
+   */
+  forceHidden?: boolean
 }): Promise<BrowserEmbedInfo | null> {
   const stageId = String(opts.stageId || '').trim()
+  const forceHidden = opts.forceHidden === true || opts.reason === 'background-session'
   const present =
+    !forceHidden &&
     overlayDepth === 0 &&
     Boolean(desiredStageId) &&
     (!stageId || stageId === desiredStageId)
@@ -215,7 +222,7 @@ export async function ensureNativeEmbed(opts: {
   }
   blog(
     'info',
-    `[browser-embed-surface] ensure reason=${opts.reason} present=${present} place=${placeNow} stage=${stageId || '(any)'} visible=${visibleStageId || '(none)'} overlay=${overlayDepth}`,
+    `[browser-embed-surface] ensure reason=${opts.reason} present=${present} place=${placeNow} forceHidden=${forceHidden} stage=${stageId || '(any)'} visible=${visibleStageId || '(none)'} overlay=${overlayDepth}`,
   )
   const info = await browserEmbedUpsert({
     threadId: NATIVE_EMBED_THREAD_ID,

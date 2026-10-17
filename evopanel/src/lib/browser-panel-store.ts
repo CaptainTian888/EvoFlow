@@ -8,6 +8,10 @@
 import { ensureNativeEmbed } from './browser-embed-surface.js'
 import { parseBrowserLiveToolOutput } from './chat-normalize.js'
 import { sanitizeBrowserPageUrl } from './browser-page-url.js'
+import {
+  getCurrentRightStageSessionKey,
+  upsertBrowserTabInSessionMemory,
+} from './right-stage/right-stage-session-memory.js'
 import { rightStageStore } from './right-stage/right-stage-store.js'
 import { normalizeRightStageKind } from './right-stage/right-stage-types.js'
 import type { BrowserStreamFrameMetadata } from './browser-stream-client.js'
@@ -286,9 +290,18 @@ function applyStageBrowserSurface(tabId: string, pageUrl: string, pageTitle: str
     url,
     stageId: tabId,
     reason,
-    // 切签/新标签用 replace，后退只走「本标签内」历史，不串到其它标签页。
-    replace: reason === 'stage-switch' || reason === 'force-new',
+    // 切签/新标签/会话恢复用 replace，后退只走「本标签内」历史。
+    replace:
+      reason === 'stage-switch' || reason === 'stage-restore' || reason === 'force-new',
   })
+}
+
+/**
+ * 切会话时清空「上一激活浏览器 tab」跟踪。
+ * 否则 A/B 都用 browser:primary 时，key 相同会跳过导航，HWND 仍停在 A 的页面。
+ */
+export function resetBrowserStageSwitchTracking() {
+  lastActiveBrowserKey = ''
 }
 
 function onRightStageBrowserChange() {
@@ -301,28 +314,68 @@ function onRightStageBrowserChange() {
   if (key === lastActiveBrowserKey) return
   const prev = lastActiveBrowserKey
   lastActiveBrowserKey = key
-  if (!prev) return
   const tab = snap.tabs.find((t) => `browser:${t.id}` === key)
   if (!tab) return
   const url =
     sanitizeBrowserPageUrl(String(tab.data?.pageUrl || '').trim(), 'about:blank') || 'about:blank'
   const title = String(tab.title || '').trim()
-  dbgLog(`[browser-panel-store] stage switch ${prev} → ${key} url=${url}`)
-  applyStageBrowserSurface(tab.id, url, title, 'stage-switch')
+  // prev 为空也要导航：切回「后台开过浏览器」的会话时，必须把 HWND 贴回该标签 URL。
+  dbgLog(`[browser-panel-store] stage switch ${prev || '(none)'} → ${key} url=${url}`)
+  applyStageBrowserSurface(tab.id, url, title, prev ? 'stage-switch' : 'stage-restore')
 }
 
 rightStageStore.subscribe(onRightStageBrowserChange)
 
+/**
+ * 打开/激活浏览器标签。
+ * - 归属会话 === 当前 UI 会话：写 live 右栏并贴 HWND。
+ * - 归属会话是后台：只写入该会话的冻结记忆，不污染当前会话侧栏。
+ *   Agent 仍可用共享 HWND（CDP）；UI 上 HWND 由 syncNativeEmbed 在非浏览器页时 park。
+ */
 export function ensureBrowserStage(opts?: {
   forceNew?: boolean
   sessionKey?: string
   title?: string
   id?: string
+  pageUrl?: string
 }) {
   const sessionKey = String(opts?.sessionKey || '').trim() || undefined
   const id = opts?.forceNew
     ? newBrowserStageId()
     : String(opts?.id || 'primary').trim() || 'primary'
+  const pageUrl = sanitizeBrowserPageUrl(String(opts?.pageUrl || state.pageUrl || '').trim(), 'about:blank')
+  const currentSk = getCurrentRightStageSessionKey()
+
+  // 后台会话：不碰当前 UI 右栏。
+  if (sessionKey && currentSk && sessionKey !== currentSk) {
+    dbgLog(
+      `[browser-panel-store] ensureBrowserStage background session=${sessionKey} (ui=${currentSk}) id=${id}`,
+    )
+    upsertBrowserTabInSessionMemory({
+      sessionKey,
+      id,
+      title: opts?.title,
+      pageUrl: pageUrl || 'about:blank',
+      pageTitle: opts?.title,
+      activate: true,
+    })
+    // 前台正在看浏览器时绝不能改共享 HWND（否则 B 的画面会变成 A 的 URL）。
+    // 前台无浏览器时：managed 导航 + park，切回归属会话再由 stage-restore 贴位。
+    const uiSnap = rightStageStore.getSnapshot()
+    const uiShowsBrowser =
+      !uiSnap.collapsed && String(uiSnap.activeKey || '').startsWith('browser:')
+    if (!uiShowsBrowser && pageUrl && pageUrl !== 'about:blank') {
+      void ensureNativeEmbed({
+        url: pageUrl,
+        stageId: id,
+        reason: 'background-session',
+        replace: true,
+        forceHidden: true,
+      })
+    }
+    return
+  }
+
   const existing = rightStageStore.findTab(`browser:${id}`)
 
   if (opts?.forceNew) {
@@ -345,15 +398,22 @@ export function ensureBrowserStage(opts?: {
     return
   }
 
+  const nextData = existing?.data ? { ...existing.data } : {}
+  if (pageUrl && pageUrl !== 'about:blank') {
+    nextData.pageUrl = pageUrl
+  }
   rightStageStore.show({
     kind: 'browser',
     id,
     title: String(opts?.title || '').trim() || existing?.title || '浏览器',
     layout: 'wide',
     sessionKey,
-    data: existing?.data ? { ...existing.data } : {},
+    data: nextData,
   })
   lastActiveBrowserKey = `browser:${id}`
+  if (pageUrl && pageUrl !== 'about:blank' && String(existing?.data?.pageUrl || '') !== pageUrl) {
+    applyStageBrowserSurface(id, pageUrl, String(opts?.title || ''), 'ensure-nav')
+  }
 }
 
 /** 引擎标签页列表写入（面板轮询 tabList 后调用）。 */
@@ -437,16 +497,17 @@ export function applyBrowserCommandResponse(input: {
 export function notifyBrowserToolStart(
   toolCallId: string,
   argsText?: string | null,
-  opts?: { toolName?: string; forceOpen?: boolean },
+  opts?: { toolName?: string; forceOpen?: boolean; sessionKey?: string },
 ): boolean {
   const toolName = String(opts?.toolName || '').trim().toLowerCase()
   const isNodeRepl = toolName === 'mcp__node_repl__js'
   const { action, url } = parseBrowserToolArgs(argsText)
+  const sessionKey = String(opts?.sessionKey || '').trim() || undefined
   // node_repl 只有代码里真的出现浏览器 API 才自动拉起面板；纯数据处理 JS 保持侧栏安静。
   const nodeReplBrowser = isNodeRepl && nodeReplArgsTouchBrowser(argsText)
   dbgLog(
     `[browser-panel-store] tool start toolCallId=${toolCallId} tool=${toolName || '(n/a)'} ` +
-      `action=${action} url=${url || '(none)'} browserIntent=${nodeReplBrowser} argsText=${(argsText || '').slice(0, 200)}`,
+      `session=${sessionKey || '(none)'} action=${action} url=${url || '(none)'} browserIntent=${nodeReplBrowser} argsText=${(argsText || '').slice(0, 200)}`,
   )
   // node-repl / browser-use always drives the shared bridge WebView2. Bind the
   // panel to that session *before* ensureBrowserStage so the embed host mounts
@@ -459,6 +520,18 @@ export function notifyBrowserToolStart(
     operatingAction: action || (isNodeRepl ? 'node_repl' : ''),
     operatingToolCallId: String(toolCallId || '').trim(),
   })
+  const currentSk = getCurrentRightStageSessionKey()
+  const isBackground = Boolean(sessionKey && currentSk && sessionKey !== currentSk)
+  // Publish the target URL now rather than waiting for the tool result. The
+  // embedded browser mounts as soon as the stage opens, so a late URL meant the
+  // window rendered on `about:blank` until the agent finished.
+  // 后台会话只写记忆，不改前台 runtime.pageUrl。
+  if (url && /^https?:\/\//i.test(url) && !isBackground) {
+    if (url !== state.pageUrl) {
+      dbgLog(`[browser-panel-store] seed pageUrl=${url} (from tool start)`)
+      patch({ pageUrl: url })
+    }
+  }
   // For page-opening actions (and node_repl calls whose code drives the browser),
   // raise the right stage *before* the result arrives so the user can see the live
   // panel mount while the agent is still working.
@@ -469,16 +542,7 @@ export function notifyBrowserToolStart(
     action === 'navigate' ||
     action === 'snapshot'
   ) {
-    ensureBrowserStage()
-  }
-  // Publish the target URL now rather than waiting for the tool result. The
-  // embedded browser mounts as soon as the stage opens, so a late URL meant the
-  // window rendered on `about:blank` until the agent finished.
-  if (url && /^https?:\/\//i.test(url)) {
-    if (url !== state.pageUrl) {
-      dbgLog(`[browser-panel-store] seed pageUrl=${url} (from tool start)`)
-      patch({ pageUrl: url })
-    }
+    ensureBrowserStage({ sessionKey, pageUrl: url || undefined })
   }
   return true
 }
@@ -486,8 +550,9 @@ export function notifyBrowserToolStart(
 export function notifyBrowserToolResult(
   toolCallId: string,
   resultText?: string | null,
-  opts?: { nodeReplBrowser?: boolean },
+  opts?: { nodeReplBrowser?: boolean; sessionKey?: string },
 ): boolean {
+  const sessionKey = String(opts?.sessionKey || '').trim() || undefined
   const live = parseBrowserLiveToolOutput(resultText)
   const liveSummary = live
     ? { mode: live.mode, pageUrl: live.pageUrl, streamWs: live.streamWs, headed: live.headed }
@@ -514,7 +579,9 @@ export function notifyBrowserToolResult(
     next.streamThreadId = NODE_REPL_BRIDGE_THREAD_ID
     next.browserMode = next.browserMode || state.browserMode || 'embed'
     next.sharedBrowser = false
-    if (opts?.nodeReplBrowser !== false) ensureBrowserStage()
+    if (opts?.nodeReplBrowser !== false) {
+      ensureBrowserStage({ sessionKey, pageUrl: state.pageUrl || undefined })
+    }
   }
   if (live) {
     const backendTid = extractThreadIdFromStreamPath(
@@ -546,7 +613,30 @@ export function notifyBrowserToolResult(
     next.sharedBrowser = headed || mode === 'headed' || mode === 'cdp' || mode === 'embed'
     if (mode === 'evopanel' || mode === 'embed' || onBridge) next.sharedBrowser = false
     // Agent opened a page → bring the browser stage up (ZCode side-pane behavior).
-    if (pageUrl || backendTid || onBridge) ensureBrowserStage()
+    if (pageUrl || backendTid || onBridge) {
+      ensureBrowserStage({ sessionKey, pageUrl: pageUrl || undefined })
+    }
+  }
+  const currentSk = getCurrentRightStageSessionKey()
+  const isBackground =
+    Boolean(sessionKey && currentSk && sessionKey !== currentSk)
+  if (isBackground) {
+    // 后台结果只写归属会话记忆；禁止改全局 runtime.pageUrl，否则前台 B 地址栏会串成 A。
+    const bgUrl = String(next.pageUrl || '').trim()
+    if (bgUrl) {
+      upsertBrowserTabInSessionMemory({
+        sessionKey: sessionKey!,
+        pageUrl: bgUrl,
+        pageTitle: String(next.pageTitle || '').trim() || undefined,
+        activate: true,
+      })
+    }
+    // 仅收尾 operating，不覆盖前台 chrome / URL。
+    patch({
+      operating:
+        state.operatingToolCallId === String(toolCallId || '').trim() ? false : state.operating,
+    })
+    return Boolean(live) || onBridge
   }
   patch(next)
   if (next.pageUrl || state.pageUrl) {

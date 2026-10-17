@@ -196,6 +196,7 @@ import {
   closeBrowserStage,
   ensureBrowserStage,
   NODE_REPL_BRIDGE_THREAD_ID,
+  resetBrowserStageSwitchTracking,
   setBrowserPanelThreadId,
 } from '../lib/browser-panel-store.js'
 import { dbgLog } from '../lib/browser-debug-log.js'
@@ -2375,7 +2376,9 @@ export default function ChatApp() {
   useEffect(() => {
     const nextKey = String(selectedSessionKey || '').trim()
     const prevKey = rightStageSessionKeyRef.current
-    if (prevKey === nextKey) return
+    // 换会话前清掉 browser:primary 去重，否则 A/B 同 id 时 HWND 不会跟到新会话 URL。
+    if (prevKey !== nextKey) resetBrowserStageSwitchTracking()
+    // 同 key 也要登记「当前 UI 会话」，否则后台 agent 开浏览器无法判断归属。
     switchRightStageSession(prevKey, nextKey)
     rightStageSessionKeyRef.current = nextKey
   }, [selectedSessionKey])
@@ -10580,7 +10583,12 @@ useEffect(() => {
           }
           syncWorkspacePreviewFromTools(S.turn.tools)
           syncStreamMediaAssetsFromTools(S)
-          if (syncBrowserPanelFromAgUiEvent(aguiEvent, S.aguiTurn?.toolCalls)) {
+          if (
+            syncBrowserPanelFromAgUiEvent(aguiEvent, S.aguiTurn?.toolCalls, {
+              // 事件归属会话：后台 agent 开浏览器不得写进当前正在看的会话侧栏。
+              sessionKey: targetSk,
+            })
+          ) {
             changed = true
           }
           changed = true

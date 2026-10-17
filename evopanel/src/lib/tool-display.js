@@ -496,7 +496,7 @@ const MCP_SERVER_ZH = {
 }
 
 const MCP_ACTION_ZH = {
-  js: '执行 JS',
+  js: '运行工具',
   read: '读取',
   read_file: '读取文件',
   write: '写入',
