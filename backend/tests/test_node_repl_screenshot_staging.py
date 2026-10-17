@@ -383,6 +383,25 @@ class TestBrowserToolScreenshotFormat:
         assert new["staged_for_model"] is True and old["staged_for_model"] is False
 
 
+class TestNodeReplToolCallIdInjection:
+    def test_schema_and_signature_mark_tool_call_id_injected(self):
+        from langchain_core.tools.base import _is_injected_arg_type
+        from langchain_core.tools.base import InjectedToolCallId
+        from pydantic import BaseModel
+
+        from evoflow.plugins.node_repl_tool import NodeReplJsInput, build_node_repl_js_tool
+
+        anns = NodeReplJsInput.__annotations__
+        assert _is_injected_arg_type(anns["tool_call_id"], injected_type=InjectedToolCallId)
+        tool = build_node_repl_js_tool()
+        if tool is None:
+            return
+        assert "tool_call_id" in tool._injected_args_keys
+        schema = tool.tool_call_schema
+        if isinstance(schema, type) and issubclass(schema, BaseModel):
+            assert "tool_call_id" not in schema.model_fields
+
+
 class TestCompactBrowserDocsDump:
     def test_passthrough_small_or_non_docs(self):
         from evoflow.plugins.node_repl_tool import _maybe_compact_browser_docs_dump

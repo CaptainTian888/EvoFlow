@@ -238,7 +238,19 @@ def build_plugin_injection_block(
             "view_image。\n"
             "</evoflow_browser_runtime>\n"
         )
-    body = intro + browser_hint + "\n".join(sections)
+    cua_hint = ""
+    if any(pid.startswith("computer-use") or "computer-use" in pid for pid, _ in resolved):
+        cua_hint = (
+            "\n<evoflow_computer_runtime>\n"
+            "Computer Use screenshots returned by mcp__node_repl__js are staged into "
+            "the next model context automatically. Do NOT call view_image on those "
+            "snapshot paths. Click/type coordinates are pixels of that delivered "
+            "screenshot (its width x height), not the OS window bounds.\n"
+            "电脑控制截图会自动进入下一轮视觉上下文，不要再对同一张图调 view_image。"
+            "点击坐标必须落在该截图像素范围内（宽×高），不要用窗口 bounds 的屏幕坐标。\n"
+            "</evoflow_computer_runtime>\n"
+        )
+    body = intro + browser_hint + cua_hint + "\n".join(sections)
     if truncated:
         body += "\n<!-- plugin_injection truncated: remaining plugins/components exceed the budget; use skill:/commands metadata above -->"
     _ulog(

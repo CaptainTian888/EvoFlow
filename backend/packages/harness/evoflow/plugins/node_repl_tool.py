@@ -21,8 +21,6 @@ Result plumbing (v3 对齐 ZCode 识别/显示双通道):
   应用身份证据）进 display 标记，UI 才能渲染目标应用徽标。
 """
 
-from __future__ import annotations
-
 import base64
 import binascii
 import hashlib
@@ -125,6 +123,9 @@ class NodeReplJsInput(BaseModel):
         le=120_000,
         description="Per-call timeout in milliseconds (max 120000).",
     )
+    # 必须写进 args_schema：自定义 schema 时 LangChain 只从这里注入 tool_call_id。
+    # 缺了截图无法 Command 回填 viewed_images，模型只能再调 view_image。
+    tool_call_id: Annotated[str, InjectedToolCallId] = Field(default="", description="injected")
 
 
 def _get_thread_id(runtime: ToolRuntime[Any, Any]) -> str:
@@ -439,9 +440,7 @@ def build_node_repl_js_tool() -> Any | None:
         # InjectedToolCallId 偶发空串时，尝试从 runtime 补回，否则截图无法 Command 回填 viewed_images。
         call_id = str(tool_call_id or "").strip()
         if not call_id and runtime is not None:
-            cfg = getattr(runtime, "config", None) or {}
-            if isinstance(cfg, dict):
-                call_id = str((cfg.get("configurable") or {}).get("tool_call_id") or "").strip()
+            call_id = str(getattr(runtime, "tool_call_id", "") or "").strip()
         return _run(code, timeout_ms, title, runtime, call_id)
 
     logger.info("node_repl kernel tool registered (mcp__node_repl__js)")
