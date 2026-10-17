@@ -581,6 +581,7 @@ describe('TurnHistoryFold v5.2（外层状态条 = 唯一折叠入口，工作�
     expect(screen.getByRole('button', { name: '确认' })).toBeTruthy()
   })
 
+
   it('多轮审批：批准后的授权间隙折叠头不收起（approval latch），下一轮待授权仍可见', () => {
     const now = Date.now()
     const toolOf = (id: string, status: string) => ({

@@ -96,8 +96,6 @@ export type HomeAutoStats = {
 
 export type HomeDashboardData = {
   loading: boolean
-  /** 加载阶段文案（卡住时直接显示在横幅，便于对照网关日志） */
-  loadPhase: string | null
   error: string | null
   kpis: HomeKpi[]
   trendData: HomeTrendPoint[]
@@ -384,9 +382,6 @@ export function useHomeDashboardData(opts?: { rangeDays?: number }): HomeDashboa
   const rangeDays = opts?.rangeDays ?? 7
   const initialCache = peekHomeDashboardCache()
   const [loading, setLoading] = useState(() => !initialCache)
-  const [loadPhase, setLoadPhase] = useState<string | null>(() =>
-    initialCache ? null : '准备加载…',
-  )
   const [error, setError] = useState<string | null>(null)
   const [tasks, setTasks] = useState<any[]>(() => initialCache?.tasks ?? [])
   const [userItems, setUserItems] = useState<any[]>(() => initialCache?.userItems ?? [])
@@ -402,9 +397,7 @@ export function useHomeDashboardData(opts?: { rangeDays?: number }): HomeDashboa
     const t0 = Date.now()
     const phase = (msg: string) => {
       if (cancelled) return
-      const line = `${msg} (+${Date.now() - t0}ms)`
-      setLoadPhase(line)
-      console.info('[home-dashboard]', line)
+      console.info('[home-dashboard]', `${msg} (+${Date.now() - t0}ms)`)
     }
     ;(async () => {
       const cachedHit = peekHomeDashboardCache()
@@ -416,7 +409,6 @@ export function useHomeDashboardData(opts?: { rangeDays?: number }): HomeDashboa
         setAppsRaw(cachedHit.appsRaw)
         setRoles(cachedHit.roles)
         setLoading(false)
-        setLoadPhase(null)
         setError(null)
       } else {
         setLoading(true)
@@ -508,7 +500,6 @@ export function useHomeDashboardData(opts?: { rangeDays?: number }): HomeDashboa
       } finally {
         if (!cancelled) {
           setLoading(false)
-          setLoadPhase(null)
         }
       }
     })()
@@ -820,7 +811,6 @@ export function useHomeDashboardData(opts?: { rangeDays?: number }): HomeDashboa
 
     return {
       loading,
-      loadPhase,
       error,
       kpis,
       trendData: buildTrend(tasks, rangeDays),
@@ -833,5 +823,5 @@ export function useHomeDashboardData(opts?: { rangeDays?: number }): HomeDashboa
       autoStats,
       refresh,
     }
-  }, [appsRaw, automations, error, loadPhase, loading, rangeDays, refresh, roles, tasks, userItems])
+  }, [appsRaw, automations, error, loading, rangeDays, refresh, roles, tasks, userItems])
 }

@@ -890,14 +890,7 @@ export function EvoFlowHomeDashboard({ onPrompt, workspaceLabel = '', workspaceP
         </header>
 
         {data.loading ? (
-          <div className="evo-home-banner evo-home-banner--loading" title={data.loadPhase || undefined}>
-            正在加载工作台数据…
-            {data.loadPhase ? (
-              <span className="evo-home-banner-phase" style={{ display: 'block', marginTop: 4, opacity: 0.75, fontSize: 12 }}>
-                {data.loadPhase}
-              </span>
-            ) : null}
-          </div>
+          <div className="evo-home-banner evo-home-banner--loading">正在加载工作台数据…</div>
         ) : null}
         {data.error ? (
           <div className="evo-home-banner evo-home-banner--error">
