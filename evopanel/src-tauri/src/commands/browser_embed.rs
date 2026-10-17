@@ -2254,6 +2254,8 @@ pub async fn browser_embed_set_zoom(
         browser_cdp_server::log_line(&format!(
             "[browser-embed] set_zoom label={label} factor={scale:.2}"
         ));
+        // 工具栏比例跟这次写入对齐。Ctrl+滚轮另由 ZoomFactorChanged 推送。
+        let _ = app.emit("browser-embed-zoom", serde_json::json!({ "factor": scale }));
         Ok(true)
     }
 }

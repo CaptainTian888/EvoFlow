@@ -51,9 +51,9 @@ export type BrowserStreamStatus = 'connecting' | 'live' | 'reconnecting' | 'erro
 /** Zoom presets ported from ZCode browser viewport zoom (fit + fixed percentages). */
 const ZOOM_OPTIONS = ['fit', '50', '67', '75', '100', '125', '150', '200'] as const
 type ZoomOption = (typeof ZOOM_OPTIONS)[number]
-const EMBED_ZOOM_STORAGE_KEY = 'evoflow-browser-embed-zoom-v2'
-/** 默认「适应窗口」：按槽位宽高自动挑缩放——窄栏更小、大窗更大。 */
-const DEFAULT_EMBED_ZOOM: ZoomOption = 'fit'
+const EMBED_ZOOM_STORAGE_KEY = 'evoflow-browser-embed-zoom-v3'
+/** 打开时固定 75%，不跟槽位宽窄自动变。 */
+const DEFAULT_EMBED_ZOOM: ZoomOption = '75'
 
 function readStoredEmbedZoom(): ZoomOption {
   try {
@@ -237,6 +237,7 @@ function BrowserChromeBar({
   refreshBusy,
   canRefresh,
   zoom,
+  liveZoomPercent,
   zoomVisible,
   viewportBusy,
   viewport,
@@ -258,6 +259,8 @@ function BrowserChromeBar({
   refreshBusy?: boolean
   canRefresh?: boolean
   zoom?: ZoomOption
+  /** WebView2 当前 ZoomFactor，四舍五入成百分比。有值时下拉框显示它。 */
+  liveZoomPercent?: number | null
   zoomVisible?: boolean
   viewportBusy?: boolean
   viewport?: BrowserViewportSize
@@ -376,11 +379,25 @@ function BrowserChromeBar({
         {zoomVisible || onZoomChange ? (
           <select
             className="browser-panel-zoom"
-            value={zoom || DEFAULT_EMBED_ZOOM}
-            title="页面缩放：适应窗口随侧栏宽窄自动调整；页面内也可 Ctrl+滚轮"
+            value={
+              liveZoomPercent != null && Number.isFinite(liveZoomPercent)
+                ? String(liveZoomPercent)
+                : zoom || DEFAULT_EMBED_ZOOM
+            }
+            title="页面缩放，与内嵌网页的实际比例同步。Ctrl+滚轮或捏合也会改这里"
             aria-label="页面缩放"
-            onChange={(event) => onZoomChange?.(event.target.value as ZoomOption)}
+            onChange={(event) => {
+              const raw = event.target.value
+              if ((ZOOM_OPTIONS as readonly string[]).includes(raw)) {
+                onZoomChange?.(raw as ZoomOption)
+              }
+            }}
           >
+            {liveZoomPercent != null &&
+            Number.isFinite(liveZoomPercent) &&
+            !(ZOOM_OPTIONS as readonly string[]).includes(String(liveZoomPercent)) ? (
+              <option value={String(liveZoomPercent)}>{liveZoomPercent}%</option>
+            ) : null}
             {ZOOM_OPTIONS.map((option) => (
               <option key={option} value={option}>
                 {option === 'fit' ? '适应窗口' : `${option}%`}
@@ -1241,6 +1258,11 @@ export const BrowserPanel = memo(function BrowserPanel({
   const effectiveShared = sharedBrowser || runtime.sharedBrowser
   const operating = runtime.operating
   const [zoom, setZoom] = useState<ZoomOption>(() => readStoredEmbedZoom())
+  /** WebView 实际比例（Ctrl+滚轮 / 工具栏写入都会更新）。 */
+  const [liveZoomPercent, setLiveZoomPercent] = useState<number | null>(null)
+  const programmaticFactorRef = useRef<number | null>(null)
+  /** 用户已用滚轮改过比例时，适应窗口不再把 ZoomFactor 写回去。 */
+  const userZoomLockRef = useRef(false)
   const [streamStatus, setStreamStatus] = useState<BrowserStreamStatus>('idle')
   const [refreshNonce, setRefreshNonce] = useState(0)
   const [refreshBusy, setRefreshBusy] = useState(false)
@@ -1641,6 +1663,7 @@ export const BrowserPanel = memo(function BrowserPanel({
   const panelRootRef = useRef<HTMLDivElement | null>(null)
 
   const handleZoomChange = useCallback((next: ZoomOption) => {
+    userZoomLockRef.current = false
     setZoom(next)
     try {
       localStorage.setItem(EMBED_ZOOM_STORAGE_KEY, next)
@@ -1648,6 +1671,29 @@ export const BrowserPanel = memo(function BrowserPanel({
       /* ignore */
     }
   }, [])
+
+  useEffect(() => {
+    if (!preferEmbeddedBrowser) return
+    let cancelled = false
+    let unlisten: (() => void) | undefined
+    void import('@tauri-apps/api/event').then(async ({ listen }) => {
+      if (cancelled) return
+      unlisten = await listen<{ factor?: number }>('browser-embed-zoom', (ev) => {
+        const factor = Number(ev.payload?.factor)
+        if (!Number.isFinite(factor) || factor <= 0) return
+        const percent = Math.round(factor * 100)
+        setLiveZoomPercent(percent)
+        const programmed = programmaticFactorRef.current
+        if (programmed != null && Math.abs(factor - programmed) > 0.035) {
+          userZoomLockRef.current = true
+        }
+      })
+    })
+    return () => {
+      cancelled = true
+      unlisten?.()
+    }
+  }, [preferEmbeddedBrowser])
 
   // 把工具栏缩放落到 WebView2 ZoomFactor（CSS zoom 管不到原生 HWND）。
   // 「适应窗口」跟槽位尺寸走：侧栏窄 → 更小；窗口放大 → 更大。
@@ -1657,11 +1703,13 @@ export const BrowserPanel = memo(function BrowserPanel({
     if (!tid) return
 
     const apply = () => {
+      if (userZoomLockRef.current) return
       const slot =
         panelRootRef.current?.querySelector('.browser-panel-embed-slot') ||
         panelRootRef.current?.querySelector('.browser-panel-body')
       const rect = slot instanceof HTMLElement ? slot.getBoundingClientRect() : null
       const factor = embedZoomFactor(zoom, rect?.width || 0, rect?.height || 0)
+      programmaticFactorRef.current = factor
       void browserEmbedSetZoom(tid, factor).then((ok) => {
         if (!ok) dbgWarn(`[browser-panel] setZoom failed factor=${factor} zoom=${zoom}`)
       })
@@ -1713,6 +1761,7 @@ export const BrowserPanel = memo(function BrowserPanel({
           Boolean(iframeSrc || effectivePageUrl)
         }
         zoom={zoom}
+        liveZoomPercent={preferEmbeddedBrowser ? liveZoomPercent : null}
         zoomVisible={zoomVisible || isResponsiveMode}
         viewportBusy={viewportBusy}
         viewport={viewport || DEFAULT_BROWSER_VIEWPORT}

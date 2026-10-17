@@ -30,12 +30,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use serde_json::{json, Value};
-use tauri::{AppHandle, Manager, WebviewWindow};
+use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 use webview2_com::{
     CallDevToolsProtocolMethodCompletedHandler, CoTaskMemPWSTR, CompletedClosure,
     DevToolsProtocolEventReceivedEventHandler, NewWindowRequestedEventHandler,
+    ZoomFactorChangedEventHandler,
 };
-use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2;
+use webview2_com::Microsoft::Web::WebView2::Win32::{ICoreWebView2, ICoreWebView2Controller};
 // The WebView2 COM bindings are generated against `windows-core`; the
 // `Interface`/`Param` traits they need come from that crate rather than
 // `windows`, even though both are version 0.61.
@@ -160,16 +161,58 @@ fn install_same_window_popup_takeover(webview: &ICoreWebView2, label: &str) {
 
 /// Capture CoreWebView2 right after embed create.
 /// Wait on the caller thread — never PeekMessage-pump on the UI thread.
+fn emit_embed_zoom(app: &AppHandle, controller: &ICoreWebView2Controller) {
+    let mut factor = 0.0f64;
+    if unsafe { controller.ZoomFactor(&mut factor) }.is_err() {
+        return;
+    }
+    if !factor.is_finite() || factor <= 0.0 {
+        return;
+    }
+    let _ = app.emit("browser-embed-zoom", json!({ "factor": factor }));
+}
+
+/// Ctrl+滚轮 / 捏合改的是控制器 ZoomFactor，工具栏读不到 CSS。
+/// 变化时把实际比例推给面板。
+fn install_embed_zoom_watch(app: &AppHandle, controller: &ICoreWebView2Controller) {
+    let app_evt = app.clone();
+    let handler = ZoomFactorChangedEventHandler::create(Box::new(move |controller, _| {
+        if let Some(controller) = controller.as_ref() {
+            emit_embed_zoom(&app_evt, controller);
+        }
+        Ok(())
+    }));
+    let mut token = 0i64;
+    match unsafe { controller.add_ZoomFactorChanged(&handler, &mut token) } {
+        Ok(()) => {
+            std::mem::forget(handler);
+            emit_embed_zoom(app, controller);
+            crate::commands::browser_cdp_server::log_line(&format!(
+                "[browser-cdp] zoom watch installed token={token}"
+            ));
+        }
+        Err(e) => {
+            crate::commands::browser_cdp_server::log_line(&format!(
+                "[browser-cdp] zoom watch failed: {e}"
+            ));
+        }
+    }
+}
+
 pub fn capture_core_webview2(app: &AppHandle, window: &WebviewWindow, label: &str) {
     let (tx, rx) = std::sync::mpsc::sync_channel::<bool>(1);
     let win = window.clone();
     let label_owned = label.to_string();
+    let app_zoom = app.clone();
     if app
         .run_on_main_thread(move || {
             let label_cb = label_owned.clone();
             let tx_done = tx.clone();
+            let app_zoom = app_zoom.clone();
             if let Err(e) = win.with_webview(move |platform| {
-                match unsafe { platform.controller().CoreWebView2() } {
+                let controller = platform.controller();
+                install_embed_zoom_watch(&app_zoom, &controller);
+                match unsafe { controller.CoreWebView2() } {
                     Ok(wv) => {
                         install_same_window_popup_takeover(&wv, &label_cb);
                         if let Ok(mut g) = core_webview_store().lock() {
