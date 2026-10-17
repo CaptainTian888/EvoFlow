@@ -106,6 +106,8 @@ Windows：`.\scripts\windows\dev-stack-isolated.bat`
 
 中文导读：[docs/contribute/](docs/contribute/index.md) · 支持渠道：[SUPPORT.md](SUPPORT.md)
 
+维护者升版本：**[RELEASE.md](RELEASE.md)**（VERSION / CHANGELOG / PRODUCT-NOTES / latest.json / tag）
+
 ---
 
 ## 支持项目

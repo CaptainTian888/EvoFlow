@@ -104,6 +104,8 @@ Bug reports, docs fixes, and PRs are welcome. Read [CONTRIBUTING.md](CONTRIBUTIN
 
 Also: [SUPPORT.md](SUPPORT.md)
 
+Maintainers shipping a desktop release: **[RELEASE.md](RELEASE.md)** (VERSION / CHANGELOG / PRODUCT-NOTES / latest.json / tag).
+
 ---
 
 ## Support the project

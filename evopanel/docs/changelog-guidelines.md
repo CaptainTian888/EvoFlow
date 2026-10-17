@@ -1,11 +1,12 @@
 # CHANGELOG 编写规范
 
-本文档约束版本变更日志的编写方式，确保记录内容对外部用户清晰、有用。
+本文档只约束**怎么写**变更日志。  
+**每次升版本要改哪些文件、跑什么命令** → 仓库根 [RELEASE.md](../../RELEASE.md)。
 
-发版时除本文件外，还必须同步写：
+发版时除 `CHANGELOG.md` 外，还必须同步写：
 
 - `scripts/maintainer/windows/release-notes/PRODUCT-NOTES-x.y.z.md`（CI / GitHub Release 硬依赖）
-- `scripts/maintainer/update/latest.json`（发版草稿；装包后才推公仓 `update/latest.json`）
+- `scripts/maintainer/update/latest.json` 的 `changelog`（升级横幅；装包后才推公仓 `update/latest.json`）
 
 若本版包含**用户可感知的新模块**（新侧栏入口、新主流程），还必须补齐用户文档，避免「只有发版说明、产品内无帮助」：
 
@@ -13,8 +14,6 @@
 - `docs/user/guides/...`（操作；可与 explanation 合并时至少保留一篇）
 - `evopanel/src/lib/page-help.js` 对应路由的帮助词条
 - 在 `docs/user/guides/README.md`（及必要时 `docs/user/README.md`）挂上链接
-
-清单与操作步骤见 `scripts/maintainer/windows/README.md`。
 
 ---
 

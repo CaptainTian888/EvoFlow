@@ -2,9 +2,11 @@
 
 Local desktop release helpers for this public repo (`EvovexAI/EvoFlow`). Contributor day-to-day: `../windows/` and `../../README.md`.
 
+**升版本清单（VERSION / 三份说明 / tag）见仓库根 [RELEASE.md](../../../RELEASE.md)。** 下文是 Windows 本地打包与上传。
+
 ## Must-have for a public desktop release
 
-1. Write `release-notes/PRODUCT-NOTES-x.y.z.md` (match `evopanel` version; public line starts at **1.0.0**).
+1. 按 [RELEASE.md](../../../RELEASE.md) 完成版本同步 + `CHANGELOG` + `PRODUCT-NOTES-x.y.z.md` + `latest.json` changelog。
 2. Copy `local-publish.env.example` → `local-publish.env` (gitignored). Set `GITHUB_TOKEN` if `gh` is not available.
 3. One-shot:
 
