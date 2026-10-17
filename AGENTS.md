@@ -1,7 +1,5 @@
 # EvoFlow
 
-本项目的 AI 可消费知识库位于 [`.codebasewiki/`](./.codebasewiki/)(多工具按 [AGENTS.md 标准](https://agents.md/) 自动发现本文件)。
-
 ## 桌面发版
 升版本 / 打安装包前必读仓库根 [RELEASE.md](./RELEASE.md)（唯一版本源 `evopanel/VERSION`；三份说明；勿只改 package.json）。
 
