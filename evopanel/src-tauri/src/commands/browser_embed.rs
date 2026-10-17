@@ -1532,6 +1532,8 @@ fn create_embed_window(
         // 面板不开就不显示，set_bounds 接管时再 show。HTTP CDP 不依赖可见性。
         .visible(start_visible)
         .focused(false)
+        // wry 默认关掉 ZoomFactor。不打开则 Ctrl+滚轮 / 捏合都不会放大缩小整页。
+        .zoom_hotkeys_enabled(true)
         // builder 的 position/inner_size 是逻辑像素。传入值已经是客户区物理像素，
         // 再乘 scale_factor 会把窗口推到槽位外面（实测 1563 → 屏幕 2880）。
         .position(x / scale.max(1.0), y / scale.max(1.0))
