@@ -19,7 +19,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu.js";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs.js";
+import { Tabs, TabsContent } from "@/components/ui/tabs.js";
 import { Switch } from "@/components/ui/switch.js";
 import { ControlHintTooltip } from "@/ControlHintTooltip.js";
 import { TID_PLUGIN_STORE_BROWSE } from "@zcode/shared";
@@ -101,13 +101,11 @@ type PluginTabTarget = "plugins" | "mcps" | "skills" | "commands";
 type PluginTab = Exclude<PluginTabTarget, "commands">;
 
 function normalizePluginTab(tab: PluginTabTarget): PluginTab {
-  return tab === "commands" ? "plugins" : tab;
-}
-
-function getPluginTabCountClass(tab: PluginTabTarget, selectedTab: PluginTabTarget): string {
-  return tab === selectedTab
-    ? "text-ui-sm text-foreground-subtle"
-    : "text-ui-sm text-foreground-subtlest";
+  // 插件市场暂未迁完 MCP / 技能，交互 tab 一律落在插件列表。
+  if (tab === "commands" || tab === "mcps" || tab === "skills") {
+    return "plugins";
+  }
+  return tab;
 }
 
 type PluginScope =
@@ -1181,66 +1179,33 @@ export function PluginsSection({
                 onScopeKeyChange={setPickedScopeKey}
               />
               <div className="hidden h-4 w-px bg-border sm:block" aria-hidden="true" />
-              {mode === "plugin" ? (
-                <TabsList variant="line" className="h-7 max-w-full gap-1 overflow-x-auto p-0">
-                  <TabsTrigger
-                    value="plugins"
-                    className="h-7 flex-none rounded-full px-3 hover:bg-hover data-active:!bg-selected data-active:hover:!bg-hover after:hidden"
-                  >
-                    {intl.formatMessage({
-                      id: "settings.plugin.tab.plugins",
-                    })}
-                    <span className={getPluginTabCountClass("plugins", selectedTab)}>
-                      {capabilityCounts.plugins}
-                    </span>
-                  </TabsTrigger>
-                  <TabsTrigger
-                    value="mcps"
-                    className="h-7 flex-none rounded-full px-3 hover:bg-hover data-active:!bg-selected data-active:hover:!bg-hover after:hidden"
-                  >
-                    {intl.formatMessage({
-                      id: "settings.plugin.tab.mcps",
-                    })}
-                    <span className={getPluginTabCountClass("mcps", selectedTab)}>
-                      {capabilityCounts.mcps}
-                    </span>
-                  </TabsTrigger>
-                  <TabsTrigger
-                    value="skills"
-                    className="h-7 flex-none rounded-full px-3 hover:bg-hover data-active:!bg-selected data-active:hover:!bg-hover after:hidden"
-                  >
-                    {intl.formatMessage({
-                      id: "settings.plugin.tab.skills",
-                    })}
-                    <span className={getPluginTabCountClass("skills", selectedTab)}>
-                      {capabilityCounts.skills}
-                    </span>
-                  </TabsTrigger>
-                </TabsList>
-              ) : (
-                <div
-                  data-independent-capability-count="true"
-                  className="flex h-7 items-center gap-1 px-3 text-ui-base font-medium text-foreground"
-                >
-                  <span>
-                    {intl.formatMessage({
-                      id:
-                        mode === "mcp"
-                          ? "settings.plugin.tab.mcps"
-                          : mode === "skill"
-                            ? "settings.plugin.tab.skills"
-                            : "settings.plugin.tab.commands",
-                    })}
-                  </span>
-                  <span className="text-ui-sm text-foreground-subtle">
-                    {mode === "mcp"
-                      ? capabilityCounts.mcps
-                      : mode === "skill"
-                        ? capabilityCounts.skills
-                        : capabilityCounts.commands}
-                  </span>
-                </div>
-              )}
+              {/* 插件市场暂藏 MCP / 技能 tab；独立入口仍走 mode=mcp|skill|command */}
+              <div
+                data-independent-capability-count="true"
+                className="flex h-7 items-center gap-1 px-3 text-ui-base font-medium text-foreground"
+              >
+                <span>
+                  {intl.formatMessage({
+                    id:
+                      mode === "mcp"
+                        ? "settings.plugin.tab.mcps"
+                        : mode === "skill"
+                          ? "settings.plugin.tab.skills"
+                          : mode === "command"
+                            ? "settings.plugin.tab.commands"
+                            : "settings.plugin.tab.plugins",
+                  })}
+                </span>
+                <span className="text-ui-sm text-foreground-subtle">
+                  {mode === "mcp"
+                    ? capabilityCounts.mcps
+                    : mode === "skill"
+                      ? capabilityCounts.skills
+                      : mode === "command"
+                        ? capabilityCounts.commands
+                        : capabilityCounts.plugins}
+                </span>
+              </div>
             </div>
             <SettingsSearchInput
               data-testid="plugin-settings-search"
@@ -1299,7 +1264,7 @@ export function PluginsSection({
             />
           </TabsContent>
         ) : null}
-        {mode === "plugin" || mode === "mcp" ? (
+        {mode === "mcp" ? (
           <TabsContent
             forceMount
             value="mcps"
@@ -1335,7 +1300,7 @@ export function PluginsSection({
             )}
           </TabsContent>
         ) : null}
-        {mode === "plugin" || mode === "skill" ? (
+        {mode === "skill" ? (
           <TabsContent forceMount value="skills" className="mt-6 data-[state=inactive]:hidden">
             {target ? (
               <SkillsSection
