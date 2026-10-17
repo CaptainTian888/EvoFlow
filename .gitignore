@@ -277,6 +277,7 @@ package.json
 # Track evopanel + website manifests (exception to rules above)
 !evopanel/package.json
 !evopanel/package-lock.json
+!evopanel/vendor/**/package.json
 !website/package.json
 !website/**/package.json
 !clawdevoflow/package.json
