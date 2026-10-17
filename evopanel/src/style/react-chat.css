@@ -5946,27 +5946,39 @@ html.evopanel-tauri .react-chat-main-col .msg-tool-markdown-content code {
   /* 短对话：内容不足一屏时沉底，与长对话「最新在底部」一致 */
   display: flex;
   flex-direction: column;
+  /* 滚动条：平时完全隐藏（stable 槽位仍保留，不会布局抖动）。
+     比右侧面板更克制：悬停整个对话区不显示，鼠标靠近右缘或滚动时
+     由 JS（scrollbar-reveal.ts）挂 --sb-show 才淡显。 */
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+.react-vlist-scroller.react-vlist-scroller--sb-show {
+  scrollbar-color: color-mix(in srgb, var(--text-tertiary, #9ca3af) 60%, transparent) transparent;
 }
 
 .react-vlist-scroller::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 6px;
+  height: 6px;
 }
 .react-vlist-scroller::-webkit-scrollbar-track {
   background: transparent;
 }
 .react-vlist-scroller::-webkit-scrollbar-thumb {
-  background: var(--border-primary);
-  border-radius: 5px;
+  background: transparent;
+  border-radius: 999px;
   border: 1px solid transparent;
   background-clip: padding-box;
 }
-.react-vlist-scroller::-webkit-scrollbar-thumb:hover {
+.react-vlist-scroller--sb-show::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--text-tertiary, #9ca3af) 60%, transparent);
+}
+.react-vlist-scroller--sb-show::-webkit-scrollbar-thumb:hover {
   background: var(--text-tertiary);
   border: 1px solid transparent;
   background-clip: padding-box;
 }
-.react-vlist-scroller::-webkit-scrollbar-thumb:active {
+.react-vlist-scroller--sb-show::-webkit-scrollbar-thumb:active {
   background: var(--text-secondary);
   border: 1px solid transparent;
   background-clip: padding-box;
@@ -18831,11 +18843,7 @@ html.dark .msg-tool--in-activity-fold {
   max-width: none;
 }
 
-.msg-tool--in-activity-fold .msg-tool-item--in-fold.msg-tool-item--terminal .msg-tool-short-label,
-.msg-tool--in-activity-fold .msg-tool-item--in-fold.msg-tool-item--bash .msg-tool-short-label,
-.msg-tool--in-activity-fold .msg-tool-item--in-fold.msg-tool-item--execute_command .msg-tool-short-label {
-  display: none;
-}
+/* 终端行保留短标签「终端 / 正在执行」（对齐 ZCode：图标 + kind + 命令） */
 
 .react-msg-tool .msg-tool-elapsed,
 .msg-tool--in-activity-fold .msg-tool-item--in-fold .msg-tool-elapsed {
@@ -18851,10 +18859,13 @@ html.dark .msg-tool--in-activity-fold {
   text-align: right;
 }
 
+/* 收起态摘要命令用 sans（对齐 ZCode secondaryText）；展开面板内命令才是 mono */
 .msg-tool--in-activity-fold .msg-tool-item--in-fold.msg-tool-item--terminal .msg-tool-brief,
 .msg-tool--in-activity-fold .msg-tool-item--in-fold.msg-tool-item--bash .msg-tool-brief,
 .msg-tool--in-activity-fold .msg-tool-item--in-fold.msg-tool-item--execute_command .msg-tool-brief {
-  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  font-family: inherit;
+  font-weight: 400;
+  color: var(--text-tertiary, #9ca3af);
 }
 
 .msg-tool--in-activity-fold .msg-tool-item--in-fold .msg-tool-brief--pending {
@@ -19022,8 +19033,40 @@ html.dark .msg-tool--in-activity-fold {
   box-shadow: none;
 }
 
+/* 终端 execute：摘要在面板外，整卡边框只留给内联详情面板（对齐 ZCode，避免双框） */
+.msg-tool--in-activity-fold .msg-tool-item--in-fold.msg-tool-item--bash[open],
+.msg-tool--in-activity-fold .msg-tool-item--in-fold.msg-tool-item--terminal[open],
+.msg-tool--in-activity-fold .msg-tool-item--in-fold.msg-tool-item--execute_command[open],
+.msg-tool--in-activity-fold .msg-tool-item--in-fold.msg-tool-item--code_execution[open] {
+  padding: 2px 0 4px;
+  margin: 0;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+html[data-theme='dark'] .msg-tool--in-activity-fold .msg-tool-item--in-fold.msg-tool-item--bash[open],
+html.dark .msg-tool--in-activity-fold .msg-tool-item--in-fold.msg-tool-item--bash[open],
+html[data-theme='dark'] .msg-tool--in-activity-fold .msg-tool-item--in-fold.msg-tool-item--terminal[open],
+html.dark .msg-tool--in-activity-fold .msg-tool-item--in-fold.msg-tool-item--terminal[open],
+html[data-theme='dark'] .msg-tool--in-activity-fold .msg-tool-item--in-fold.msg-tool-item--execute_command[open],
+html.dark .msg-tool--in-activity-fold .msg-tool-item--in-fold.msg-tool-item--execute_command[open],
+html[data-theme='dark'] .msg-tool--in-activity-fold .msg-tool-item--in-fold.msg-tool-item--code_execution[open],
+html.dark .msg-tool--in-activity-fold .msg-tool-item--in-fold.msg-tool-item--code_execution[open] {
+  background: transparent;
+  border: none;
+}
+
 .msg-tool--in-activity-fold .msg-tool-item--in-fold[open] > .msg-tool-body {
   margin-top: 6px;
+}
+
+.msg-tool--in-activity-fold .msg-tool-item--in-fold.msg-tool-item--bash[open] > .msg-tool-body,
+.msg-tool--in-activity-fold .msg-tool-item--in-fold.msg-tool-item--terminal[open] > .msg-tool-body,
+.msg-tool--in-activity-fold .msg-tool-item--in-fold.msg-tool-item--execute_command[open] > .msg-tool-body,
+.msg-tool--in-activity-fold .msg-tool-item--in-fold.msg-tool-item--code_execution[open] > .msg-tool-body {
+  margin-top: 8px;
 }
 
 /* 折叠内展开的工具详情：输出区不截成内嵌滚动，滚轮交给会话列表 */
@@ -21073,6 +21116,31 @@ html[data-custom-bg='1'] .react-chat-main-col--home {
   /* 继承 .react-vlist-scroller 的 flex/height，保证可滚 */
   min-height: 0;
   height: 100%;
+  /* 平时隐藏滚动条，鼠标进入再淡显（与 .react-vlist-scroller 一致） */
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+.chat-messages-inner--home:hover {
+  scrollbar-color: color-mix(in srgb, var(--text-tertiary, #9ca3af) 60%, transparent) transparent;
+}
+
+.chat-messages-inner--home::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.chat-messages-inner--home::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 999px;
+}
+
+.chat-messages-inner--home:hover::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--text-tertiary, #9ca3af) 60%, transparent);
+}
+
+.chat-messages-inner--home::-webkit-scrollbar-thumb:hover {
+  background: var(--text-tertiary);
 }
 
 /* 首页滚动落在内层 scroller，外层保持裁剪即可 */
@@ -22232,11 +22300,6 @@ html[data-custom-bg='1'] .react-chat-main-col--home {
   padding: 10px 12px;
   border-radius: 12px;
   font-size: var(--ef-text-sm);
-}
-
-.evo-home-banner--loading {
-  background: var(--info-muted);
-  color: var(--info);
 }
 
 .evo-home-banner--error {
@@ -24713,6 +24776,75 @@ html[data-theme='dark'] .react-chat-right-stage-panel,
 html.dark .react-chat-right-stage-panel {
   background: var(--bg-secondary, #111827);
   border-left-color: var(--border, #374151);
+}
+
+/* ── 右侧面板滚动条：细条 + 平时透明，鼠标进入面板才淡显 ──
+   覆盖：本轮产物 / 工作区 / 工作流 / 思维导图 / 热榜 / 浏览器 / 平台操作等
+   Right Stage 面板，以及右下角悬浮摘要卡（.chat-summary-panel）。 */
+.react-chat-artifacts-panel,
+.react-chat-right-stage-panel,
+.chat-summary-panel-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+.react-chat-artifacts-panel:hover,
+.react-chat-right-stage-panel:hover,
+.chat-summary-panel-scroll:hover {
+  scrollbar-color: color-mix(in srgb, var(--text-tertiary, #9ca3af) 55%, transparent) transparent;
+}
+
+.react-chat-artifacts-panel ::-webkit-scrollbar,
+.react-chat-right-stage-panel ::-webkit-scrollbar,
+.chat-summary-panel-scroll::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.react-chat-artifacts-panel ::-webkit-scrollbar-track,
+.react-chat-right-stage-panel ::-webkit-scrollbar-track,
+.chat-summary-panel-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.react-chat-artifacts-panel ::-webkit-scrollbar-thumb,
+.react-chat-right-stage-panel ::-webkit-scrollbar-thumb,
+.chat-summary-panel-scroll::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background-clip: padding-box;
+}
+
+.react-chat-artifacts-panel:hover ::-webkit-scrollbar-thumb,
+.react-chat-right-stage-panel:hover ::-webkit-scrollbar-thumb,
+.chat-summary-panel-scroll:hover::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--text-tertiary, #9ca3af) 55%, transparent);
+}
+
+.react-chat-artifacts-panel ::-webkit-scrollbar-thumb:hover,
+.react-chat-right-stage-panel ::-webkit-scrollbar-thumb:hover,
+.chat-summary-panel-scroll::-webkit-scrollbar-thumb:hover,
+.chat-summary-panel-scroll::-webkit-scrollbar-thumb:active {
+  background: var(--text-tertiary, #9ca3af);
+}
+
+html[data-theme='dark'] .react-chat-artifacts-panel:hover,
+html.dark .react-chat-artifacts-panel:hover,
+html[data-theme='dark'] .react-chat-right-stage-panel:hover,
+html.dark .react-chat-right-stage-panel:hover,
+html[data-theme='dark'] .chat-summary-panel-scroll:hover,
+html.dark .chat-summary-panel-scroll:hover {
+  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+}
+
+html[data-theme='dark'] .react-chat-artifacts-panel:hover ::-webkit-scrollbar-thumb,
+html.dark .react-chat-artifacts-panel:hover ::-webkit-scrollbar-thumb,
+html[data-theme='dark'] .react-chat-right-stage-panel:hover ::-webkit-scrollbar-thumb,
+html.dark .react-chat-right-stage-panel:hover ::-webkit-scrollbar-thumb,
+html[data-theme='dark'] .chat-summary-panel-scroll:hover::-webkit-scrollbar-thumb,
+html.dark .chat-summary-panel-scroll:hover::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2);
 }
 
 html[data-theme='dark'] .react-chat-news-dashboard-panel,
@@ -30960,6 +31092,11 @@ html.dark .browser-step-group-header {
   background: transparent;
 }
 
+/* 终端勿用琥珀徽章色；SquareTerminal 与其它工具同为次级灰 */
+.react-msg-tool .evf-tcard-icon--terminal {
+  --evf-tc-color: var(--text-tertiary, #9ca3af);
+}
+
 .react-msg-tool .evf-tcard-icon svg {
   width: 16px;
   height: 16px;
@@ -31201,77 +31338,45 @@ html[data-theme='dark'] .react-chat-browser-panel .browser-panel-chrome {
   box-shadow: 0 1px 6px rgba(0, 0, 0, 0.12);
 }
 
-/* 工具行内联展开详情（ZCode 对齐：命令 + 输出 + 退出码 + 放大入口） */
+/* 行内终端：单块命令行区域（$ 命令 + 输出），无内层分区 */
 .msg-tool-inline-detail {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 8px 12px 10px 0;
-  min-width: 0;
-}
-
-.msg-tool-inline-detail__section {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-}
-
-.msg-tool-inline-detail__label {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 11px;
-  color: var(--text-tertiary, #9ca3af);
-}
-
-.msg-tool-inline-detail__exit {
-  padding: 0 6px;
-  border-radius: 999px;
-  background: color-mix(in srgb, #10b981 12%, transparent);
-  color: #059669;
-  font-size: 10.5px;
-  line-height: 16px;
-}
-
-.msg-tool-inline-detail__exit.is-failed {
-  background: color-mix(in srgb, #ef4444 12%, transparent);
-  color: #dc2626;
-}
-
-.msg-tool-inline-detail__expand {
-  margin-left: auto;
-  border: none;
-  background: transparent;
-  cursor: pointer;
-  color: var(--text-tertiary, #9ca3af);
-  font-size: 11px;
-  padding: 0 2px;
-}
-
-.msg-tool-inline-detail__expand:hover {
-  color: var(--text-secondary, #6b7280);
-  text-decoration: underline;
-}
-
-.msg-tool-inline-detail__cmd,
-.msg-tool-inline-detail__out {
-  margin: 0;
-  padding: 8px 10px;
-  max-height: 280px;
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+  max-height: 12lh;
+  margin: 0 0 8px;
+  padding: 10px 12px;
   overflow: auto;
-  background: var(--code-block-bg, rgba(0, 0, 0, 0.04));
-  border-radius: 6px;
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.08));
+  border-radius: 10px;
+  background: var(--bg-panel, var(--bg-secondary, rgba(127, 127, 127, 0.04)));
+  box-shadow: none;
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
-  font-size: 11.5px;
-  line-height: 1.55;
+  font-size: inherit;
+  line-height: 1.35;
   white-space: pre-wrap;
   word-break: break-word;
   color: var(--text-secondary, #475569);
 }
 
-.msg-tool-inline-detail__out.is-failed {
+.msg-tool-inline-detail.is-failed {
   color: #dc2626;
+}
+
+.msg-tool-inline-detail.is-running {
+  color: var(--text-primary, #111827);
+}
+
+/* 展开后摘要只留图标+「终端」（命令已在面板内，对齐 hideSecondaryTextWhenOpen） */
+.msg-tool-item[data-state='open'] > summary .msg-tool-brief--shell,
+.msg-tool-item[data-state='open'] > summary .msg-tool-brief--shell-fold {
+  display: none;
+}
+
+.msg-tool-item[data-state='open'] > summary .msg-tool-name-sep:has(+ .msg-tool-brief--shell),
+.msg-tool-item[data-state='open'] > summary .msg-tool-name-sep:has(+ .msg-tool-brief--shell-fold) {
+  display: none;
 }
 
 /* ==========================================================================

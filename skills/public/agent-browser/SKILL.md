@@ -40,7 +40,7 @@ terminal(command='agent-browser --session <name> click @e2')
 terminal(command='agent-browser --session <name> fill @e3 "search text"')
 terminal(command='agent-browser --session <name> press Enter')
 terminal(command='agent-browser --session <name> snapshot -c')   # page changed → refs stale
-terminal(command='agent-browser --session <name> screenshot /tmp/shot.png')  # optional pixels
+terminal(command='agent-browser --session <name> screenshot /tmp/shot.png')  # pixels auto-attach to your next context
 terminal(command='agent-browser --session <name> close')
 ```
 
@@ -77,8 +77,18 @@ browser. Pick a stable session name per thread (e.g. the chat UUID or
 | Need | Use |
 |------|-----|
 | Click, fill, read structure | `snapshot` |
-| CAPTCHA, dense layout, visual-only UI | `screenshot` (then read the file with `read_file` or `view_image`) |
+| CAPTCHA, dense layout, visual-only UI, verifying what the page looks like | `screenshot` — the pixels are **staged automatically** and attached to your next context, so you can judge the visual state right away (no second `read_file`/`view_image` step) |
 | Deliver a picture to the user | `screenshot` and reference the saved PNG path in the chat reply |
+
+Screenshot staging notes:
+
+- After a successful `agent-browser … screenshot <path>`, the harness detects the
+  saved file and stages it; the tool result will say so
+  (`staged for your next context — you will see the pixels`).
+- Staged pixels are budget-compressed (base64 ≤ 200KB) before injection, so use
+  `snapshot` for structure and `screenshot` when visual truth matters — both are cheap.
+- If the screenshot file could not be staged (e.g. model without vision), the result
+  falls back to the old text-only behavior; you can still `view_image` the path manually.
 
 ## Prerequisites (one-time, on the user's machine)
 

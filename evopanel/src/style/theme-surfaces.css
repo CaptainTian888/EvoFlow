@@ -720,7 +720,12 @@ html[data-translucent-ui='1'] .react-chat-main-col--home {
 html[data-theme='dark'] .react-chat-main-col--home .chat-messages-inner--home,
 html[data-translucent-ui='1'] .react-chat-main-col--home .chat-messages-inner--home {
   scrollbar-width: thin;
-  scrollbar-color: color-mix(in srgb, var(--text-primary) 22%, transparent) transparent;
+  scrollbar-color: transparent transparent;
+}
+
+html[data-theme='dark'] .react-chat-main-col--home .chat-messages-inner--home:hover,
+html[data-translucent-ui='1'] .react-chat-main-col--home .chat-messages-inner--home:hover {
+  scrollbar-color: color-mix(in srgb, var(--text-primary) 30%, transparent) transparent;
 }
 
 html[data-theme='dark'] .react-chat-main-col--home .chat-messages-inner--home::-webkit-scrollbar,
@@ -736,14 +741,19 @@ html[data-translucent-ui='1'] .react-chat-main-col--home .chat-messages-inner--h
 
 html[data-theme='dark'] .react-chat-main-col--home .chat-messages-inner--home::-webkit-scrollbar-thumb,
 html[data-translucent-ui='1'] .react-chat-main-col--home .chat-messages-inner--home::-webkit-scrollbar-thumb {
-  background: color-mix(in srgb, var(--text-primary) 22%, transparent);
+  background: transparent;
   border: none;
   border-radius: 999px;
 }
 
+html[data-theme='dark'] .react-chat-main-col--home .chat-messages-inner--home:hover::-webkit-scrollbar-thumb,
+html[data-translucent-ui='1'] .react-chat-main-col--home .chat-messages-inner--home:hover::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--text-primary) 30%, transparent);
+}
+
 html[data-theme='dark'] .react-chat-main-col--home .chat-messages-inner--home::-webkit-scrollbar-thumb:hover,
 html[data-translucent-ui='1'] .react-chat-main-col--home .chat-messages-inner--home::-webkit-scrollbar-thumb:hover {
-  background: color-mix(in srgb, var(--text-primary) 34%, transparent);
+  background: color-mix(in srgb, var(--text-primary) 45%, transparent);
 }
 
 /* ── 任务中心 + 任务详情 + 我的事项 ── */

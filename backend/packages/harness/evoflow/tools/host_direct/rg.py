@@ -1,4 +1,8 @@
-"""Ripgrep-style workspace content search (native ``rg`` when available, Python fallback)."""
+"""Retired from the model tool list. ZCode ``Grep`` / Bash ``rg`` replaced this.
+
+Ripgrep-style workspace content search (native ``rg`` when available, Python fallback).
+``_find_rg_binary`` is still used by the ZCode Grep port.
+"""
 
 from __future__ import annotations
 

@@ -73,7 +73,10 @@ export const ASSETS_ACTION_ZH: Record<string, string> = {
   profile: '更新画像',
 }
 
-const TERMINAL_KINDS = new Set(['bash', 'execute_command', 'terminal'])
+const TERMINAL_KINDS = new Set(['bash', 'execute_command', 'terminal', 'code_execution'])
+
+/** 折叠行摘要：压成单行，避免多行命令把时间线撑乱。 */
+const compactOneLine = (s: string) => String(s || '').replace(/\s+/g, ' ').trim()
 const WRITE_DELETE_KINDS = new Set([
   'write',
   'replace',
@@ -101,11 +104,11 @@ const briefFull = (s: string) => String(s || '').trim()
 
 const leafName = (path: string): string => pathLeafBrief(path) || String(path || '').trim()
 
-/** 终端族：优先完整命令（失败拼 exit 码），无入参时从输出首行回填。 */
+/** 终端族：优先单行命令（失败拼 exit 码）；尚无命令时显示「正在执行」。 */
 function terminalBrief(ctx: ToolCardBriefContext): string | null {
-  const { bashCommand, toolFailed, terminalExitCode, output } = ctx
-  if (bashCommand) {
-    const cmd = briefFull(bashCommand.trim())
+  const { bashCommand, toolFailed, terminalExitCode, output, running } = ctx
+  const cmd = bashCommand ? compactOneLine(bashCommand) : ''
+  if (cmd) {
     if (toolFailed) {
       const exit = terminalExitCode ?? null
       return exit != null && exit !== 0 ? `${cmd} · exit ${exit}` : `${cmd} · 失败`
@@ -114,9 +117,10 @@ function terminalBrief(ctx: ToolCardBriefContext): string | null {
   }
   const meaningful = firstMeaningfulShellOutputLine(output)
   if (meaningful) {
-    return briefFull(toolFailed ? `失败 · ${meaningful}` : meaningful)
+    return compactOneLine(toolFailed ? `失败 · ${meaningful}` : meaningful)
   }
-  return null
+  // kind 文案由 shortLabel（终端 / 正在执行）承担；无命令时不重复占位
+  return ''
 }
 
 /** 文件族：read 走来源标注摘要；写/删显示叶子文件名（流式期间也不被目录前缀挤没）；ls 走路径摘要。 */

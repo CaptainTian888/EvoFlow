@@ -64,7 +64,9 @@ type Props = {
   terminalStreams?: Record<string, TerminalStreamTask> | null
   subagentTasks?: Record<string, SubagentStreamTask> | null
   workflowSubtasks?: CollabSubtaskSnapshot[] | null
+  backgroundWorks?: Record<string, import('../chat-types.js').BackgroundWorkStreamItem> | null
   onOpenProcessItem?: (item: ProcessItem) => void
+  onStopProcessItem?: (item: ProcessItem) => void
 
   /** 智能体区（复用旧 AgentPane 载荷） */
   agentLabel: string
@@ -283,13 +285,34 @@ function MorePane({
   )
 }
 
+function formatElapsed(startedAt: number | undefined, now: number): string {
+  if (!startedAt) return ''
+  const sec = Math.max(0, Math.floor((now - startedAt) / 1000))
+  if (sec < 60) return `${sec}s`
+  const min = Math.floor(sec / 60)
+  const rem = sec % 60
+  if (min < 60) return `${min}m ${rem}s`
+  const hr = Math.floor(min / 60)
+  return `${hr}h ${min % 60}m`
+}
+
 function ProcessList({
   summary,
   onOpenItem,
+  onStopItem,
 }: {
   summary: ProcessSummary
   onOpenItem?: (item: ProcessItem) => void
+  onStopItem?: (item: ProcessItem) => void
 }) {
+  const [now, setNow] = useState(() => Date.now())
+  const hasRunning = summary.items.some((it) => it.state === 'running')
+  useEffect(() => {
+    if (!hasRunning) return
+    const timer = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [hasRunning])
+
   if (!summary.items.length) {
     return <div className="chat-summary-empty">当前没有运行中的进程。</div>
   }
@@ -297,8 +320,9 @@ function ProcessList({
     <ul className="chat-summary-process-list">
       {summary.items.map((it) => {
         const StateIcon = PROCESS_STATE_ICON[it.state]
+        const elapsed = it.state === 'running' ? formatElapsed(it.startedAt, now) : ''
         return (
-          <li key={it.id}>
+          <li key={it.id} className="chat-summary-process-row">
             <button
               type="button"
               className={`chat-summary-process-item is-${it.state}`}
@@ -308,9 +332,23 @@ function ProcessList({
               <StateIcon className="chat-summary-process-icon" data-state={it.state} aria-hidden />
               <span className="chat-summary-process-main">
                 <span className="chat-summary-process-label">{it.label}</span>
-                {it.detail ? <span className="chat-summary-process-detail">{it.detail}</span> : null}
+                <span className="chat-summary-process-detail">
+                  {elapsed || it.detail || PROCESS_STATE_LABEL[it.state]}
+                </span>
               </span>
             </button>
+            {it.state === 'running' && it.cancellable && it.workId && onStopItem ? (
+              <button
+                type="button"
+                className="chat-summary-process-stop"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onStopItem(it)
+                }}
+              >
+                停止
+              </button>
+            ) : null}
           </li>
         )
       })}
@@ -326,7 +364,9 @@ function ChatSummaryPanelInner({
   terminalStreams,
   subagentTasks,
   workflowSubtasks,
+  backgroundWorks,
   onOpenProcessItem,
+  onStopProcessItem,
   agentLabel,
   modelLabel,
   modelName,
@@ -395,8 +435,9 @@ function ChatSummaryPanelInner({
         terminalStreams,
         subagentTasks,
         workflowSubtasks,
+        backgroundWorks,
       }),
-    [terminalStreams, subagentTasks, workflowSubtasks],
+    [terminalStreams, subagentTasks, workflowSubtasks, backgroundWorks],
   )
 
   const pickPolicy = useCallback((next: ChatSummaryExpandPolicy) => {
@@ -450,13 +491,14 @@ function ChatSummaryPanelInner({
     if (displayMode === 'capsule') goPanel()
   }, [artifactFocusId, displayMode, goPanel])
 
-  // 展开策略：胶囊态 + 有进程在跑时自动撑成面板（用户手动收起后尊重选择）
+  // 展开策略：胶囊态 + 有进程在跑时自动撑成面板（用户手动收起后尊重选择）。
+  // 仅会话 isRunning、尚无进程项时不撑开，避免「还没开终端」就弹出状态卡暗示终端调用。
   const effectiveMode = useMemo<ChatSummaryDisplayMode>(() => {
     if (displayMode === 'hidden') return 'hidden'
     if (displayMode === 'panel') return 'panel'
-    if (policy === 'auto-expand' && !userCollapsed && (summary.running > 0 || isRunning)) return 'panel'
+    if (policy === 'auto-expand' && !userCollapsed && summary.running > 0) return 'panel'
     return 'capsule'
-  }, [displayMode, policy, userCollapsed, summary.running, isRunning])
+  }, [displayMode, policy, userCollapsed, summary.running])
 
   // auto-expand 只改了 effectiveMode 时，通知父级切回 panel，
   // 以便右侧空白从气泡撑成悬浮卡（并让出专用侧栏）。
@@ -722,7 +764,11 @@ function ChatSummaryPanelInner({
 
             {effectivePanelTab === 'process' ? (
               <div className="chat-summary-process-body">
-                <ProcessList summary={summary} onOpenItem={onOpenProcessItem} />
+                <ProcessList
+                  summary={summary}
+                  onOpenItem={onOpenProcessItem}
+                  onStopItem={onStopProcessItem}
+                />
               </div>
             ) : null}
 

@@ -1,4 +1,8 @@
-"""Find files by glob pattern under the bound workspace (bounded rglob)."""
+"""Retired from the model tool list. ZCode ``Glob`` / Bash ``find`` replaced this.
+
+Find files by glob pattern under the bound workspace (bounded rglob).
+``find_file_wallclock`` remains for the worker locate path.
+"""
 
 from __future__ import annotations
 

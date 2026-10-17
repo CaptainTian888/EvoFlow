@@ -119,7 +119,7 @@ const SOURCE_HEX: Record<string, string> = {
   other: '#94A3B8',
 }
 
-/** Cross-mount cache so new-session remount does not flash「正在加载工作台数据…」. */
+/** Cross-mount cache so new-session remount does not flash stale placeholders. */
 const HOME_DASHBOARD_CACHE_TTL_MS = 60_000
 
 type HomeDashboardCachePayload = {
@@ -433,7 +433,7 @@ export function useHomeDashboardData(opts?: { rangeDays?: number }): HomeDashboa
         if (cancelled) return
         phase('请求 tasks / items / automation / apps / roles')
         // Cap task payload — unbounded /api/tasks can be >1MB and freeze the
-        // home surface on「正在加载工作台数据…」while JSON.parse runs.
+        // home surface while JSON.parse runs.
         const settled = await Promise.allSettled([
           api.listAllTasks({ page_size: 200 }),
           api.listUserItems({ include_done: false }),

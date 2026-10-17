@@ -14,7 +14,7 @@ _CREW_DISALLOWED = [
 ]
 
 # 需要读表、写表、跑 Python（openpyxl / pandas / DuckDB）
-_SHEET_TOOLS = ["read", "write", "replace", "terminal", "rg", "find"]
+_SHEET_TOOLS = ["read", "write", "replace", "bash", "taskoutput", "taskstop"]
 
 _DATA_RULES = """
 <数据纪律 — 强制>

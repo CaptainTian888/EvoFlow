@@ -404,6 +404,12 @@ import {
 import { requestManualContextCompaction } from './lib/manual-context-compaction.js'
 import { mergeSubagentStreamEvent, normalizeSubagentStreamEvent } from './subagent-stream-merge.js'
 import { cloneTerminalStreamTask, cloneTerminalStreamsMap, mergeTerminalIntoTool, mergeTerminalStreamEvent } from './terminal-stream-merge.js'
+import { mergeBackgroundWorkEvent } from './lib/background-work-merge.js'
+import {
+  fetchBackgroundBashOutput,
+  listBackgroundBashWorks,
+  stopBackgroundBashWork,
+} from './lib/background-bash-api.js'
 import { collabDagDebug, collabDagDebugBannerOnce } from '../lib/collab-dag-debug.js'
 import { isSubtaskStreamDebugEnabled, subtaskStreamDebugBannerOnce } from '../lib/subtask-stream-debug.js'
 import { resetStreamMirrorDedupe } from './stream-console-mirror.js'
@@ -3085,7 +3091,7 @@ export default function ChatApp() {
     ) => {
       const target = resolveWorkspacePreviewTarget(rawUrl, { name: opts?.name })
       if (!target?.path) return
-      cancelPendingStreamUiBumpsRef.current()
+      // 流式中打开文件预览勿取消 bump，否则工具/思考衔接会停一拍再跳。
       const fileId = String(target.path || '').replace(/\\/g, '/')
       const showFileTab = (path: string, name: string) => {
         const id = String(path || '').replace(/\\/g, '/')
@@ -3852,16 +3858,15 @@ export default function ChatApp() {
 
   useEffect(() => {
     const knowledgeMapVisible = knowledgeMapEnabled && knowledgeMapPanelOpen
-    const anySidePanelOpen =
-      rightStageOpen ||
-      workspacePanelOpen ||
-      knowledgeMapVisible ||
-      collabExecPanelOpen
+    // 右栏文件/终端与对话并排，取消 bump 会冻住流式绘制并在恢复时跳动；
+    // 仅遮罩对话区的侧栏才暂停 bump。
+    const coveringOverlay =
+      workspacePanelOpen || knowledgeMapVisible || collabExecPanelOpen
     setChatOverlayDefer('workspace', workspacePanelOpen)
     setChatOverlayDefer('knowledge-map', knowledgeMapVisible)
     setChatOverlayDefer('workflow', collabExecPanelOpen)
     setChatOverlayDefer('file-preview', false)
-    if (anySidePanelOpen) {
+    if (coveringOverlay) {
       cancelPendingStreamUiBumpsRef.current()
     }
   }, [
@@ -10199,6 +10204,23 @@ useEffect(() => {
         return
       }
 
+      if (state === 'background_work') {
+        const ev = payload.backgroundWorkEvent
+        if (ev && typeof ev === 'object' && !Array.isArray(ev)) {
+          if (!S.backgroundWorks) S.backgroundWorks = {}
+          mergeBackgroundWorkEvent(S.backgroundWorks, ev as Record<string, unknown>)
+          if (!S.runId && runId) S.runId = runId
+          if (!S.startTs) S.startTs = Date.now()
+          const sk = String(payload.sessionKey || sessionRef.current || '').trim()
+          if (sk) {
+            streamSeqRef.current += 1
+            commitStreamSnapshot(sk, S, { seq: streamSeqRef.current })
+          }
+          scheduleBump({ immediate: true })
+        }
+        return
+      }
+
       if (state === 'terminal') {
         const ev = payload.terminalEvent
         if (ev && typeof ev === 'object' && !Array.isArray(ev)) {
@@ -12718,12 +12740,89 @@ useEffect(() => {
 
   // 状态面板「进程」区：以 streamRef 为唯一真相源，按 chrome tick 取快照，
   // 避免另开 state 漏掉切会话/终态收束时的终端清理。
+  const liveProcessPanelEnabled =
+    chatPanelMode !== 'hidden' && !isHomeSurface && !!selectedSessionKey && !isMobileChat
+  const backgroundWorksPollSigRef = useRef('')
+  const backgroundOutputPollRef = useRef<{ workId: string; timer: number; stopAt: number } | null>(null)
   const liveProcessSnapshot = useLiveProcessSnapshot(
     streamRef,
-    chatPanelMode !== 'hidden' &&
-      !isHomeSurface &&
-      !!selectedSessionKey &&
-      !isMobileChat,
+    liveProcessPanelEnabled,
+    selectedSessionKey,
+  )
+
+  useEffect(() => {
+    if (!liveProcessPanelEnabled) return
+    backgroundWorksPollSigRef.current = ''
+    let cancelled = false
+    const tick = async () => {
+      try {
+        const works = await listBackgroundBashWorks({
+          runningOnly: true,
+          threadId: selectedThreadId || undefined,
+        })
+        if (cancelled) return
+        const S = streamRef.current
+        if (!S) return
+        if (!S.backgroundWorks) S.backgroundWorks = {}
+        const signature = works
+          .map((w) => `${w.workId}:${w.status}:${w.endedAt || 0}`)
+          .sort()
+          .join('|')
+        if (signature === backgroundWorksPollSigRef.current) return
+        backgroundWorksPollSigRef.current = signature
+        for (const w of works) {
+          S.backgroundWorks[w.workId] = {
+            workId: w.workId,
+            kind: 'bash',
+            title: w.title || w.command || w.workId,
+            status: w.status || 'running',
+            startedAt: w.startedAt || Date.now(),
+            endedAt: w.endedAt,
+            cancellable: w.status === 'running' && w.cancellable !== false,
+            toolCallId: w.toolCallId || w.workId,
+            command: w.command,
+          }
+        }
+        const sk = String(selectedSessionKey || '').trim()
+        if (sk) {
+          streamSeqRef.current += 1
+          commitStreamSnapshot(sk, S, { seq: streamSeqRef.current })
+        }
+      } catch {
+        /* gateway may be down; the next tick retries */
+      }
+    }
+    void tick()
+    const timer = window.setInterval(() => void tick(), 1000)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [liveProcessPanelEnabled, selectedSessionKey, selectedThreadId])
+
+  const handleStopProcessItem = useCallback(
+    (item: ProcessItem) => {
+      const workId = String(item?.workId || '').trim()
+      if (!workId) return
+      void stopBackgroundBashWork(workId)
+        .then(() => {
+          const S = streamRef.current
+          const row = S?.backgroundWorks?.[workId]
+          if (row) {
+            row.status = 'cancelled'
+            row.cancellable = false
+            row.endedAt = Date.now()
+          }
+          const sk = String(sessionRef.current || '').trim()
+          if (sk && S) {
+            streamSeqRef.current += 1
+            commitStreamSnapshot(sk, S, { seq: streamSeqRef.current })
+          }
+          scheduleBump({ immediate: true })
+        })
+        .catch(() => {})
+    },
+    [scheduleBump],
   )
 
   /** 点进程行：终端开右栏标签；智能体仍切到摘要区 */
@@ -12732,7 +12831,7 @@ useEffect(() => {
       if (!item) return
       if (item.kind === 'terminal') {
         const src = item.source as { toolCallId?: string; command?: string; phase?: string }
-        const toolCallId = String(src?.toolCallId || '').trim()
+        const toolCallId = String(src?.toolCallId || item.workId || '').trim()
         if (!toolCallId) {
           setChatPanelDisplayMode('panel')
           return
@@ -12742,8 +12841,67 @@ useEffect(() => {
           title: item.label || '终端',
           command: String(src?.command || ''),
           sessionKey: selectedSessionKey || undefined,
-          running: src?.phase === 'running',
+          running: src?.phase === 'running' || item.state === 'running',
         })
+        // ZCode BackgroundBashOutputSidePane：打开时拉输出快照；running 时 1s 轮询。
+        const workId = String(item.workId || '').trim()
+        if (workId) {
+          const prevPoll = backgroundOutputPollRef.current
+          if (prevPoll) {
+            window.clearInterval(prevPoll.timer)
+            backgroundOutputPollRef.current = null
+          }
+          const seed = async () => {
+            try {
+              const snap = await fetchBackgroundBashOutput(workId)
+              if (!snap?.output) return
+              const S = streamRef.current
+              if (!S) return
+              if (!S.terminalStreams) S.terminalStreams = {}
+              const existing = S.terminalStreams[toolCallId]
+              const prev = String(existing?.stdout || '')
+              if (!prev || prev.length < snap.output.length) {
+                S.terminalStreams[toolCallId] = {
+                  toolCallId,
+                  command: String(src?.command || existing?.command || ''),
+                  phase: snap.status === 'running' ? 'running' : existing?.phase || 'running',
+                  stdout: snap.output,
+                  stderr: existing?.stderr || '',
+                  chunks: existing?.chunks,
+                  startedAt: existing?.startedAt || item.startedAt || Date.now(),
+                }
+              }
+              const sk = String(selectedSessionKey || sessionRef.current || '').trim()
+              if (sk) {
+                streamSeqRef.current += 1
+                commitStreamSnapshot(sk, S, { seq: streamSeqRef.current })
+              }
+              scheduleBump({ immediate: true })
+              if (snap.status && snap.status !== 'running') {
+                const cur = backgroundOutputPollRef.current
+                if (cur?.workId === workId) {
+                  window.clearInterval(cur.timer)
+                  backgroundOutputPollRef.current = null
+                }
+              }
+            } catch {
+              /* ignore */
+            }
+          }
+          void seed()
+          if (item.state === 'running') {
+            const timer = window.setInterval(() => {
+              const cur = backgroundOutputPollRef.current
+              if (!cur || Date.now() > cur.stopAt) {
+                if (cur) window.clearInterval(cur.timer)
+                backgroundOutputPollRef.current = null
+                return
+              }
+              void seed()
+            }, 1000)
+            backgroundOutputPollRef.current = { workId, timer, stopAt: Date.now() + 600_000 }
+          }
+        }
         return
       }
       if (item.kind === 'agent') {
@@ -12751,7 +12909,7 @@ useEffect(() => {
         setChatPanelDisplayMode('panel')
       }
     },
-    [selectedSessionKey, setChatPanelDisplayMode],
+    [selectedSessionKey, setChatPanelDisplayMode, scheduleBump],
   )
 
   // 执行期间轮询：任务处于活跃执行状态时，定期 bump refreshKey 触发重新拉取 GET /tasks，
@@ -12793,7 +12951,9 @@ useEffect(() => {
       terminalStreams={liveProcessSnapshot.terminalStreams}
       subagentTasks={liveProcessSnapshot.subagentTasks}
       workflowSubtasks={sharedCollabSubtasks}
+      backgroundWorks={liveProcessSnapshot.backgroundWorks}
       onOpenProcessItem={handleOpenProcessItem}
+      onStopProcessItem={handleStopProcessItem}
       agentLabel={currentRoleLabel}
       modelLabel={modelPillLabel}
       modelName={effectiveModelName}

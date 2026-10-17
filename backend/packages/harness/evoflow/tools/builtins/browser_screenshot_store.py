@@ -103,12 +103,21 @@ def compact_legacy_screenshot_tool_content(content: str, tool_name: str = "") ->
     return "[Screenshot omitted from model context — image is shown in the user UI only. Use browser_snapshot(mode='text') or web_fetch for readable page content.]"
 
 
-def format_screenshot_tool_result(thread_id: str, meta: dict[str, str | int | bool]) -> str:
+def format_screenshot_tool_result(
+    thread_id: str, meta: dict[str, str | int | bool], *, staged_for_model: bool = False
+) -> str:
     """JSON tool result for the model (no base64)."""
     w, h = int(meta.get("width") or 0), int(meta.get("height") or 0)
     dims = f"{w}x{h}px" if w and h else "unknown size"
     fp = "full page" if meta.get("full_page") else "viewport"
-    summary = f"Screenshot captured ({dims}, ~{meta.get('size_kb', 0)}KB, {fp}). The image is shown to the user in the chat UI only and is not included in your context. Use browser_snapshot(mode='text') if you need readable page text."
+    if staged_for_model:
+        summary = (
+            f"Screenshot captured ({dims}, ~{meta.get('size_kb', 0)}KB, {fp}). The capture is shown "
+            f"in the chat UI and staged for your next context — you will see the pixels, so verify "
+            f"the visual state from it (dialogs, layout, changes) before acting further."
+        )
+    else:
+        summary = f"Screenshot captured ({dims}, ~{meta.get('size_kb', 0)}KB, {fp}). The image is shown to the user in the chat UI only and is not included in your context. Use browser_snapshot(mode='text') if you need readable page text."
     page_url = str(meta.get("page_url") or "").strip()
     if page_url:
         summary += f" Page URL: {page_url}"
@@ -119,5 +128,6 @@ def format_screenshot_tool_result(thread_id: str, meta: dict[str, str | int | bo
         "image_url": meta["image_url"],
         "page_url": page_url,
         "full_page": bool(meta.get("full_page")),
+        "staged_for_model": bool(staged_for_model),
     }
     return json.dumps(payload, ensure_ascii=False)

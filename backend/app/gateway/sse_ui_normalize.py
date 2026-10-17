@@ -556,6 +556,40 @@ def _envelope_status_from_tool_content(content: Any) -> str | None:
     return st or None
 
 
+_CUA_DISPLAY_MARKER_PREFIX = "{evoflow-cua-display:"
+
+
+def _extract_cua_display(content: Any) -> tuple[Any, dict[str, Any] | None]:
+    """Split the trailing ``{evoflow-cua-display:...}`` marker from node_repl output.
+
+    ZCode 的截图/目标应用展示走独立结构化 display 通道，不随正文截断丢失。
+    这里把 node_repl js 结果尾部的标记解析成 ``cua_display`` 结构化字段附在
+    tool_result 上，正文剥离标记行（模型上下文与持久化原文不变，仅 UI 流变更）。
+    """
+    if not isinstance(content, str) or _CUA_DISPLAY_MARKER_PREFIX not in content:
+        return content, None
+    lines = content.splitlines()
+    marker_line = ""
+    payload_text = ""
+    for line in reversed(lines):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if not stripped.startswith(_CUA_DISPLAY_MARKER_PREFIX):
+            return content, None
+        marker_line = stripped
+        payload_text = stripped[len(_CUA_DISPLAY_MARKER_PREFIX) : -1]
+        break
+    try:
+        payload = json.loads(payload_text)
+    except ValueError:
+        return content, None
+    if not isinstance(payload, dict):
+        return content, None
+    cleaned = "\n".join(line for line in lines if line.strip() != marker_line).rstrip()
+    return cleaned, payload
+
+
 def _slim_tool_result_message(msg: dict[str, Any]) -> dict[str, Any]:
     """Keep fields ToolCallList / chat-normalize need for special tool UI (media, approval, paths)."""
     out: dict[str, Any] = {}
@@ -568,6 +602,14 @@ def _slim_tool_result_message(msg: dict[str, Any]) -> dict[str, Any]:
         out["role"] = "tool"
     tcid = str(out.get("tool_call_id") or out.get("id") or "").strip()
     tool_name = str(out.get("name") or out.get("tool_name") or "tool")
+    # EvoFlow CUA display：node_repl js 结果尾部的展示标记 → 结构化 cua_display。
+    # 必须在 slim 之前提取——AX 树正文未来若进入 offload/preview 名单，标记
+    # 也不能被截掉。
+    if "content" in out and isinstance(out.get("content"), str):
+        cleaned, cua_display = _extract_cua_display(out["content"])
+        if cua_display is not None:
+            out["content"] = cleaned
+            out["cua_display"] = cua_display
     payload = out.get("content_json") if isinstance(out.get("content_json"), dict) else None
     body = out.get("content") if payload is None else payload.get("content")
     if tcid and body is not None:

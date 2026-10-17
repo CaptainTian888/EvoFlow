@@ -20,6 +20,7 @@ export function emptyStream(): StreamState {
     startTs: null,
     subagentTasks: {},
     terminalStreams: {},
+    backgroundWorks: {},
   }
 }
 
@@ -41,6 +42,7 @@ export function cloneStreamState(S: StreamState): StreamState {
     startTs: S.startTs,
     subagentTasks: S.subagentTasks ? { ...S.subagentTasks } : {},
     terminalStreams: cloneTerminalStreamsMap(S.terminalStreams) || {},
+    backgroundWorks: S.backgroundWorks ? { ...S.backgroundWorks } : {},
   }
 }
 

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import '@/styles-bridge.css'
+import { gatewayProxy } from '../../lib/tauri-api.js'
 import { resolvePluginIconSource } from '@/lib/pluginIconSource.js'
 
 export type PluginPickerItem = {
@@ -29,12 +30,10 @@ export type PluginCatalogItem = {
 
 /** 拉取已安装且启用的插件（供聊天「+」插件选择器使用）。 */
 export async function fetchEnabledPlugins(): Promise<PluginPickerItem[]> {
-  const resp = await fetch('/api/plugins/overview', {
-    headers: { Accept: 'application/json' },
-    cache: 'no-store',
-  })
-  if (!resp.ok) throw new Error(`加载插件失败 HTTP ${resp.status}`)
-  const body = (await resp.json()) as { installedPlugins?: PluginCatalogItem[] }
+  // 桌面端必须走 gatewayProxy，裸 fetch 相对 /api 会拿到 SPA HTML。
+  const body = (await gatewayProxy('GET', '/api/plugins/overview')) as {
+    installedPlugins?: PluginCatalogItem[]
+  }
   const rows = body.installedPlugins ?? []
   return rows
     .filter((row) => row.enabled !== false)

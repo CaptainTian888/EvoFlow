@@ -234,7 +234,7 @@ export async function getGatewayBaseUrl() {
     // Prefer a live probe, but NEVER discard Rust's resolved URL (external
     // EVOFLOW_GATEWAY_URL / runtime file). A 500ms miss used to drop 8070 and
     // fall through to the hashed profile port (8100..8999) — warm latch then
-    // never released and home stayed on「正在加载工作台数据…」.
+    // never released and home stayed on stale placeholders.
     if (base) {
       const alive = await gatewayBaseLooksAlive(base, 2000).catch(() => false)
       if (!alive) {
@@ -1115,6 +1115,7 @@ const _EXTENDED_API_PREFIXES = [
   '/api/knowledge',
   '/api/memory',
   '/api/mcp',
+  '/api/plugins',
   '/api/assets',
   '/api/observability',
   '/api/eval',

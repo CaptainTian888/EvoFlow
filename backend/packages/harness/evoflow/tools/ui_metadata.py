@@ -89,7 +89,8 @@ def collect_native_tool_specs_for_role_ui(*, model_name: str | None = None) -> l
             desc = desc_raw.strip() if isinstance(desc_raw, str) else ""
             group = getattr(t, "group", None) or ""
 
-            if name not in by_name:
+            # host_direct is the live catalog; overwrite the sandbox row of the same name.
+            if name not in by_name or mode == "host_direct":
                 by_name[name] = {
                     "name": name,
                     "group": ui_meta.get("group") or group,

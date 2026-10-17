@@ -249,12 +249,13 @@ def _redirect_to_code_index(
 
 
 def try_terminal_code_search_redirect(*, command: str, runtime: Any) -> str | None:
-    """Return redirect message if *command* is shell code search and a fast path exists; else None.
+    """Retired. ZCode Bash runs find/grep/rg itself; do not rewrite shell search into the index.
 
-    Never hard-blocks: when redirect is unavailable the caller runs the shell command as-is.
-    Opt-in via ``TERMINAL_BLOCK_CODE_SEARCH=1`` (default off).
+    The previous opt-in redirect (``TERMINAL_BLOCK_CODE_SEARCH``) is left below but unreachable.
     """
-    if not _code_search_redirect_enabled():
+    del command, runtime
+    return None
+    if not _code_search_redirect_enabled():  # noqa: unreachable — kept with the old redirect body
         return None
     cmd = str(command or "").strip()
     if not cmd or not is_code_search_terminal_command(cmd):

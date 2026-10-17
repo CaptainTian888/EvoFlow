@@ -1,4 +1,6 @@
-"""Terminal Tool — full-featured shell command execution for EvoFlow.
+"""Retired from the model tool list. ZCode ``Bash`` replaced this.
+
+Terminal Tool — full-featured shell command execution for EvoFlow.
 
 Provides a unified terminal interface inspired by Hermes Agent:
 - Foreground command execution with timeout

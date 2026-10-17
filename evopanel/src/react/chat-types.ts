@@ -209,6 +209,21 @@ export interface StreamState {
   subagentTasks: Record<string, SubagentStreamTask>
   /** 当前轮流式：terminal_start / stdout / stderr / exit 聚合（与 tool_call_id 对齐） */
   terminalStreams: Record<string, TerminalStreamTask>
+  /** ZCode backgroundWorks：后台 Bash（status panel Terminals） */
+  backgroundWorks?: Record<string, BackgroundWorkStreamItem>
+}
+
+/** ZCode BackgroundWorkSummary 兼容行（kind=bash） */
+export interface BackgroundWorkStreamItem {
+  workId: string
+  kind: 'bash'
+  title: string
+  status: string
+  startedAt: number
+  endedAt?: number | null
+  cancellable?: boolean
+  toolCallId?: string
+  command?: string
 }
 
 export interface ChatWsPayload {
@@ -232,6 +247,8 @@ export interface ChatWsPayload {
   subtaskEvent?: Record<string, unknown>
   /** state === 'terminal' 时：单条 terminal_* 事件 */
   terminalEvent?: Record<string, unknown>
+  /** state === 'background_work' 时：单条 background_work 事件 */
+  backgroundWorkEvent?: Record<string, unknown>
   /** state === 'worker_file' 时：单文件 worker 完成片段 */
   parentToolCallId?: string
   workerFileEntry?: Record<string, unknown>

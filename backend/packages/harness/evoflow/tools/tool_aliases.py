@@ -10,17 +10,21 @@ _TOOL_NAME_ALIASES: dict[str, str] = {
     "str_replace": "replace",
     "replace_in_file": "replace",
     "delete_file": "delete",
-    "find_file": "find",
-    "list_dir": "terminal",
-    "ls": "terminal",
+    "find_file": "bash",
+    "find": "bash",
+    "list_dir": "bash",
+    "ls": "bash",
     "search_content": "search_code_index",
-    "ripgrep": "rg",
-    "grep": "rg",
-    "process_start": "process",
-    "process_log": "process",
-    "process_wait": "process",
-    "process_kill": "process",
-    "process_poll": "process",
+    "ripgrep": "bash",
+    "grep": "bash",
+    "rg": "bash",
+    "terminal": "bash",
+    "process": "bash",
+    "process_start": "bash",
+    "process_log": "taskoutput",
+    "process_wait": "taskoutput",
+    "process_kill": "taskstop",
+    "process_poll": "taskoutput",
     # fetch_url 已改名 fetch_url（短名）；旧配置白名单经此映射兼容，不失效
     "web_fetch_enhanced": "fetch_url",
     # Knowledge Vault: six tools → single ``knowledge(action=…)`` dispatcher
@@ -38,19 +42,19 @@ _FILE_IO_CANONICAL = frozenset(
         "write",
         "replace",
         "delete",
-        "rg",
+        "bash",
     }
 )
 
 # Long-running shell jobs: terminal alone is insufficient (skills reference process_*).
-PROCESS_TOOL_SUITE = frozenset({"process"})
+PROCESS_TOOL_SUITE = frozenset({"taskoutput", "taskstop"})
 
 
 def augment_process_tools(matched: list[str], allowed: set[str]) -> list[str]:
     """If worker has ``terminal`` or any process tool, add the full process suite from catalog."""
     if not matched:
         return matched
-    has_terminal = "terminal" in matched
+    has_terminal = "terminal" in matched or "bash" in matched
     has_process = any(n in matched for n in PROCESS_TOOL_SUITE) or any(n in matched for n in ("process_start", "process_log", "process_wait", "process_kill", "process_poll"))
     if not has_terminal and not has_process:
         return matched

@@ -266,6 +266,8 @@ def _normalize_explore_tool_name(name: str) -> str:
         return "list_dir" if n == "ls" else "read_file"
     if n == "find_file":
         return "find"
+    if n == "bash":
+        return "terminal"
     return n
 
 

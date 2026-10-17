@@ -5023,6 +5023,15 @@ function dispatchLangGraphCustomStreamChunk(self, key, runId, chunk) {
     })
     return
   }
+  if (t === 'background_work') {
+    self._emitEvent('chat', {
+      sessionKey: key,
+      runId: String(runId),
+      state: 'background_work',
+      backgroundWorkEvent: chunk,
+    })
+    return
+  }
   if (
     t === 'task_started' ||
     t === 'task_running' ||
@@ -7557,6 +7566,15 @@ export class WsClient {
                 runId,
                 state: 'terminal',
                 terminalEvent: chunk,
+              })
+              return
+            }
+            if (t === 'background_work') {
+              this._emitEvent('chat', {
+                sessionKey: key,
+                runId,
+                state: 'background_work',
+                backgroundWorkEvent: chunk,
               })
               return
             }

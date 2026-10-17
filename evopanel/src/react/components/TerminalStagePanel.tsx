@@ -40,27 +40,44 @@ export const TerminalStagePanel = memo(function TerminalStagePanel({
     const tcid = String(toolCallId || '').trim()
     if (!sk || !tcid) return
     let cancelled = false
-    setLoading(true)
-    void fetchToolResultFull(sk, tcid)
-      .then((data) => {
-        if (cancelled) return
-        setFetchedOutput(String((data as { content?: string })?.content ?? ''))
-      })
-      .catch(() => {
-        if (!cancelled) setFetchedOutput(null)
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false)
-      })
+    let retryTimer = 0
+    const pull = (attempt: number) => {
+      setLoading(true)
+      void fetchToolResultFull(sk, tcid)
+        .then((data) => {
+          if (cancelled) return
+          const text = String((data as { content?: string })?.content ?? '').trim()
+          if (!text && attempt < 2) {
+            retryTimer = window.setTimeout(() => pull(attempt + 1), 800)
+            return
+          }
+          setFetchedOutput(text || null)
+        })
+        .catch(() => {
+          if (cancelled) return
+          if (attempt < 2) {
+            retryTimer = window.setTimeout(() => pull(attempt + 1), 800)
+            return
+          }
+          setFetchedOutput(null)
+        })
+        .finally(() => {
+          if (!cancelled) setLoading(false)
+        })
+    }
+    pull(0)
     return () => {
       cancelled = true
+      if (retryTimer) window.clearTimeout(retryTimer)
     }
   }, [sessionKey, toolCallId])
 
   const livePreferred = streamHasOutput(stream)
+  const persisted = String(fetchedOutput || '').trim()
+  const fallback = String(outputFallback || '').trim()
   const output = livePreferred
     ? undefined
-    : stripMindMapHint(fetchedOutput ?? outputFallback ?? '') || undefined
+    : stripMindMapHint(persisted || fallback) || undefined
 
   return (
     <div className="react-chat-terminal-stage" role="region" aria-label={title || '终端'}>

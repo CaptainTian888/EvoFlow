@@ -684,7 +684,7 @@ class ProactiveToolMiddleware(AgentMiddleware[AgentState]):
                         }
                     )
                 except Exception:
-                    allow = {"read", "rg", "terminal", "write", "replace", "delete"}
+                    allow = {"read", "bash", "taskoutput", "taskstop", "write", "replace", "delete", "search_code_index"}
             tools = patch_proactive_tools(original, allow_names=allow)
             before_names = {_tool_name(t) for t in original if _tool_name(t)}
             after_names = {_tool_name(t) for t in tools if _tool_name(t)}

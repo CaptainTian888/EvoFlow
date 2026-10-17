@@ -72,6 +72,13 @@ export const SUPERVISOR_ACTION_ZH = {
 /** 内置工具名 → 简短中文（作分类标题） */
 export const TOOL_NAME_ZH = {
   bash: '终端命令',
+  Bash: '终端命令',
+  Glob: '查找文件',
+  Grep: '搜索内容',
+  TaskOutput: '读取后台任务',
+  taskoutput: '读取后台任务',
+  TaskStop: '停止后台任务',
+  taskstop: '停止后台任务',
   execute_command: '执行命令',
   terminal: '终端',
   ls: '列出目录',
@@ -192,7 +199,7 @@ export const TOOL_SHORT_LABEL_ZH = {
   str_replace: '编辑',
   bash: '终端',
   terminal: '终端',
-  execute_command: '命令',
+  execute_command: '终端',
   web_search: '搜索',
   web_fetch: '抓取',
   web_extract: '提取',

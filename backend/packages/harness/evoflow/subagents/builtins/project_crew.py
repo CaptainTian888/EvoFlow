@@ -14,8 +14,8 @@ _CREW_DISALLOWED = [
     "propose_goal",
 ]
 
-_READ_TOOLS = ["read", "terminal"]
-_WRITE_TOOLS = ["read", "write", "replace", "terminal", "rg", "find"]
+_READ_TOOLS = ["read", "bash", "taskoutput", "taskstop"]
+_WRITE_TOOLS = ["read", "write", "replace", "bash", "taskoutput", "taskstop"]
 _DEV_TOOLS = None  # 继承对应智能体 / 父会话工具集（见 worker_tool_allowlist）
 
 # 项目团队子智能体默认超时（秒）；与 ``long_run_limits.LONG_RUN_WALL_SECONDS`` 对齐

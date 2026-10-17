@@ -3,6 +3,7 @@ import {
   parseEvoflowCuaDisplay,
   stripEvoflowCuaDisplayMarker,
   evoflowCuaAppKeyToIconRequest,
+  normalizeChatToolPayloadToEntries,
   EVOFLOW_CUA_DISPLAY_PREFIX,
 } from '../src/lib/chat-normalize.js'
 
@@ -87,5 +88,72 @@ describe('evoflowCuaAppKeyToIconRequest', () => {
     expect(evoflowCuaAppKeyToIconRequest('linux-exe:/usr/bin/app')).toBeNull()
     expect(evoflowCuaAppKeyToIconRequest('windows-exe:')).toBeNull()
     expect(evoflowCuaAppKeyToIconRequest('')).toBeNull()
+  })
+})
+
+describe('old-path tool result → CUA preview payload', () => {
+  const cuaPayload = {
+    status: 'success',
+    images: [{ url: '/api/threads/t1/browser-snapshots/abc123', kb: 63 }],
+    target_app: {
+      app_key: 'windows-exe:d:\\app\\zcode\\zcode.exe',
+      display_name: 'ZCode',
+    },
+  }
+
+  it('carries the structured cua_display field through normalizeChatToolPayloadToEntries', () => {
+    // sse_ui_normalize 解析标记后下发的 tool_result：正文已剥离标记 + 结构化字段。
+    const payload = {
+      name: 'mcp__node_repl__js',
+      data: {
+        type: 'tool',
+        role: 'tool',
+        name: 'mcp__node_repl__js',
+        tool_call_id: 'call_cua_1',
+        status: 'ok',
+        content: 'app: ZCode pid=1\n[0] window ZCode (focused)\n\n[Screenshot captured: ok]',
+        cua_display: cuaPayload,
+      },
+    }
+    const entries = normalizeChatToolPayloadToEntries(payload)
+    expect(entries).toHaveLength(1)
+    expect(entries[0].name).toBe('mcp__node_repl__js')
+    expect(entries[0].cua_display).toEqual(cuaPayload)
+    expect(entries[0].output).not.toContain(EVOFLOW_CUA_DISPLAY_PREFIX)
+  })
+
+  it('falls back to parsing the marker from output text (history replay / un-upgraded stream)', () => {
+    const payload = {
+      name: 'mcp__node_repl__js',
+      data: {
+        type: 'tool',
+        role: 'tool',
+        name: 'mcp__node_repl__js',
+        tool_call_id: 'call_cua_2',
+        status: 'ok',
+        content: `app: 微信 pid=2\n[0] window 微信\n\n${buildMarker(cuaPayload)}`,
+      },
+    }
+    const entries = normalizeChatToolPayloadToEntries(payload)
+    expect(entries).toHaveLength(1)
+    const parsed = parseEvoflowCuaDisplay(entries[0].output)
+    expect(parsed).toEqual(cuaPayload)
+  })
+
+  it('keeps non-CUA (browser / plain) tool outputs untouched', () => {
+    const payload = {
+      name: 'mcp__node_repl__js',
+      data: {
+        type: 'tool',
+        role: 'tool',
+        name: 'mcp__node_repl__js',
+        tool_call_id: 'call_browser_1',
+        status: 'ok',
+        content: 'snapshot text\nno marker here',
+      },
+    }
+    const entries = normalizeChatToolPayloadToEntries(payload)
+    expect(entries[0].cua_display).toBeUndefined()
+    expect(parseEvoflowCuaDisplay(entries[0].output)).toBeNull()
   })
 })

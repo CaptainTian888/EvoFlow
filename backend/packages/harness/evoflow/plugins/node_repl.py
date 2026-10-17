@@ -383,6 +383,41 @@ ${lines.join(String.fromCharCode(10))}` };
         }
       },
     };
+  } else {
+    // 原生 broker 是权威通道但不落盘。包一层调用日志：每次 CUA 动作的
+    // method/输入/结果/耗时都进插件控制日志（[mcp:cua-native]），否则电脑控制
+    // "动作被吞"时无法定位是哪一击出的问题。fire-and-forget 上报，绝不阻塞动作。
+    const __nativeCua = globalThis[__cuaSymbol];
+    if (__nativeCua && typeof __nativeCua.call === "function") {
+      const __origCuaCall = __nativeCua.call.bind(__nativeCua);
+      const __cuaReport = async (msg) => {
+        try {
+          // 必须 await：内核每次调用后即销毁，fire-and-forget 的上报会随进程一起被丢弃。
+          await __gwFetch("/api/browser/log", {
+            method: "POST",
+            body: JSON.stringify({ source: "kernel", entries: [{ msg: msg.slice(0, 1800) }] }),
+          });
+        } catch {}
+      };
+      __nativeCua.call = async (method, methodInput) => {
+        const t0 = Date.now();
+        let inputHead = "";
+        try { inputHead = JSON.stringify(methodInput || {}).slice(0, 400); } catch {}
+        __cuaReport(`[mcp:cua-native] CALL start method=${method} input=${inputHead}`);
+        try {
+          const r = await __origCuaCall(method, methodInput || {});
+          let head = "";
+          try { head = JSON.stringify(r).slice(0, 400); } catch {}
+          await __cuaReport(
+            `[mcp:cua-native] CALL done method=${method} ok=${r && r.isError ? "false" : "true"} dur=${((Date.now() - t0) / 1000).toFixed(1)}s result=${head}`,
+          );
+          return r;
+        } catch (err) {
+          await __cuaReport(`[mcp:cua-native] CALL FAILED method=${method} dur=${((Date.now() - t0) / 1000).toFixed(1)}s error=${String(err).slice(0, 300)}`);
+          throw err;
+        }
+      };
+    }
   }
 }
 """

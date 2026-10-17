@@ -889,9 +889,6 @@ export function EvoFlowHomeDashboard({ onPrompt, workspaceLabel = '', workspaceP
           </button>
         </header>
 
-        {data.loading ? (
-          <div className="evo-home-banner evo-home-banner--loading">正在加载工作台数据…</div>
-        ) : null}
         {data.error ? (
           <div className="evo-home-banner evo-home-banner--error">
             加载失败：{data.error}

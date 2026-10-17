@@ -17,12 +17,12 @@ _CREW_DISALLOWED = [
 # Not just read/terminal — that was a subagent-minimal leftover and made the role look broken.
 _MARKETING_TOOLS = [
     "read",
-    "rg",
-    "find",
+    "bash",
+    "taskoutput",
+    "taskstop",
     "write",
     "replace",
     "delete",
-    "terminal",
     "todo",
     "web_search",
     "fetch_url",

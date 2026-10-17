@@ -47,6 +47,7 @@ import type {
 } from "@zcode/services";
 import { EVOFLOW_OFFICIAL_MCP_MARKETPLACE_ID } from "@zcode/shared/mcp-marketplaces";
 import { EvoFlowMcpServerManagementClient } from "../../zcode-services/mcp-server-management.client.js";
+import { gatewayProxy } from "../../lib/tauri-api.js";
 import "@/styles-bridge.css";
 
 // ---------------------------------------------------------------------------
@@ -106,24 +107,12 @@ function toNativeMcpServerRecord(name: string, s: GatewayMcpConfigServer) {
 }
 
 async function gatewayGetJson<T>(url: string): Promise<T> {
-  const resp = await fetch(url, { method: "GET", headers: { Accept: "application/json" } });
-  if (!resp.ok) throw new Error(`Gateway ${url} HTTP ${resp.status}`);
-  return (await resp.json()) as T;
+  // 桌面端走 gatewayProxy，避免裸 fetch 相对 /api 拿到 SPA HTML。
+  return (await gatewayProxy("GET", url)) as T;
 }
 
 async function gatewaySendJson<T>(url: string, method: string, body?: unknown): Promise<T> {
-  const resp = await fetch(url, {
-    method,
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
-  if (!resp.ok && resp.status !== 204) {
-    let errText = "";
-    try { errText = await resp.text(); } catch { /* ignore */ }
-    throw new Error(`Gateway ${method} ${url} HTTP ${resp.status}: ${errText.slice(0, 200)}`);
-  }
-  if (resp.status === 204) return undefined as unknown as T;
-  return (await resp.json()) as T;
+  return (await gatewayProxy(method, url, body ?? null)) as T;
 }
 
 function createEvoflowMcpSyncService(): IMcpSyncService {

@@ -47,8 +47,9 @@ TOOL_RISK_LEVELS: dict[str, str] = {
     # Auto — read-only, no side effects
     "read": RISK_AUTO,
     "search_code_index": RISK_AUTO,
-    "find": RISK_AUTO,
-    "rg": RISK_AUTO,
+    "glob": RISK_AUTO,
+    "grep": RISK_AUTO,
+    "taskoutput": RISK_AUTO,
     "tool_search": RISK_AUTO,
     "view_image": RISK_AUTO,
     "todo": RISK_AUTO,
@@ -74,7 +75,8 @@ TOOL_RISK_LEVELS: dict[str, str] = {
     "replace": RISK_SESSION,
     # Confirm — irreversible / external side effects
     "delete": RISK_CONFIRM,
-    "terminal": RISK_CONFIRM,
+    "bash": RISK_CONFIRM,
+    "taskstop": RISK_CONFIRM,
     "process": RISK_CONFIRM,
     "bash": RISK_CONFIRM,  # legacy sandbox-mode shell (same risk as terminal)
 }

@@ -14,17 +14,21 @@ Deferred under agent mode: activate agent, then ``tool_search(query='select:brow
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
 import threading
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from langchain.tools import ToolRuntime, tool
+from langchain.tools import InjectedToolCallId, ToolRuntime, tool
+from langgraph.types import Command
 from langgraph.typing import ContextT
 
+from evoflow.agents.image_staging import command_with_staged_images, stage_image_entry
 from evoflow.tools.builtins.browser_screenshot_store import (
     format_screenshot_tool_result,
+    resolve_screenshot_file,
     save_screenshot_png,
 )
 
@@ -285,7 +289,8 @@ def _engine_back(thread_id: str) -> str:
     return _format_step_result("back", result)
 
 
-def _engine_screenshot(thread_id: str, *, full_page: bool) -> str:
+def _engine_screenshot(thread_id: str, *, full_page: bool) -> dict[str, Any] | str:
+    """Capture the page; returns ``{"meta": …, "path": …}`` or an error string."""
     result = _engine_dispatch(
         thread_id, {"method": "screenshot", "fullPage": bool(full_page)}, timeout=_ACTION_TIMEOUT
     )
@@ -295,18 +300,30 @@ def _engine_screenshot(thread_id: str, *, full_page: bool) -> str:
     base64_png = str(image.get("base64") or "")
     if not base64_png:
         return "Error: screenshot returned no image"
-    import base64
-
-    png_bytes = base64.b64decode(base64_png)
+    try:
+        png_bytes = base64.b64decode(base64_png, validate=False)
+    except Exception:
+        return "Error: screenshot returned invalid base64"
     if not png_bytes:
         return "Error: screenshot file empty"
+    # 解码健全性：坏帧不允许进任何通道（模型与 UI 都不吃不可解码栅格）。
+    try:
+        from io import BytesIO
+
+        from PIL import Image
+
+        with Image.open(BytesIO(png_bytes)) as img:
+            img.load()
+    except Exception:
+        return "Error: screenshot frame undecodable — capture again"
     meta = save_screenshot_png(
         thread_id,
         png_bytes,
         page_url=_current_page_url(thread_id),
         full_page=full_page,
     )
-    return format_screenshot_tool_result(thread_id, meta)
+    path = resolve_screenshot_file(thread_id, str(meta["screenshot_id"]))
+    return {"meta": meta, "path": str(path) if path is not None else None}
 
 
 def _engine_close(thread_id: str) -> str | None:
@@ -331,7 +348,8 @@ def browser_tool(
     direction: str | None = None,
     amount: int | None = None,
     full_page: bool = False,
-) -> str:
+    tool_call_id: Annotated[str, InjectedToolCallId] = "",
+) -> str | Command:
     """Interactive browser automation (deferred under agent mode).
 
     Activate agent mode, then load this tool with tool_search(query="select:browser").
@@ -386,7 +404,21 @@ def browser_tool(
         dir_norm = str(direction or "down").strip().lower() or "down"
         return _engine_scroll(thread_id, dir_norm, max(1, int(amount or 800)))
     if act == "screenshot":
-        return _engine_screenshot(thread_id, full_page=bool(full_page))
+        outcome = _engine_screenshot(thread_id, full_page=bool(full_page))
+        if isinstance(outcome, str):
+            return outcome
+        meta = outcome["meta"]
+        # 对齐 ZCode：截图不只给 UI，也 stage 进模型下一次调用前的多模态注入
+        # （viewed_images auto 条目，注入时按 200KB base64 预算压缩）。
+        staged_entry = stage_image_entry(
+            runtime=runtime,
+            path=str(outcome.get("path") or ""),
+            mime_type="image/png",
+            label="browser screenshot",
+        )
+        staged_entries = {staged_entry["path"]: staged_entry} if staged_entry else {}
+        payload = format_screenshot_tool_result(thread_id, meta, staged_for_model=bool(staged_entries))
+        return command_with_staged_images(payload, tool_call_id, staged_entries)
     if act == "back":
         return _engine_back(thread_id)
     if act == "close":

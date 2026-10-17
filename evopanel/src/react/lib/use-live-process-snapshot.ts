@@ -11,15 +11,16 @@
  */
 
 import { useEffect, useState, type MutableRefObject } from 'react'
-import type { StreamState, SubagentStreamTask, TerminalStreamTask } from '../chat-types.js'
+import type { BackgroundWorkStreamItem, StreamState, SubagentStreamTask, TerminalStreamTask } from '../chat-types.js'
 import { subscribeStreamSnapshot } from './stream-snapshot-store.js'
 
 export type LiveProcessSnapshot = {
   terminalStreams: Record<string, TerminalStreamTask>
   subagentTasks: Record<string, SubagentStreamTask>
+  backgroundWorks: Record<string, BackgroundWorkStreamItem>
 }
 
-const EMPTY: LiveProcessSnapshot = { terminalStreams: {}, subagentTasks: {} }
+const EMPTY: LiveProcessSnapshot = { terminalStreams: {}, subagentTasks: {}, backgroundWorks: {} }
 
 export function useLiveProcessSnapshot(
   streamRef: MutableRefObject<StreamState> | null | undefined,
@@ -40,6 +41,7 @@ export function useLiveProcessSnapshot(
       setSnapshot({
         terminalStreams: { ...(S?.terminalStreams || {}) },
         subagentTasks: { ...(S?.subagentTasks || {}) },
+        backgroundWorks: { ...(S?.backgroundWorks || {}) },
       })
     }
 

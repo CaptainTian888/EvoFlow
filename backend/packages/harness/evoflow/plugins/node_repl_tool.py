@@ -4,26 +4,35 @@ Registered only when one of the dependent official plugins (browser-use /
 computer-use) is installed + enabled and the node-repl-host runtime exists.
 The official plugin skills hard-require this exact tool name.
 
-Result plumbing (v2 对齐 ZCode 观察面):
+Result plumbing (v3 对齐 ZCode 识别/显示双通道):
 
-- 模型内容 = 内核 text block 原文（无障碍树 / 命令输出），截图不进模型上下文
-  （与 browser 截图同一纪律：UI 可见，模型不可见）。
-- 截图 image block → ``browser_screenshot_store`` 落盘 → 结果文本尾部附一行
-  ``{evoflow-cua-display:...}`` JSON 标记，v4 投影层据此构建 ``kind:"cua"``
-  展示块（media.artifactUri + targetApp）。
-- ``_meta``（``zcode.cua/app-associations-v1``，helper 的应用身份证据）同样
-  进 display 标记，UI 才能渲染目标应用徽标。
+- 帧完整性门（对齐 ZCode ``preserveOfficialCuaFrameResult``）：解码每个 image
+  block，与宿主帧凭证（``zcode.cua/official-frame-integrity-v1``：sha256 /
+  宽高 / media_type）对账，EXIF 方向非规范也拒收；不符的图整张丢弃并在正文
+  提示重截，模型和 UI 都看不到被调包的栅格。
+- 模型通道：通过完整性门的截图 stage 进 ``viewed_images``（auto 条目，仅
+  path，无 base64），``ViewImageMiddleware`` 在下一次模型调用前按 ZCode
+  prepareForModel 预算（base64 ≤200KB、≤1600px 边）注入多模态块 —— 模型
+  直接"看"到本次截图，视觉闭环与 ZCode 一致。
+- UI 通道：原图落 ``browser_screenshot_store`` → 结果文本尾部附一行
+  ``{evoflow-cua-display:...}`` JSON 标记，网关剥离后构建 ``cua_display``
+  展示字段（media + targetApp）。
+- ``_meta``（``zcode/nodeReplCuaApp`` / ``app-associations-v1``，helper 的
+  应用身份证据）进 display 标记，UI 才能渲染目标应用徽标。
 """
 
 from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
 import json
 import logging
-from typing import Any
+from typing import Annotated, Any
 
-from langchain.tools import ToolRuntime, tool
+from langchain.tools import InjectedToolCallId, ToolRuntime, tool
+from langchain_core.messages import ToolMessage
+from langgraph.types import Command
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
@@ -38,6 +47,9 @@ _NODE_REPL_JS_DESCRIPTION = (
 )
 
 _DISPLAY_MARKER_PREFIX = "{evoflow-cua-display:"
+
+# 宿主附着在带图结果上的官方帧凭证（ZCode frame authority 的对账来源）。
+_FRAME_INTEGRITY_META_KEY = "zcode.cua/official-frame-integrity-v1"
 
 
 class NodeReplJsInput(BaseModel):
@@ -76,6 +88,79 @@ def _get_thread_id(runtime: ToolRuntime[Any, Any]) -> str:
     return str(tid or "evoflow")
 
 
+def _decode_image(image_b64: str) -> tuple[bytes, Any] | None:
+    """Strict decode + full Pillow load; returns (raw_bytes, img) or None."""
+    try:
+        raw = base64.b64decode(image_b64, validate=True)
+    except (binascii.Error, ValueError):
+        return None
+    if not raw:
+        return None
+    try:
+        from io import BytesIO
+
+        from PIL import Image
+
+        img = Image.open(BytesIO(raw))
+        img.load()
+    except Exception:
+        return None
+    return raw, img
+
+
+def _exif_orientation(img: Any) -> int:
+    try:
+        return int(img.getexif().get(274, 1) or 1)
+    except Exception:
+        return 1
+
+
+def _validate_kernel_images(images: list[dict[str, Any]], meta: dict[str, Any] | None) -> tuple[list[dict[str, Any]], list[str]]:
+    """帧完整性门：解码对账，返回 (通过校验的 images, 拒收说明列表)。
+
+    凭证只覆盖"本次最终栅格"，所以仅在结果恰好一张图时做 sha256/宽高/media_type
+    严格对账（与 ZCode "official CUA allows exactly one final raster per result"
+    的绑定语义一致）；多图结果退化为解码 + 方向规范检查。
+    """
+    frame: dict[str, Any] | None = None
+    if isinstance(meta, dict):
+        candidate = meta.get(_FRAME_INTEGRITY_META_KEY)
+        if isinstance(candidate, dict):
+            frame = candidate
+    strict = frame is not None and len(images) == 1
+
+    valid: list[dict[str, Any]] = []
+    notes: list[str] = []
+    for idx, image in enumerate(images):
+        data = str(image.get("data") or "")
+        mime = str(image.get("mime_type") or "")
+        decoded = _decode_image(data)
+        if decoded is None:
+            notes.append(f"image {idx + 1}: undecodable or non-canonical base64")
+            continue
+        raw, img = decoded
+        width, height = img.size
+        orientation = _exif_orientation(img)
+        if orientation != 1:
+            notes.append(f"image {idx + 1}: non-canonical EXIF orientation {orientation}")
+            continue
+        if strict and frame is not None:
+            expected_sha = str(frame.get("sha256") or "")
+            if expected_sha and hashlib.sha256(raw).hexdigest() != expected_sha:
+                notes.append("image 1: sha256 does not match the host frame receipt")
+                continue
+            expected_w, expected_h = frame.get("width"), frame.get("height")
+            if isinstance(expected_w, int) and isinstance(expected_h, int) and (width, height) != (expected_w, expected_h):
+                notes.append(f"image 1: raster {width}x{height} does not match frame receipt {expected_w}x{expected_h}")
+                continue
+            expected_mime = str(frame.get("media_type") or "")
+            if expected_mime and mime and expected_mime != mime:
+                notes.append(f"image 1: media type {mime} does not match frame receipt {expected_mime}")
+                continue
+        valid.append(image)
+    return valid, notes
+
+
 def _save_kernel_image(thread_id: str, image_b64: str, mime_type: str) -> dict[str, Any] | None:
     # helper 回传的栅格是 JPEG（默认编码）或 PNG；统一落进 browser 截图存储
     # （文件名 .png，服务端点按魔数嗅探 content-type，无需区分扩展名）。
@@ -88,10 +173,31 @@ def _save_kernel_image(thread_id: str, image_b64: str, mime_type: str) -> dict[s
         return None
     if not image_bytes:
         return None
-    from evoflow.tools.builtins.browser_screenshot_store import save_screenshot_png
+    from evoflow.tools.builtins.browser_screenshot_store import resolve_screenshot_file, save_screenshot_png
 
     meta = save_screenshot_png(thread_id, image_bytes)
-    return {"url": str(meta["image_url"]), "kb": int(meta["size_kb"])}
+    path = resolve_screenshot_file(thread_id, str(meta["screenshot_id"]))
+    return {
+        "url": str(meta["image_url"]),
+        "kb": int(meta["size_kb"]),
+        **({"path": str(path)} if path is not None else {}),
+    }
+
+
+def _stage_model_image(runtime: ToolRuntime[Any, Any] | None, saved: dict[str, Any]) -> dict[str, Any] | None:
+    """把已落盘的截图 stage 成 ``viewed_images`` auto 条目（path-only）。
+
+    注入前的预算压缩（base64 ≤200KB）由 ViewImageMiddleware 统一执行；
+    这里只要求模型走 native 像素路由。
+    """
+    from evoflow.agents.image_staging import stage_image_entry
+
+    return stage_image_entry(
+        runtime=runtime,
+        path=str(saved.get("path") or ""),
+        mime_type="image/jpeg",
+        label="screen capture",
+    )
 
 
 def _display_marker(payload: dict[str, Any]) -> str:
@@ -108,7 +214,7 @@ def _mcp_log(message: str) -> None:
         pass
 
 
-def _run(code: str, timeout_ms: int | None = None, title: str = "", runtime: ToolRuntime[Any, Any] | None = None) -> str:
+def _run(code: str, timeout_ms: int | None, title: str, runtime: ToolRuntime[Any, Any] | None, tool_call_id: str) -> str | Command:
     # `title` 仅用于面板显示，不转发给 node-repl-host。
     import time as _time
 
@@ -139,18 +245,45 @@ def _run(code: str, timeout_ms: int | None = None, title: str = "", runtime: Too
         text = text or str(result.get("error") or "node_repl js failed")
         text = f"{text}\n\n[node_repl] call failed."[:4000]
 
+    raw_images = [
+        {"data": str(image.get("data") or ""), "mime_type": str(image.get("mime_type") or "")}
+        for image in (result.get("images") or [])[:2]
+        if isinstance(image, dict) and str(image.get("data") or "")
+    ]
+    # 帧完整性门：不符的图整张拒收，模型与 UI 都不可见。
+    kernel_images, integrity_notes = _validate_kernel_images(raw_images, result.get("meta"))
+    for note in integrity_notes:
+        text = f"{text}\n[screenshot rejected by frame integrity gate: {note} — capture a new image and retry]"[:8000]
+
     display: dict[str, Any] = {"status": "failed" if result.get("is_error") else "success"}
     image_entries: list[dict[str, Any]] = []
-    for image in (result.get("images") or [])[:2]:
+    staged_entries: dict[str, dict[str, Any]] = {}
+    for image in kernel_images:
         saved = _save_kernel_image(thread_id, str(image.get("data") or ""), str(image.get("mime_type") or ""))
-        if saved:
-            image_entries.append(saved)
+        if not saved:
+            continue
+        image_entries.append(saved)
+        # ToolMessage 需要真实 call id 才能随 Command 回填图状态；
+        # 直连调用（无注入 id）时退化为纯文本结果。
+        staged = _stage_model_image(runtime, saved) if tool_call_id else None
+        if staged:
+            # ref = 落盘文件绝对路径，注入时由中间件读回并按预算压缩。
+            staged_entries[staged["path"]] = staged
     if image_entries:
-        display["images"] = image_entries
-        text = (
-            f"{text}\n\n[Screenshot captured: {image_entries[0]['url']} "
-            f"({image_entries[0]['kb']}KB) — shown in the chat UI.]"
-        ).strip()
+        display["images"] = [
+            {"url": entry["url"], "kb": entry["kb"]} for entry in image_entries
+        ]
+        if staged_entries:
+            text = (
+                f"{text}\n\n[Screenshot captured: {image_entries[0]['url']} "
+                f"({image_entries[0]['kb']}KB) — shown in the chat UI and staged for "
+                f"your next context; you will see the pixels.]"
+            ).strip()
+        else:
+            text = (
+                f"{text}\n\n[Screenshot captured: {image_entries[0]['url']} "
+                f"({image_entries[0]['kb']}KB) — shown in the chat UI.]"
+            ).strip()
 
     meta = result.get("meta") or {}
     # 宿主 broker 把目标应用身份记在 result._meta["zcode/nodeReplCuaApp"]
@@ -189,10 +322,16 @@ def _run(code: str, timeout_ms: int | None = None, title: str = "", runtime: Too
         f"dur={_time.monotonic() - started:.1f}s text({len(text)} chars)="
         + text.replace("\n", "\\n")[:800]
         + (f" images={len(image_entries)}" if image_entries else "")
+        + (f" staged_model={len(staged_entries)}" if staged_entries else "")
+        + (f" integrity_rejected={len(integrity_notes)}" if integrity_notes else "")
         + (f" target_app={app_identity.get('app_key')}" if app_identity else "")
     )
 
-    return f"{text}\n\n{_display_marker(display)}"
+    payload = f"{text}\n\n{_display_marker(display)}"
+    if staged_entries:
+        message = ToolMessage(content=payload, tool_call_id=tool_call_id)
+        return Command(update={"messages": [message], "viewed_images": staged_entries})
+    return payload
 
 
 def build_node_repl_js_tool() -> Any | None:
@@ -201,8 +340,14 @@ def build_node_repl_js_tool() -> Any | None:
         return None
 
     @tool("mcp__node_repl__js", description=_NODE_REPL_JS_DESCRIPTION, args_schema=NodeReplJsInput)
-    def node_repl_js(title: str, code: str, timeout_ms: int | None = None, runtime: ToolRuntime[Any, Any] = None) -> str:
-        return _run(code, timeout_ms, title, runtime)
+    def node_repl_js(
+        title: str,
+        code: str,
+        timeout_ms: int | None = None,
+        runtime: ToolRuntime[Any, Any] = None,
+        tool_call_id: Annotated[str, InjectedToolCallId] = "",
+    ) -> str | Command:
+        return _run(code, timeout_ms, title, runtime, tool_call_id)
 
     logger.info("node_repl kernel tool registered (mcp__node_repl__js)")
     return node_repl_js

@@ -4202,6 +4202,11 @@ export function normalizeChatToolPayloadToEntries(payload) {
     output: output !== undefined ? output : undefined,
     status,
   }
+  // EvoFlow CUA：流式层（sse_ui_normalize）解析出的结构化展示载荷
+  // （目标应用 + 截图 URL），直接透传给 ToolCallList 的预览卡。
+  if (d.cua_display && typeof d.cua_display === 'object') {
+    toolEntry.cua_display = d.cua_display
+  }
   if (d.truncated === true || d.output_truncated === true) {
     toolEntry.output_truncated = true
     toolEntry.outputTruncated = true

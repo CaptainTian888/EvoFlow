@@ -13,7 +13,7 @@ _CREW_DISALLOWED = [
     "propose_goal",
 ]
 
-_READ_TOOLS = ["read", "write", "replace", "terminal"]
+_READ_TOOLS = ["read", "write", "replace", "bash", "taskoutput", "taskstop"]
 _DEV_TOOLS = None  # 继承父智能体工具集（含 read/write/replace/terminal/search_code_index 等）
 
 # 各角色默认技能 wishlist（落盘时与已启用技能求交）

@@ -68,7 +68,8 @@ function createEvoflowServiceAccessor(): IServiceAccessor {
 
 function EvoflowPluginApp(): ReactElement {
   const services = createEvoflowServiceAccessor();
-  const [storeOpen, setStoreOpen] = useState(false);
+  // 进入「插件市场」默认落商店浏览页；「管理已安装」再切回 PluginsSection。
+  const [storeOpen, setStoreOpen] = useState(true);
 
   useEffect(() => {
     void usePluginManagementStore.getState().initialize({

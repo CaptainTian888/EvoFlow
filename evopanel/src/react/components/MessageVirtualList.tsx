@@ -13,6 +13,7 @@
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { resolveMessageRowIsStreaming, shouldDropEmptyStreamPlaceholder } from '../lib/message-row-streaming.js'
 import { markRecentlyStreamed, clearRecentlyStreamed } from '../lib/recently-streamed-runids.js'
+import { attachScrollbarReveal } from '../lib/scrollbar-reveal.js'
 import { MessageRow } from './MessageRow.js'
 import { TurnNavigatorRail } from './TurnNavigatorRail.js'
 import { EvoFlowHomeDashboard } from './EvoFlowHomeDashboard.js'
@@ -276,6 +277,9 @@ const VirtualHistoryBody = memo(function VirtualHistoryBody(
     virtualScrollToOffsetRef: MutableRefObject<((offset: number) => void) | null>
     /** RUN_FINISHED 后的贴底跟随窗口（47986170）：由 MessageVirtualList 声明并下传 */
     postStreamFollowUntilRef?: MutableRefObject<number>
+    /** 流式活跃状态 ref：流式中 autoFollow=true 时禁用校正，避免 reasoning 折叠/工具出现
+     *  高度突变时校正与 RO syncScrollToBottom 贴底竞速导致"到底一下再回去" */
+    streamActiveRef?: MutableRefObject<boolean>
   },
 ) {
   const {
@@ -290,6 +294,7 @@ const VirtualHistoryBody = memo(function VirtualHistoryBody(
     virtualScrollToIndexRef,
     virtualScrollToOffsetRef,
     postStreamFollowUntilRef,
+    streamActiveRef,
     ...rowProps
   } = props
   const sk = String(rowProps.sessionKey || 'default')
@@ -352,6 +357,9 @@ const VirtualHistoryBody = memo(function VirtualHistoryBody(
       }
       // 读历史且手势已停：允许测高校正，避免滚到一半卡住
       if (readingHistoryRef.current) return true
+      // 流式中贴底由 RO syncScrollToBottom 独占：禁用校正，避免 reasoning 折叠/工具出现
+      // 高度突变时校正与贴底竞速导致"到底一下再回去"
+      if (streamActiveRef?.current && autoFollowRef.current) return false
       return autoFollowRef.current
     }
     const scrollToHistoryIndex = (index: number, align: 'start' | 'end') => {
@@ -461,6 +469,8 @@ const HistoryBody = memo(function HistoryBody(
     showApprovalPauseHint: boolean
     /** RUN_FINISHED 后的贴底跟随窗口，透传给 VirtualHistoryBody */
     postStreamFollowUntilRef?: MutableRefObject<number>
+    /** 流式活跃状态 ref，透传给 VirtualHistoryBody */
+    streamActiveRef?: MutableRefObject<boolean>
   },
 ) {
   const {
@@ -476,6 +486,7 @@ const HistoryBody = memo(function HistoryBody(
     virtualScrollToOffsetRef,
     showApprovalPauseHint,
     postStreamFollowUntilRef,
+    streamActiveRef,
     ...rowProps
   } = props
   const useFlat = historyItems.length <= HISTORY_FLAT_LIST_MAX_ROWS
@@ -502,6 +513,7 @@ const HistoryBody = memo(function HistoryBody(
           virtualScrollToIndexRef={virtualScrollToIndexRef}
           virtualScrollToOffsetRef={virtualScrollToOffsetRef}
           postStreamFollowUntilRef={postStreamFollowUntilRef}
+          streamActiveRef={streamActiveRef}
           {...rowProps}
         />
       )}
@@ -777,9 +789,13 @@ export const MessageVirtualList = memo(function MessageVirtualList({
   const userScrolledAwayDuringStreamRef = useRef(false)
   if (prevLayoutKeyRef.current !== layoutKey) {
     prevLayoutKeyRef.current = layoutKey
-    autoFollowRef.current = false
-    userScrolledAwayDuringStreamRef.current = false
-    postSendScrollAnchorRef.current = false
+    // 流式中打开右栏（文件/终端）只改宽度：勿清贴底 follow，否则测高与贴底失步会整栏跳动。
+    const streamingNow = isSending || streamLive || resumeStreamHoldActive
+    if (!streamingNow) {
+      autoFollowRef.current = false
+      userScrolledAwayDuringStreamRef.current = false
+      postSendScrollAnchorRef.current = false
+    }
     cancelPendingScrollRaf(rafScheduledRef)
   }
   const onViewReadyRef = useRef(onViewReady)
@@ -2191,6 +2207,14 @@ export const MessageVirtualList = memo(function MessageVirtualList({
     pinPostStreamBottomFrame()
   }, [rows, viewReady, historyLoading, hasContent, pinPostStreamBottomFrame])
 
+  // 滚动条平时隐藏，鼠标靠近右缘或滚动时短暂显示（macOS overlay 风格，样式见 react-chat.css）
+  useEffect(() => {
+    const el = parentRef.current
+    if (!el) return
+    // 主滚动器仅在 hasContent && !historyLoading 分支挂载，依赖翻转后重挂
+    return attachScrollbarReveal(el, 'react-vlist-scroller--sb-show')
+  }, [hasContent, historyLoading, viewReady])
+
   if (!hasContent) {
     if (historyLoading) {
       return (
@@ -2294,6 +2318,7 @@ export const MessageVirtualList = memo(function MessageVirtualList({
           virtualScrollToIndexRef={virtualScrollToIndexRef}
           virtualScrollToOffsetRef={virtualScrollToOffsetRef}
           postStreamFollowUntilRef={postStreamFollowUntilRef}
+          streamActiveRef={streamActiveRef}
           sessionKey={sessionKey}
           historyLoading={historyLoading}
           toolApprovalHost={historyToolApprovalHost}

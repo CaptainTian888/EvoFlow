@@ -25,6 +25,10 @@ const EXACT_KIND_CATEGORY: Record<string, ToolCardCategory> = {
   execute_command: 'terminal',
   terminal: 'terminal',
   code_execution: 'terminal',
+  taskoutput: 'terminal',
+  task_output: 'terminal',
+  taskstop: 'terminal',
+  task_stop: 'terminal',
 
   read_file: 'file',
   read: 'file',
@@ -110,10 +114,12 @@ export function resolveToolCardCategory(toolKind: string): ToolCardCategory {
 
 /** 24×24 stroke 线性图标（lucide 风格路径，stroke 用 currentColor）。 */
 const CATEGORY_ICONS: Record<ToolCardCategory, ReactNode> = {
+  // Lucide SquareTerminal（对齐 ZCode execute 行图标，非 Terminal 折线）
   terminal: (
     <>
-      <polyline points="4 17 10 11 4 5" />
-      <line x1="12" y1="19" x2="20" y2="19" />
+      <path d="m7 11 2-2-2-2" />
+      <path d="M11 13h4" />
+      <rect width="18" height="18" x="3" y="3" rx="2" ry="2" />
     </>
   ),
   file: (

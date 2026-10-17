@@ -142,16 +142,20 @@ def _is_budget_reset_cli_command(cmd: str) -> bool:
     return "evoflow tasks progress" in c or "evoflow tasks state" in c or "evoflow tasks create" in c or "evoflow employees wake" in c or "evoflow approvals request" in c
 
 
+def _is_shell_tool(tc: Any) -> bool:
+    return _tool_call_name(tc).strip().lower() in {"terminal", "bash"}
+
+
 def _is_task_cli_terminal(tc: Any) -> bool:
-    """Allow ``terminal`` only when command looks like Task / employees / approvals CLI."""
-    if _tool_call_name(tc) != "terminal":
+    """Allow Bash/terminal only when command looks like Task / employees / approvals CLI."""
+    if not _is_shell_tool(tc):
         return False
     cmd = str(_tool_call_args(tc).get("command") or "").lower()
     return "evoflow tasks" in cmd or "evoflow employees" in cmd or "evoflow approvals" in cmd or "evoflow task " in cmd
 
 
 def _is_budget_reset_terminal(tc: Any) -> bool:
-    if _tool_call_name(tc) != "terminal":
+    if not _is_shell_tool(tc):
         return False
     return _is_budget_reset_cli_command(str(_tool_call_args(tc).get("command") or ""))
 
@@ -317,7 +321,7 @@ def _partition_soft_tool_calls(tool_calls: list[Any]) -> tuple[list[Any], list[A
         name = _tool_call_name(tc)
         if _is_soft_keep_tool_call(tc):
             keep.append(tc)
-        elif name in _DIG_TOOL_NAMES or name == "terminal":
+        elif name.strip().lower() in _DIG_TOOL_NAMES or name.strip().lower() in {"terminal", "bash"}:
             strip.append(tc)
         else:
             # Unknown tools: strip at soft limit (safer than burning reserve).

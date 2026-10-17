@@ -73,6 +73,10 @@ REMOVED_LEGACY_TOOL_NAMES: frozenset[str] = frozenset(
         "str_replace",
         "delete_file",
         "find_file",
+        "rg",
+        "find",
+        "terminal",
+        "process",
         # Unified ``browser`` tool unregistered — use the agent-browser skill (CLI/MCP) instead.
         "browser",
         # Legacy browser_* tools — use the agent-browser skill (CLI/MCP) instead.
@@ -99,7 +103,8 @@ REMOVED_LEGACY_TOOL_NAMES: frozenset[str] = frozenset(
         "trae_switch_mode",
         "trae_delegate",
         "claude_session",
-        "bash",
+        # ``bash`` is the live host-direct shell (ZCode). The old sandbox bash_tool
+        # is dropped by ``_HOST_DIRECT_SUPERSEDED_SANDBOX_NAMES``, not by retiring the name.
         "session_workspace",
         "send_message",
     }
@@ -168,7 +173,7 @@ def get_builtin_tools() -> tuple[BaseTool, ...]:
     )
     from evoflow.tools.builtins.plan_tool import plan_tool
     from evoflow.tools.builtins.platform_tool import platform_tool
-    from evoflow.tools.builtins.process_tool import process_tool
+    # from evoflow.tools.builtins.process_tool import process_tool  # retired — Bash background tasks
     from evoflow.tools.builtins.propose_goal_tool import propose_goal_tool
     from evoflow.tools.builtins.read_lints_tool import read_lints_tool
     from evoflow.tools.builtins.stage_tool import stage_set_tool
@@ -197,7 +202,7 @@ def get_builtin_tools() -> tuple[BaseTool, ...]:
         stage_set_tool,
         fetch_url_tool,
         view_image_tool,
-        process_tool,
+        # process_tool,  # retired — ZCode Bash run_in_background + TaskOutput/TaskStop
         # browser_tool,  # unregistered — use the agent-browser skill (CLI/MCP) instead
         read_lints_tool,
         bash_tool,

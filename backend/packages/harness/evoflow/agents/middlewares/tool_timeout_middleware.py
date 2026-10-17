@@ -24,6 +24,8 @@ logger = logging.getLogger(__name__)
 # Default timeout per tool (seconds). Tools not listed use DEFAULT_TIMEOUT.
 _TOOL_TIMEOUTS: dict[str, int] = {
     "terminal": 600,  # replaces execute_command (superset)
+    "bash": 600,
+    "Bash": 600,
     "web_fetch": 60,
     "web_extract": 60,
     "web_search": 30,

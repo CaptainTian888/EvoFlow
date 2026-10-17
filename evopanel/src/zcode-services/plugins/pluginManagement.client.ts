@@ -13,6 +13,7 @@
 
 import { Event } from "@zcode/rpc";
 import { blog } from "../../lib/browser-unified-log.js";
+import { gatewayProxy } from "../../lib/tauri-api.js";
 import type {
   ZCodePluginOperationProgressNotification,
   ZCodePluginsCancelOperationResult,
@@ -49,51 +50,34 @@ import type {
   ZCodeAgentValidatePluginParams,
 } from "../zcode-agent/zcodeAgentPluginParams.js";
 
-async function httpGet<T>(url: string): Promise<T> {
-  const resp = await fetch(url, { method: "GET", headers: { Accept: "application/json" } });
-  if (!resp.ok) {
-    let detail = "";
-    try {
-      const body = (await resp.json()) as { detail?: string };
-      detail = typeof body.detail === "string" ? body.detail : "";
-    } catch {
-      /* ignore */
-    }
-    throw new Error(detail || `Gateway ${url} HTTP ${resp.status}`);
-  }
-  return (await resp.json()) as T;
+/**
+ * 桌面端必须走 gatewayProxy（Rust / pipe），不能裸 fetch 相对 /api/*：
+ * webview 同源会回 SPA HTML，JSON.parse 就会报 Unexpected token '<' / DOCTYPE。
+ */
+async function httpGet<T>(
+  url: string,
+  query?: Record<string, unknown> | null,
+): Promise<T> {
+  return (await gatewayProxy("GET", url, null, query ?? null)) as T;
 }
 
-async function httpSend<T>(url: string, method: string, body?: unknown): Promise<T> {
+async function httpSend<T>(
+  url: string,
+  method: string,
+  body?: unknown,
+  query?: Record<string, unknown> | null,
+): Promise<T> {
   // 插件操作（安装/启停/卸载/配置/市场变更）进统一日志，与后端 service 日志对齐。
-  const bodyPreview = body !== undefined ? JSON.stringify(body).slice(0, 160) : ""
-  blog("info", `[plugin-client] ${method} ${url}${bodyPreview ? ` body=${bodyPreview}` : ""}`)
-  const started = Date.now()
+  const bodyPreview = body !== undefined ? JSON.stringify(body).slice(0, 160) : "";
+  blog("info", `[plugin-client] ${method} ${url}${bodyPreview ? ` body=${bodyPreview}` : ""}`);
+  const started = Date.now();
   try {
-    const resp = await fetch(url, {
-      method,
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
-      body: body !== undefined ? JSON.stringify(body) : undefined,
-    });
-    blog(
-      resp.ok ? "info" : "warn",
-      `[plugin-client] ${method} ${url} -> HTTP ${resp.status} in ${Date.now() - started}ms`,
-    )
-    if (!resp.ok && resp.status !== 204) {
-      let detail = "";
-      try {
-        const payload = (await resp.json()) as { detail?: string };
-        detail = typeof payload.detail === "string" ? payload.detail : "";
-      } catch {
-        /* ignore */
-      }
-      throw new Error(detail || `Gateway ${method} ${url} HTTP ${resp.status}`);
-    }
-    if (resp.status === 204) return undefined as unknown as T;
-    return (await resp.json()) as T;
+    const result = (await gatewayProxy(method, url, body ?? null, query ?? null)) as T;
+    blog("info", `[plugin-client] ${method} ${url} ok in ${Date.now() - started}ms`);
+    return result;
   } catch (err) {
-    blog("warn", `[plugin-client] ${method} ${url} FAILED in ${Date.now() - started}ms: ${err}`)
-    throw err
+    blog("warn", `[plugin-client] ${method} ${url} FAILED in ${Date.now() - started}ms: ${err}`);
+    throw err;
   }
 }
 
@@ -236,8 +220,10 @@ export class EvoflowPluginManagementClient implements IPluginManagementService {
     if (!pluginId) throw new Error("uninstallPlugin requires pluginId");
     const removeCache = params.removeCache !== false;
     return httpSend<ZCodePluginsUninstallResult>(
-      `/api/plugins/installed/${encodePathSegment(pluginId)}?removeCache=${removeCache}`,
+      `/api/plugins/installed/${encodePathSegment(pluginId)}`,
       "DELETE",
+      undefined,
+      { removeCache },
     );
   }
 
@@ -294,9 +280,10 @@ export class EvoflowPluginManagementClient implements IPluginManagementService {
   }
 
   async describePlugin(params: ZCodeAgentDescribePluginParams): Promise<ZCodePluginsDescribeResult> {
-    return httpGet<ZCodePluginsDescribeResult>(
-      `/api/plugins/describe?marketplace=${encodeURIComponent(params.marketplace)}&name=${encodeURIComponent(params.pluginName)}`,
-    );
+    return httpGet<ZCodePluginsDescribeResult>("/api/plugins/describe", {
+      marketplace: params.marketplace,
+      name: params.pluginName,
+    });
   }
 
   async setPluginEnabled(
