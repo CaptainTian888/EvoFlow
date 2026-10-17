@@ -29,11 +29,42 @@ def stage_image_entry(*, runtime: Any | None, path: str, mime_type: str, label: 
     """Build an auto ``ViewedImageData`` entry, or None when native pixels won't be used."""
     if not path:
         return None
-    from evoflow.agents.image_routing import decide_view_image_route
+    from evoflow.agents.image_routing import decide_view_image_route, get_image_input_mode
+    from evoflow.tools.builtins.vision_analysis_core import (
+        main_model_supports_vision,
+        model_supports_vision,
+        resolve_model_name_from_runtime,
+    )
 
     try:
-        if decide_view_image_route(runtime=runtime) != "native":
-            return None
+        route = decide_view_image_route(runtime=runtime)
+        # node_repl 等工具偶发拿不到 runtime.model_name → supports_vision=False → text。
+        # 截图刚落盘时应尽量 auto-stage；主模型若未解析，回退看配置里的 primary。
+        if route != "native":
+            mode = get_image_input_mode()
+            if mode == "text":
+                return None
+            name = resolve_model_name_from_runtime(runtime) if runtime is not None else None
+            supports = main_model_supports_vision(runtime) if runtime is not None else False
+            if not supports:
+                try:
+                    from evoflow.config import get_app_config
+
+                    primary = (get_app_config().primary_model or "").strip()
+                    if primary and model_supports_vision(primary):
+                        supports = True
+                        logger.info(
+                            "stage_image_entry: runtime model=%r lacked vision; "
+                            "using primary_model=%r for native staging",
+                            name,
+                            primary,
+                        )
+                except Exception:
+                    logger.debug("primary vision fallback failed", exc_info=True)
+            if not supports:
+                return None
+            # mode auto/native + vision available → stage even if route said text
+            # due to empty runtime model name.
     except Exception:
         logger.debug("view_image route decision failed; skip staging", exc_info=True)
         return None

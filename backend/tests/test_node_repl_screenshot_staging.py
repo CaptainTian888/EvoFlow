@@ -340,6 +340,29 @@ class TestAgentBrowserScreenshotStaging:
         assert "staged for your next context" in out
 
 
+class TestBrowserSnapshotRef:
+    def test_api_path_resolves_to_saved_png(self, tmp_path: Path, monkeypatch):
+        from evoflow.tools.builtins.browser_screenshot_store import (
+            resolve_browser_snapshot_ref,
+            save_screenshot_png,
+        )
+
+        class _Paths:
+            base_dir = tmp_path
+
+        monkeypatch.setattr(
+            "evoflow.tools.builtins.browser_screenshot_store.get_paths",
+            lambda: _Paths(),
+        )
+        meta = save_screenshot_png("evoflow", _png_bytes())
+        resolved = resolve_browser_snapshot_ref(str(meta["image_url"]))
+        assert resolved is not None and resolved.is_file()
+        assert resolve_browser_snapshot_ref(
+            f"http://127.0.0.1:38012{meta['image_url']}"
+        ) == resolved
+        assert resolve_browser_snapshot_ref("/api/threads/missing/browser-snapshots/abcdef1234567890") is None
+
+
 class TestBrowserToolScreenshotFormat:
     def test_staged_flag_changes_summary_and_payload(self, tmp_path: Path):
         from evoflow.tools.builtins.browser_screenshot_store import format_screenshot_tool_result

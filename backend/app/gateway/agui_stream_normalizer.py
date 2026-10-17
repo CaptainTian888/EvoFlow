@@ -73,6 +73,23 @@ def _tool_id_from_tc(tc: dict[str, Any]) -> str:
 # Keys that carry the file path in write-family tool arguments.
 _PATH_ARG_KEYS = ("path", "target_file", "file_path", "file")
 
+# Tool families whose TOOL_CALL_START should surface the target path as soon as
+# it can be extracted (even as a growing prefix) from partial arguments.
+_WRITE_FAMILY_START_PATH_TOOLS = frozenset(
+    {"write", "write_to_file", "write_file", "replace", "str_replace", "replace_in_file"}
+)
+
+
+def _partial_path_from_args_text(args_text: str) -> str:
+    """Growing path prefix from incomplete args JSON (display-only, prefix-safe)."""
+    from app.gateway.sse_ui_normalize import _extract_json_string_value_for_key
+
+    for key in _PATH_ARG_KEYS:
+        val = _extract_json_string_value_for_key(str(args_text or ""), key, require_closed=False)
+        if val and val.strip():
+            return val.strip()
+    return ""
+
 
 def _tool_path_from_tc(tc: dict[str, Any]) -> str:
     """Extract the file path from a write-family tool call's arguments.
@@ -80,7 +97,8 @@ def _tool_path_from_tc(tc: dict[str, Any]) -> str:
     Returns the path string if the key is found and the value is a non-empty
     string; otherwise returns ``""``.  Consumers can use this in
     ``TOOL_CALL_START`` to know the target file immediately without waiting
-    for ``TOOL_CALL_ARGS`` to deliver the path later.
+    for ``TOOL_CALL_ARGS`` to deliver the path later.  Falls back to partial
+    extraction so a still-streaming path yields its growing prefix.
     """
     fn = tc.get("function") if isinstance(tc.get("function"), dict) else {}
     args_raw = fn.get("arguments")
@@ -92,7 +110,7 @@ def _tool_path_from_tc(tc: dict[str, Any]) -> str:
         try:
             obj = json.loads(args_raw)
         except Exception:
-            return ""
+            return _partial_path_from_args_text(args_raw)
         args = obj
     elif isinstance(args_raw, dict):
         args = args_raw
@@ -284,12 +302,27 @@ def _ensure_tool_started(
     # consumers do not have to wait for TOOL_CALL_ARGS to discover the target
     # file.  Models often stream content before the "path" key.
     name_lower = name.lower()
-    if name_lower in {"write", "write_to_file", "write_file", "replace", "str_replace", "replace_in_file"}:
+    if name_lower in _WRITE_FAMILY_START_PATH_TOOLS:
         path = _tool_path_from_tc(tc)
         if path:
             event["path"] = path
     out.append(event)
     return tid
+
+
+def _start_event_with_path(name: str, tc: dict[str, Any]) -> dict[str, Any]:
+    """TOOL_CALL_START with the write-family target path surfaced when known.
+
+    Models often stream content before the path key, so args may only hold a
+    growing prefix at START time — a partial path beats no path for anchoring
+    the tool card.
+    """
+    event: dict[str, Any] = {"type": TOOL_CALL_START, "toolCallId": _tool_id_from_tc(tc), "toolCallName": name}
+    if name.lower() in _WRITE_FAMILY_START_PATH_TOOLS:
+        path = _tool_path_from_tc(tc)
+        if path:
+            event["path"] = path
+    return event
 
 
 def _ingest_tool_call_args(
@@ -485,7 +518,7 @@ def evf_payload_to_agui_events(
                 state.tool_names[tid] = name
                 out.append(
                     _attach_block_meta(
-                        {"type": TOOL_CALL_START, "toolCallId": tid, "toolCallName": name},
+                        _start_event_with_path(name, tc),
                         payload,
                     )
                 )
@@ -505,7 +538,7 @@ def evf_payload_to_agui_events(
             state.tool_names[tid] = name
             out.append(
                 _attach_block_meta(
-                    {"type": TOOL_CALL_START, "toolCallId": tid, "toolCallName": name},
+                    _start_event_with_path(name, chunk),
                     payload,
                 )
             )

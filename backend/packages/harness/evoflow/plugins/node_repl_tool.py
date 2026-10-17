@@ -51,6 +51,60 @@ _DISPLAY_MARKER_PREFIX = "{evoflow-cua-display:"
 # 宿主附着在带图结果上的官方帧凭证（ZCode frame authority 的对账来源）。
 _FRAME_INTEGRITY_META_KEY = "zcode.cua/official-frame-integrity-v1"
 
+# ZCode control-browser 要求首轮 dump browser.documentation()；上游全文常 30–40KB。
+# EvoFlow 单 WebView，完整 api.json/workflow 对模型是协议税。阈值以上替换为短指南；
+# agent.documentation.get("screenshots"|"recording"|…) 小文档不触达此路径。
+_BROWSER_DOCS_DUMP_MIN_CHARS = 6000
+_EVOFLOW_COMPACT_BROWSER_DOCS = """# Selected Browser
+- Name: EvoFlow WebView
+- Type: iab
+- ID: evoflow-webview
+
+EvoFlow compact API guide (full ZCode dump omitted — this is the complete host guide).
+
+## Fast path (prefer one js cell)
+1. Bootstrap `browser-client.mjs` via `ZCODE_PLUGIN_ROOT` (every fresh kernel).
+2. `const browser = await agent.browsers.getForUrl(url)` or `get("iab")`.
+3. Navigate: `await agent.browsers.open(url)` **or** `const tab = await browser.tabs.get("tab-0"); await tab.goto(url)`.
+4. `await tab.playwright.waitForLoadState({ state: "domcontentloaded" })`.
+5. Read with `await tab.playwright.domSnapshot()`; act via getByRole/getByText/… from snapshot facts.
+6. Screenshot only when visual evidence is required: `nodeRepl.emitImage(await tab.screenshot())`.
+
+## Single-tab rules
+- One in-app WebView. Do **not** spend a dedicated js call only to `tabs.list()` or re-dump documentation after this guide.
+- `tabs.new()` without url is a no-op reclaim (same page). Prefer `open(url)` / `tabs.get("tab-0").goto(url)`.
+- Recreate the browser wrapper each js call; tab id is usually `tab-0`.
+
+## Lookups
+- Screenshots: `await agent.documentation.get("screenshots")`
+- Recording / troubleshooting: `await agent.documentation.get("recording"|"browser-troubleshooting")`
+
+Do not call view_image for screenshots already staged into chat context.
+"""
+
+
+def _maybe_compact_browser_docs_dump(text: str) -> str:
+    """Replace oversized ``browser.documentation()`` dumps with the EvoFlow compact guide."""
+    if len(text) < _BROWSER_DOCS_DUMP_MIN_CHARS:
+        return text
+    if "# Selected Browser" not in text:
+        return text
+    if "# Built-in Browser Automation API" not in text and "API manifest" not in text:
+        return text
+    # Keep a trailing expression result if the cell both wrote docs and returned a value.
+    tail = ""
+    for sep in ("\n==> ", "\n=> "):
+        idx = text.rfind(sep)
+        if idx > len(text) // 2:
+            tail = "\n\n" + text[idx:].lstrip()
+            break
+    logger.info(
+        "compacted browser.documentation dump chars=%s -> %s",
+        len(text),
+        len(_EVOFLOW_COMPACT_BROWSER_DOCS) + len(tail),
+    )
+    return _EVOFLOW_COMPACT_BROWSER_DOCS + tail
+
 
 class NodeReplJsInput(BaseModel):
     # 显示契约（对齐 ZCode node-repl-host 的 JS_TOOL_DESCRIPTION）：面板折叠条
@@ -190,14 +244,32 @@ def _stage_model_image(runtime: ToolRuntime[Any, Any] | None, saved: dict[str, A
     注入前的预算压缩（base64 ≤200KB）由 ViewImageMiddleware 统一执行；
     这里只要求模型走 native 像素路由。
     """
+    from evoflow.agents.image_routing import decide_view_image_route
     from evoflow.agents.image_staging import stage_image_entry
+    from evoflow.tools.builtins.vision_analysis_core import (
+        main_model_supports_vision,
+        resolve_model_name_from_runtime,
+    )
 
-    return stage_image_entry(
+    path = str(saved.get("path") or "")
+    mime = "image/png" if path.lower().endswith(".png") else "image/jpeg"
+    model_name = resolve_model_name_from_runtime(runtime) if runtime is not None else None
+    supports = main_model_supports_vision(runtime) if runtime is not None else False
+    try:
+        route = decide_view_image_route(runtime=runtime)
+    except Exception as exc:
+        route = f"error:{exc}"
+    staged = stage_image_entry(
         runtime=runtime,
-        path=str(saved.get("path") or ""),
-        mime_type="image/jpeg",
+        path=path,
+        mime_type=mime,
         label="screen capture",
     )
+    _mcp_log(
+        f"stage_image path={path!r} model={model_name!r} supports_vision={supports} "
+        f"route={route!r} staged={'yes' if staged else 'no'}"
+    )
+    return staged
 
 
 def _display_marker(payload: dict[str, Any]) -> str:
@@ -244,6 +316,8 @@ def _run(code: str, timeout_ms: int | None, title: str, runtime: ToolRuntime[Any
         # 模型侧则看到带错误说明的正文，而不是裸 RuntimeError。
         text = text or str(result.get("error") or "node_repl js failed")
         text = f"{text}\n\n[node_repl] call failed."[:4000]
+    else:
+        text = _maybe_compact_browser_docs_dump(text)
 
     raw_images = [
         {"data": str(image.get("data") or ""), "mime_type": str(image.get("mime_type") or "")}
@@ -273,17 +347,31 @@ def _run(code: str, timeout_ms: int | None, title: str, runtime: ToolRuntime[Any
         display["images"] = [
             {"url": entry["url"], "kb": entry["kb"]} for entry in image_entries
         ]
+        # Banner first so documentation dumps (screenshots.md) cannot bury it.
         if staged_entries:
-            text = (
-                f"{text}\n\n[Screenshot captured: {image_entries[0]['url']} "
+            banner = (
+                f"[Screenshot captured: {image_entries[0]['url']} "
                 f"({image_entries[0]['kb']}KB) — shown in the chat UI and staged for "
-                f"your next context; you will see the pixels.]"
-            ).strip()
+                f"your next context; you will see the pixels. Do NOT call view_image.]"
+            )
         else:
-            text = (
-                f"{text}\n\n[Screenshot captured: {image_entries[0]['url']} "
-                f"({image_entries[0]['kb']}KB) — shown in the chat UI.]"
-            ).strip()
+            disk = str(image_entries[0].get("path") or "").strip()
+            path_hint = f" or absolute path {disk!r}" if disk else ""
+            banner = (
+                f"[Screenshot captured: {image_entries[0]['url']} "
+                f"({image_entries[0]['kb']}KB) — shown in the chat UI. "
+                f"Pixels are not in your context. Call view_image with image_path "
+                f"{image_entries[0]['url']!r}{path_hint}. "
+                f"Do not open that URL as a workspace file.]"
+            )
+        text = f"{banner}\n\n{text}".strip() if text.strip() else banner
+        if not tool_call_id:
+            _mcp_log("stage_image skipped: empty tool_call_id (InjectedToolCallId missing)")
+        elif not staged_entries:
+            _mcp_log(
+                "stage_image skipped: route not native or path missing "
+                f"(entries={len(image_entries)} tool_call_id={tool_call_id!r})"
+            )
 
     meta = result.get("meta") or {}
     # 宿主 broker 把目标应用身份记在 result._meta["zcode/nodeReplCuaApp"]
@@ -320,15 +408,16 @@ def _run(code: str, timeout_ms: int | None, title: str, runtime: ToolRuntime[Any
     _mcp_log(
         f"CALL done status={'error' if result.get('is_error') else 'ok'} "
         f"dur={_time.monotonic() - started:.1f}s text({len(text)} chars)="
-        + text.replace("\n", "\\n")[:800]
+        + text.replace("\r", " ").replace("\n", " | ")[:800]
         + (f" images={len(image_entries)}" if image_entries else "")
         + (f" staged_model={len(staged_entries)}" if staged_entries else "")
         + (f" integrity_rejected={len(integrity_notes)}" if integrity_notes else "")
         + (f" target_app={app_identity.get('app_key')}" if app_identity else "")
+        + (f" tool_call_id={tool_call_id!r}" if tool_call_id else " tool_call_id=''")
     )
 
     payload = f"{text}\n\n{_display_marker(display)}"
-    if staged_entries:
+    if staged_entries and tool_call_id:
         message = ToolMessage(content=payload, tool_call_id=tool_call_id)
         return Command(update={"messages": [message], "viewed_images": staged_entries})
     return payload
@@ -344,10 +433,16 @@ def build_node_repl_js_tool() -> Any | None:
         title: str,
         code: str,
         timeout_ms: int | None = None,
-        runtime: ToolRuntime[Any, Any] = None,
+        runtime: ToolRuntime[Any, Any] = None,  # type: ignore[assignment]
         tool_call_id: Annotated[str, InjectedToolCallId] = "",
     ) -> str | Command:
-        return _run(code, timeout_ms, title, runtime, tool_call_id)
+        # InjectedToolCallId 偶发空串时，尝试从 runtime 补回，否则截图无法 Command 回填 viewed_images。
+        call_id = str(tool_call_id or "").strip()
+        if not call_id and runtime is not None:
+            cfg = getattr(runtime, "config", None) or {}
+            if isinstance(cfg, dict):
+                call_id = str((cfg.get("configurable") or {}).get("tool_call_id") or "").strip()
+        return _run(code, timeout_ms, title, runtime, call_id)
 
     logger.info("node_repl kernel tool registered (mcp__node_repl__js)")
     return node_repl_js

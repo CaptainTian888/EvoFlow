@@ -222,7 +222,23 @@ def build_plugin_injection_block(
         "\"skill:<名称>\" 读取 SKILL.md；仅当用户本轮消息以 \"/命令名\" 调用某命令时，"
         "该命令的正文才会内联给出。\n"
     )
-    body = intro + "\n".join(sections)
+    browser_hint = ""
+    if any(pid.startswith("browser-use") or "browser-use" in pid for pid, _ in resolved):
+        browser_hint = (
+            "\n<evoflow_browser_runtime>\n"
+            "EvoFlow ships a single in-app WebView (one tab). Prefer ONE first js cell: "
+            "bootstrap + getForUrl/get(iab) + open(url) or tabs.get(\"tab-0\").goto(url) + "
+            "waitForLoadState + domSnapshot — do not burn a dedicated round only for "
+            "browser.documentation() (host returns a compact guide if you still dump it). "
+            "After that, do NOT spend extra js calls only to list tabs or re-dump docs; "
+            "reuse tab-0 / last tab id. Screenshots already staged: do NOT call view_image again.\n"
+            "EvoFlow 只有一个内置浏览器页。优先第一枪就把 bootstrap、选浏览器、打开 URL、"
+            "wait、domSnapshot 写进同一个 js；不要单独一轮只为 documentation（宿主会返回短指南）。"
+            "之后不要再为 tabs.list / 重复 dump 文档另开 js；用 tab-0。截图已 staged 勿再 "
+            "view_image。\n"
+            "</evoflow_browser_runtime>\n"
+        )
+    body = intro + browser_hint + "\n".join(sections)
     if truncated:
         body += "\n<!-- plugin_injection truncated: remaining plugins/components exceed the budget; use skill:/commands metadata above -->"
     _ulog(

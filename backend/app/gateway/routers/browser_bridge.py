@@ -102,7 +102,7 @@ async def execute_command(payload: BrowserExecuteRequest) -> dict[str, Any]:
     dependencies=[Depends(_bridge_token_guard)],
 )
 async def get_transport() -> dict[str, Any]:
-    """当前浏览器传输通道：webview2（内置面板）或 edge（WebView2 失败后的系统回退）。"""
+    """当前浏览器传输通道。只有 webview2（内置面板）可被工具驱动；edge 会被拒绝。"""
     import os
 
     from evoflow.tools.builtins.browser_engine import _EVOFLOW_DIR

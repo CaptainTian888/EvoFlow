@@ -1472,9 +1472,8 @@ fn create_embed_window(
     if let Some(bridge) = app.try_state::<super::browser_embed_bridge::EmbedBridge>() {
         bridge.note_url(label, target_url.as_str());
     }
-    // Real Chromium CDP on this embed only (not main). with_webview / ExecuteScript
-    // never dispatch on these HWNDs; remote debugging gives Runtime.evaluate a
-    // working transport without COM UI-thread hops.
+    // Distinct data_directory so this child does not share the main WebView2
+    // environment. Evaluate goes through stashed ExecuteScript, not the debug port.
     // Tauri: different additional_browser_args REQUIRE a distinct data_directory
     // or WebView2 reuses main's environment and ignores --remote-debugging-port.
     let debug_port = browser_cdp::allocate_embed_debug_port();

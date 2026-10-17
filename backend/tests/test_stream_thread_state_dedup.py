@@ -187,13 +187,16 @@ class LiveThreadStateDedupTests(unittest.TestCase):
 
 
 class WriteToolPartialPathTests(unittest.TestCase):
-    def test_content_streams_before_path_without_emitting_path_prefixes(self) -> None:
+    def test_content_streams_before_path_emits_growing_path_prefix(self) -> None:
         _ensure_subagent_mock()
         from app.gateway.sse_ui_normalize import _extract_write_fields_from_partial_args
 
+        # Unclosed path — growing prefix is emitted so the UI can anchor the
+        # target file immediately (a JSON string only grows while streaming,
+        # so the prefix is always a prefix of the final value).
         self.assertEqual(
             _extract_write_fields_from_partial_args('{"content":"body","path":"outputs/')['path'],
-            "",
+            "outputs/",
         )
         self.assertEqual(
             _extract_write_fields_from_partial_args(
@@ -202,11 +205,27 @@ class WriteToolPartialPathTests(unittest.TestCase):
             "outputs/final.py",
         )
 
-    def test_path_arrival_emits_metadata_without_replaying_content_delta(self) -> None:
+    def test_path_arrival_flushes_pending_body_exactly_once(self) -> None:
         _ensure_subagent_mock()
         from app.gateway.sse_ui_normalize import UiStreamNormalizer
 
         state = UiStreamNormalizer(thread_id="thread-test", anchored=True)
+        # Path key not started yet: body is pending (no anchored path), counters only.
+        _, pre_path = state._sanitize_write_tool_call(
+            {
+                "id": "call-0",
+                "name": "write",
+                "function": {
+                    "name": "write",
+                    "arguments": '{"content":"body"'
+                },
+            }
+        )
+        self.assertEqual(pre_path["path"], "")
+        self.assertNotIn("content_delta", pre_path)
+
+        # A growing path prefix anchors the stream as soon as the key appears:
+        # pending body flushes against the prefix (prefix only ever grows).
         _, first_progress = state._sanitize_write_tool_call(
             {
                 "id": "call-1",
@@ -217,9 +236,10 @@ class WriteToolPartialPathTests(unittest.TestCase):
                 },
             }
         )
-        self.assertEqual(first_progress["path"], "")
+        self.assertEqual(first_progress["path"], "outputs/")
         self.assertEqual(first_progress["content_delta"], "body")
 
+        # Closed path; the sent-cursor prevents a content replay.
         _, path_progress = state._sanitize_write_tool_call(
             {
                 "id": "call-1",
@@ -282,12 +302,12 @@ class AguiToolStartPathTests(unittest.TestCase):
             ),
             "outputs/test.py",
         )
-        # Unclosed path — not found (partial JSON).
+        # Unclosed path — growing prefix (partial JSON, prefix-safe for display).
         self.assertEqual(
             _tool_path_from_tc(
                 {"function": {"arguments": '{"path":"outputs/test'}}
             ),
-            "",
+            "outputs/test",
         )
         # Dict args.
         self.assertEqual(

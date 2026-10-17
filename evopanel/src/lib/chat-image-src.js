@@ -85,6 +85,10 @@ export function resolveChatImageSrc(rawPathOrUrl) {
   if (!u) return ''
   if (u.startsWith('data:image/') || /^https?:\/\//i.test(u)) return u
 
+  // Screenshot tool results use Gateway paths, not workspace files.
+  const snapshot = u.match(/(\/api\/threads\/[^/?#]+\/browser-snapshots\/[0-9a-f]{12,32})/i)
+  if (snapshot) return apiUrl(snapshot[1].slice(4))
+
   const root = getChatWorkspaceRoot() || inferWorkspaceRootFromFilePath(u)
   const norm = u.replace(/\\/g, '/')
 

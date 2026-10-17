@@ -1500,7 +1500,7 @@ export const BrowserPanel = memo(function BrowserPanel({
     }
   }, [navBusy, iframeFallback, embedSupported, stageId])
 
-  // 引擎标签页轮询：面板打开时拉取（含 agent 工具引起的页面变化），3s 节流。
+  // 引擎标签页轮询：只读会话里记下的地址，不跑页面脚本。3s 节流。
   //
   // A failing tabList is NOT exceptional — the embed CDP path can be
   // unavailable for stretches (before the WebView registers, after it is torn

@@ -586,7 +586,7 @@ function upsertTextMessage(state: AgUiTurnState, messageId: string, role: 'assis
 
 function toolEntryFromAgUi(tc: AgUiToolCall): Record<string, unknown> {
   const resultText = tc.result != null ? String(tc.result) : null
-  const status = tc.resultStatus || (tc.phase === 'done' ? 'ok' : 'running')
+  const status = tc.resultStatus || (tc.phase === 'done' || tc.result != null ? 'ok' : 'running')
   const entry: Record<string, unknown> = {
     id: tc.toolCallId,
     tool_call_id: tc.toolCallId,
@@ -922,6 +922,8 @@ export function applyAgUiEvent(state: AgUiTurnState, event: AGUIEvent): AgUiTurn
   }
 
   if (t === EventType.TEXT_MESSAGE_START) {
+    // 新一轮正文开始 = 模型已收齐旧工具结果。收尾幽灵 running 工具，避免扫光悬挂。
+    finalizeGhostRunningToolsBeforeNewRound(state)
     const e = event as { messageId: string; role?: string }
     const role = e.role === 'reasoning' ? 'reasoning' : 'assistant'
     upsertTextMessage(state, e.messageId, role)
@@ -960,6 +962,8 @@ export function applyAgUiEvent(state: AgUiTurnState, event: AGUIEvent): AgUiTurn
   }
 
   if (t === EventType.REASONING_START || t === EventType.REASONING_MESSAGE_START) {
+    // 新一轮思考开始 = 模型已收齐旧工具结果。收尾幽灵 running 工具，避免扫光悬挂。
+    finalizeGhostRunningToolsBeforeNewRound(state)
     const e = event as { messageId: string }
     const msg = upsertTextMessage(state, e.messageId, 'reasoning')
     if (msg.startedAtMs == null) msg.startedAtMs = rememberReasoningStart(state.runId, e.messageId)

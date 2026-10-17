@@ -983,9 +983,12 @@ def _extract_write_fields_from_partial_args(raw: str) -> dict[str, str]:
     text = str(raw or "")
     path = ""
     for key in _PATH_ARG_KEYS:
-        # Keep growing path prefixes out of progress events; content may stream
-        # before the path, which becomes authoritative when its JSON string closes.
-        val = _extract_json_string_value_for_key(text, key, require_closed=True)
+        # Models often stream content before the path key. Use the growing
+        # (possibly unclosed) path prefix so the UI can anchor the target file
+        # immediately — a JSON string only grows while streaming, so the prefix
+        # is always a prefix of the final value, and the closed value becomes
+        # authoritative as soon as its quote arrives.
+        val = _extract_json_string_value_for_key(text, key, require_closed=False)
         if val and val.strip():
             path = val.strip()
             break
@@ -1354,6 +1357,12 @@ class UiStreamNormalizer:
         old_string = str(fields.get("old_string") or "")
         prev_content = str(prev.get("content") or "")
         prev_old = str(prev.get("old_string") or "")
+        # Body bytes already delivered to the wire.  content_delta needs an
+        # anchored path, so body streamed before the path key appears is not
+        # deliverable yet — cursor-based catch-up must flush it once the path
+        # is known, otherwise per-chunk growth deltas would lose that prefix.
+        prev_content_sent = int(prev.get("content_sent_len") or 0)
+        prev_old_sent = int(prev.get("old_string_sent_len") or 0)
         content_grew = len(content) > len(prev_content)
         old_grew = len(old_string) > len(prev_old)
         lines_changed = lines_added != prev_added or lines_removed != prev_removed
@@ -1363,21 +1372,18 @@ class UiStreamNormalizer:
         # final fragment with no further content growth — still must emit progress
         # so the UI / wire log get a non-empty path.
         path_arrived = bool(path_now) and path_now != path_prev
-        logger.debug(f"[SANITIZE_WRITE] stats: content_len={len(content)}, content_grew={content_grew}, lines_changed={lines_changed}, path_arrived={path_arrived}")
+        content_pending = bool(path_now) and len(content) > prev_content_sent
+        old_pending = bool(path_now) and len(old_string) > prev_old_sent
+        content_sent = prev_content_sent
+        old_sent = prev_old_sent
+        logger.debug(f"[SANITIZE_WRITE] stats: content_len={len(content)}, lines_changed={lines_changed}, path_arrived={path_arrived}")
         progress: dict[str, Any] | None = None
         # Only emit progress when args actually arrive (lines change, old_string grows,
         # or path becomes known).  When path is not yet known, skip entirely —
         # the actual tool_call arguments stream through TOOL_CALL_ARGS deltas, so
         # the frontend sees everything it needs via that channel.  content_delta is
         # only sent once path is confirmed to avoid un-anchored progress events.
-        # Only emit progress when path is known.  Sending content_delta before path
-        # arrives creates misleading "path=" events in the UI and makes progress
-        # events unanchored (frontend has no path to display).  The actual tool_call
-        # arguments — including content — stream through TOOL_CALL_ARGS deltas, so
-        # the frontend sees everything it needs via that channel; this progress
-        # event only needs to tell the frontend "a write tool just started, here's
-        # the path".  content_delta / lines_*. are only sent once path is confirmed.
-        if lines_changed or old_grew or path_arrived:
+        if lines_changed or old_grew or path_arrived or content_pending or old_pending:
             wire_id = key if not key.startswith(("idx:", "anon:")) else str(merged.get("id") or merged.get("tool_call_id") or "").strip()
             progress = {
                 "type": "write_file_progress",
@@ -1389,11 +1395,14 @@ class UiStreamNormalizer:
                 "lines_removed": lines_removed,
                 "content_len": len(content),
             }
-            # Stream body via deltas.  Cap per event; large jumps send an absolute
-            # ``content`` snapshot so the UI does not lose the middle.
+            # Stream body via deltas from the last-sent cursor.  Large jumps send
+            # an absolute ``content`` snapshot so the UI does not lose the middle.
+            # The cursor (not per-chunk growth) is the unit of delivery: when the
+            # path arrives after the content finished streaming, the whole body
+            # flushes in the path-arrival event.
             _DELTA_MAX = 4096
-            if path_now and content_grew:
-                cdelta = content[len(prev_content) :]
+            if path_now and content_pending:
+                cdelta = content[prev_content_sent:]
                 if len(cdelta) <= _DELTA_MAX:
                     if cdelta:
                         progress["content_delta"] = cdelta
@@ -1405,13 +1414,15 @@ class UiStreamNormalizer:
                     progress["content"] = content
                     if tool_name.strip().lower() in {"replace", "str_replace", "replace_in_file"}:
                         progress["new_string"] = content
-            if path_now and old_grew:
-                odelta = old_string[len(prev_old) :]
+                content_sent = len(content)
+            if path_now and old_pending:
+                odelta = old_string[prev_old_sent:]
                 if len(odelta) <= _DELTA_MAX:
                     if odelta:
                         progress["old_string_delta"] = odelta
                 else:
                     progress["old_string"] = old_string
+                old_sent = len(old_string)
             logger.debug(f"[SANITIZE_WRITE] emitted progress: phase=args, content_len={len(content)}, has_delta={bool(progress.get('content_delta') or progress.get('content'))}")
         self.write_tool_wire_state[key] = {
             "_tc": merged,
@@ -1421,6 +1432,8 @@ class UiStreamNormalizer:
             "lines_removed": lines_removed,
             "content": content,
             "old_string": old_string,
+            "content_sent_len": content_sent,
+            "old_string_sent_len": old_sent,
         }
         sanitized = _build_slim_write_tool_call(merged, fields)
         logger.debug(f"[SANITIZE_WRITE] built sanitized: keys={list(sanitized.keys()) if isinstance(sanitized, dict) else type(sanitized)}")

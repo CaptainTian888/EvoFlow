@@ -135,12 +135,22 @@ const __evoflowBridgeSymbol = Symbol.for("zcode.node-repl.browser-control-bridge
   ]);
   const __map = {
     browserViewportSet: (command) => ({ method: "viewportSet", width: command.width, height: command.height }),
-    newTab: (command) => ({ method: "navigate", url: command.url }),
+    // Skill / open() 先 tabs.new() 再 goto(url)。无 url 的 newTab 不能映射成 navigate，
+    // 否则引擎报 "navigate requires url"，open()/new()+goto 全挂。单 WebView：无 url → getState。
+    newTab: (command) => {
+      const u = command && (command.url || command.href);
+      if (typeof u === "string" && u.trim()) return { method: "navigate", url: u.trim() };
+      if (u && typeof u === "object") {
+        const nested = u.url || u.href || u.uri;
+        if (nested) return { method: "navigate", url: String(nested) };
+      }
+      return { method: "getState" };
+    },
     activateTab: () => ({ method: "getState" }),
     claimTab: (command, browserId) => ({
       method: "getState",
       tabId: "primary",
-      __tab: { id: "primary", url: "", title: "EvoFlow WebView", viewport: { width: 1280, height: 720 }, active: true, lifecycle: "active" },
+      __tab: { id: "primary", tabId: "primary", url: "", title: "EvoFlow WebView", viewport: { width: 1280, height: 720 }, active: true, lifecycle: "active" },
     }),
     getDialog: () => ({ method: "getState", __dialog: null }),
     handleDialog: (command) => ({ method: "getState", __dialog: null }),
@@ -181,6 +191,109 @@ const __evoflowBridgeSymbol = Symbol.for("zcode.node-repl.browser-control-bridge
       if (globalThis.__evoflowBrowserLog.length > 50) globalThis.__evoflowBrowserLog.shift();
     } catch {}
   };
+  // 内核侧诊断：进插件控制日志（source=kernel），用来确认 P0 能力是否真的走到。
+  const __bridgeLog = async (msg) => {
+    try {
+      await __gwFetch("/api/browser/log", {
+        method: "POST",
+        body: JSON.stringify({ source: "kernel", entries: [{ msg: String(msg).slice(0, 1800) }] }),
+      });
+    } catch {}
+  };
+  // 页内定位：CSS / xpath / Playwright internal:role|text。返回 Element[] 的函数源码。
+  const __MATCH_FN = `
+    function __evoMatch(sel) {
+      sel = String(sel || "");
+      const visible = (el) => {
+        if (!el || el.nodeType !== 1) return false;
+        const r = el.getBoundingClientRect();
+        if (r.width <= 0 || r.height <= 0) return false;
+        const s = getComputedStyle(el);
+        return s.visibility !== "hidden" && s.display !== "none";
+      };
+      const nameOf = (el) => String(
+        el.getAttribute("aria-label") || el.getAttribute("placeholder") || el.getAttribute("title")
+        || (el.innerText || el.value || "")
+      ).trim();
+      const roleOf = (el) => {
+        const r = (el.getAttribute("role") || "").toLowerCase();
+        if (r) return r;
+        const tag = el.tagName;
+        const type = (el.getAttribute("type") || "").toLowerCase();
+        if (tag === "TEXTAREA" || el.isContentEditable) return "textbox";
+        if (tag === "INPUT") {
+          if (type === "checkbox") return "checkbox";
+          if (type === "radio") return "radio";
+          if (type === "button" || type === "submit" || type === "reset") return "button";
+          if (type === "hidden" || type === "file") return type;
+          return "textbox";
+        }
+        if (tag === "BUTTON") return "button";
+        if (tag === "A") return "link";
+        if (tag === "SELECT") return "combobox";
+        return tag.toLowerCase();
+      };
+      if (sel.startsWith("xpath=") || sel.startsWith("//") || sel.startsWith("(//")) {
+        const xp = sel.startsWith("xpath=") ? sel.slice(6) : sel;
+        const snap = document.evaluate(xp, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+        const out = [];
+        for (let i = 0; i < snap.snapshotLength; i++) {
+          const n = snap.snapshotItem(i);
+          if (n && n.nodeType === 1) out.push(n);
+        }
+        return out;
+      }
+      if (sel.startsWith("internal:role=")) {
+        const raw = sel.slice("internal:role=".length);
+        const bracket = raw.indexOf("[name=");
+        const role = (bracket >= 0 ? raw.slice(0, bracket) : raw).toLowerCase();
+        let want = "";
+        let exact = false;
+        if (bracket >= 0 && raw.endsWith("]")) {
+          const body = raw.slice(bracket + 6, -1);
+          exact = body.endsWith("s");
+          const literal = exact || body.endsWith("i") ? body.slice(0, -1) : body;
+          try { want = JSON.parse(literal); } catch (e) { want = literal; }
+        }
+        const all = Array.from(document.querySelectorAll("a,button,input,textarea,select,[role],[contenteditable='true']"));
+        return all.filter((el) => {
+          if (roleOf(el) !== role || !visible(el)) return false;
+          if (!want) return true;
+          const n = nameOf(el);
+          return exact ? n === String(want) : n.toLowerCase().includes(String(want).toLowerCase());
+        });
+      }
+      if (sel.startsWith("internal:text=")) {
+        const raw = sel.slice("internal:text=".length);
+        const flag = raw.slice(-1);
+        let want = raw.slice(0, -1);
+        try { want = JSON.parse(want); } catch (e) {}
+        const exact = flag === "s";
+        const needle = String(want);
+        const nodes = Array.from(document.querySelectorAll("a,button,h1,h2,h3,h4,h5,p,span,li,td,label,div"));
+        const hits = [];
+        for (const el of nodes) {
+          const t = String(el.innerText || "").trim();
+          if (!t || !visible(el)) continue;
+          const ok = exact ? t === needle : t.toLowerCase().includes(needle.toLowerCase());
+          if (!ok) continue;
+          hits.push(el);
+          if (hits.length >= 8) break;
+        }
+        return hits;
+      }
+      try { return Array.from(document.querySelectorAll(sel)); }
+      catch (e) { return []; }
+    }
+  `;
+  const __locatorMode = (sel) => {
+    const s = String(sel || "");
+    if (s.startsWith("internal:role=")) return "role";
+    if (s.startsWith("internal:text=")) return "text";
+    if (s.startsWith("xpath=") || s.startsWith("//") || s.startsWith("(//")) return "xpath";
+    if (s.startsWith("internal:")) return "internal-other";
+    return "css";
+  };
     // ── playwright 命令面（browser-use 插件 Tab API 的核心操作面）──
     // 插件运行时把所有 Tab 操作发成 { method:"playwright", action:{name,...} }，
     // 读取类结果放在 .value（runValue），动作类只看 ok（runAction）。
@@ -196,23 +309,29 @@ const __evoflowBridgeSymbol = Symbol.for("zcode.node-repl.browser-control-bridge
       const act = act0;
       const an = act.name || "";
       const engine = (command) => __gwFetch("/api/browser/execute", { method: "POST", body: JSON.stringify({ command }) });
-      const cssSel = () => {
-        const s = act.locator?.selector || act.selector || "";
-        return s && !s.startsWith("internal:") ? s : "";
-      };
+      const rawSel = () => String(act.locator?.selector || act.selector || "");
       if (an === "domSnapshot") {
-        // 引擎 snapshot 返回结构化 {url,title,elements[]}；运行时契约要字符串。
-        // 序列化成 "[e12] button \"搜索\" x=..y=.." 的文本树，坐标供 x/y 点击。
+        // 引擎 snapshot 返回结构化 {url,title,elements[],dom[]}；运行时契约要字符串。
+        // 交互元素给坐标；dom 大纲把标题/段落/单元格正文带回来（天气卡片不在 button 上）。
         const r = await engine({ method: "snapshot", maxElements: 400 });
         const snap = r.snapshot || {};
         const els = Array.isArray(snap.elements) ? snap.elements : [];
         const lines = els.map((el) => {
           const ref = el.ref ? `[${el.ref}]` : "";
           const geo = el.x != null ? ` x=${Math.round(el.x)},y=${Math.round(el.y)}` : "";
-          return `${ref} ${el.role || el.tag || "node"} "${String(el.name || "").slice(0, 80)}"${geo}`.trim();
+          const box = el.rect && el.rect.x != null ? ` x=${Math.round(el.rect.x)},y=${Math.round(el.rect.y)}` : geo;
+          return `${ref} ${el.role || el.tag || "node"} "${String(el.name || el.text || "").slice(0, 80)}"${box}`.trim();
         });
-        return { ok: true, value: `page: ${snap.url || ""} | ${snap.title || ""}
-${lines.join(String.fromCharCode(10))}` };
+        const outline = Array.isArray(snap.dom) ? snap.dom : [];
+        const textLines = outline.slice(0, 80).map((node) => {
+          const pad = "  ".repeat(Math.min(Number(node.depth) || 0, 6));
+          return `${pad}${node.tag || "text"} "${String(node.text || "").slice(0, 160)}"`;
+        });
+        const value = `page: ${snap.url || ""} | ${snap.title || ""}
+${lines.join(String.fromCharCode(10))}
+${textLines.length ? "text:" + String.fromCharCode(10) + textLines.join(String.fromCharCode(10)) : ""}`;
+        await __bridgeLog(`[browser-bridge] domSnapshot elements=${els.length} textNodes=${textLines.length} url=${snap.url || ""}`);
+        return { ok: true, value };
       }
       if (an === "waitForLoadState") {
         // 引擎 navigate 已等待 document.readyState=complete；这里直接确认。
@@ -228,7 +347,19 @@ ${lines.join(String.fromCharCode(10))}` };
         return { ok: true, value: true };
       }
       if (an === "evaluate") {
-        const r = await engine({ method: "evaluate", expression: String(act.expression ?? act.pageFunction ?? "") });
+        // Playwright 把函数源码标成 expressionKind=function。原样丢给 Runtime.evaluate
+        // 得到的是函数对象，JSON 后是 {}。这里先调用，并要求宿主 awaitPromise。
+        const kind = String(act.expressionKind || "string");
+        let expression = String(act.expression ?? act.pageFunction ?? "");
+        if (kind === "function") {
+          const argJson = JSON.stringify(act.arg === undefined ? null : act.arg);
+          expression = `(${expression})(${argJson})`;
+        }
+        await __bridgeLog(`[browser-bridge] evaluate kind=${kind} awaitPromise=1 head=${expression.replace(/\s+/g, " ").slice(0, 160)}`);
+        const r = await engine({ method: "evaluate", expression, awaitPromise: true });
+        let preview = "";
+        try { preview = JSON.stringify(r.value).slice(0, 180); } catch (e) { preview = String(r.value); }
+        await __bridgeLog(`[browser-bridge] evaluate done valueType=${typeof r.value} preview=${preview}`);
         return { ok: true, value: r.value ?? null };
       }
       if (an === "elementInfo") {
@@ -238,16 +369,23 @@ ${lines.join(String.fromCharCode(10))}` };
         await new Promise((r) => setTimeout(r, Math.min(Number(act.timeoutMs) || 0, 3000)));
         return { ok: true, value: true };
       }
-      const sel = cssSel();
-      if (!sel) {
-        return { ok: false, error: { code: "unsupported", message: `EvoFlow v1 暂不支持 Playwright role/text 定位器（${an}）。请先用 playwright domSnapshot 获取页面结构与坐标/ref，再用 CSS selector 定位。action=${JSON.stringify(act).slice(0, 200)}` } };
+      const sel = rawSel();
+      const needsSelector = ["click", "dblclick", "fill", "type", "selectOption", "textContent", "innerText", "allTextContents", "getAttribute", "isVisible", "isEnabled", "count"].includes(an);
+      if (needsSelector && !sel) {
+        return { ok: false, error: { code: "unsupported", message: `EvoFlow 浏览器桥缺少 selector（${an}）。action=${JSON.stringify(act).slice(0, 200)}` } };
+      }
+      if (needsSelector && __locatorMode(sel) === "internal-other") {
+        await __bridgeLog(`[browser-bridge] locator unsupported mode=internal-other op=${an} sel=${sel.slice(0, 160)}`);
+        return { ok: false, error: { code: "unsupported", message: `EvoFlow 浏览器桥暂未实现该 Playwright 定位器（${sel.slice(0, 80)}）。role/text/xpath/css 可用。` } };
       }
       if (an === "click" || an === "dblclick") {
+        await __bridgeLog(`[browser-bridge] locator op=${an} mode=${__locatorMode(sel)} sel=${sel.slice(0, 160)}`);
         const r = await engine({
           method: "evaluate",
-          expression: `(function(){const el=document.querySelector(${JSON.stringify(sel)});if(!el)return JSON.stringify(null);el.scrollIntoView({block:'center'});const rc=el.getBoundingClientRect();return JSON.stringify({x:rc.left+rc.width/2,y:rc.top+rc.height/2});})()`,
+          expression: `(function(){${__MATCH_FN}; const el=__evoMatch(${JSON.stringify(sel)})[0]; if(!el)return null; el.scrollIntoView({block:'center'}); const rc=el.getBoundingClientRect(); return {x:rc.left+rc.width/2,y:rc.top+rc.height/2,n:__evoMatch(${JSON.stringify(sel)}).length}; })()`,
         });
-        const pt = r.value && typeof r.value === "string" ? JSON.parse(r.value) : null;
+        const pt = r.value && typeof r.value === "object" ? r.value : null;
+        await __bridgeLog(`[browser-bridge] locator ${an} hits=${pt ? pt.n : 0}`);
         if (!pt) return { ok: false, error: { code: "execution_error", message: `element not found: ${sel}` } };
         const out = { ok: true, value: true };
         await engine({ method: an === "dblclick" ? "dblclick" : "click", x: pt.x, y: pt.y });
@@ -255,9 +393,10 @@ ${lines.join(String.fromCharCode(10))}` };
       }
       if (an === "fill" || an === "type") {
         const text = String(act.text ?? act.value ?? "");
+        await __bridgeLog(`[browser-bridge] locator op=${an} mode=${__locatorMode(sel)} sel=${sel.slice(0, 160)}`);
         const r = await engine({
           method: "evaluate",
-          expression: `(function(){const el=document.querySelector(${JSON.stringify(sel)});if(!el)throw new Error('element not found');el.focus();const d=Object.getOwnPropertyDescriptor((el.__proto__||Object.getPrototypeOf(el)),'value');if(d&&d.set)d.set.call(el,${JSON.stringify(text)});else el.value=${JSON.stringify(text)};el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));return true;})()`,
+          expression: `(function(){${__MATCH_FN}; const el=__evoMatch(${JSON.stringify(sel)})[0]; if(!el)throw new Error('element not found'); el.focus(); const d=Object.getOwnPropertyDescriptor((el.__proto__||Object.getPrototypeOf(el)),'value'); if(d&&d.set)d.set.call(el,${JSON.stringify(text)}); else el.value=${JSON.stringify(text)}; el.dispatchEvent(new Event('input',{bubbles:true})); el.dispatchEvent(new Event('change',{bubbles:true})); return true; })()`,
         });
         return { ok: true, value: r.value ?? true };
       }
@@ -265,42 +404,46 @@ ${lines.join(String.fromCharCode(10))}` };
         return await engine({ method: "press", key: String(act.key || "Enter") });
       }
       if (an === "selectOption") {
+        await __bridgeLog(`[browser-bridge] locator op=selectOption mode=${__locatorMode(sel)} sel=${sel.slice(0, 160)}`);
         const r = await engine({
           method: "evaluate",
-          expression: `(function(){const el=document.querySelector(${JSON.stringify(sel)});if(!el)throw new Error('element not found');el.value=${JSON.stringify(String(act.value ?? ""))};el.dispatchEvent(new Event('change',{bubbles:true}));return true;})()`,
+          expression: `(function(){${__MATCH_FN}; const el=__evoMatch(${JSON.stringify(sel)})[0]; if(!el)throw new Error('element not found'); el.value=${JSON.stringify(String(act.value ?? ""))}; el.dispatchEvent(new Event('change',{bubbles:true})); return true; })()`,
         });
         return { ok: true, value: r.value ?? true };
       }
       if (an === "textContent" || an === "innerText" || an === "allTextContents") {
         const prop = an === "innerText" ? "innerText" : "textContent";
+        const many = an === "allTextContents";
+        await __bridgeLog(`[browser-bridge] locator op=${an} mode=${__locatorMode(sel)} sel=${sel.slice(0, 160)}`);
         const r = await engine({
           method: "evaluate",
-          expression: `(function(){const els=[...document.querySelectorAll(${JSON.stringify(sel)})];return JSON.stringify(${an === "allTextContents" ? "els.map(e=>e." + prop + ")" : "els.length?els[0]." + prop + ":null"});})()`,
+          expression: `(function(){${__MATCH_FN}; const els=__evoMatch(${JSON.stringify(sel)}); ${many ? "return els.map(e=>e." + prop + ");" : "return els.length ? els[0]." + prop + " : null;"} })()`,
         });
-        let v = r.value;
-        try { v = JSON.parse(v); } catch {}
-        return { ok: true, value: v };
+        return { ok: true, value: r.value ?? null };
       }
       if (an === "getAttribute") {
         const r = await engine({
           method: "evaluate",
-          expression: `(function(){const el=document.querySelector(${JSON.stringify(sel)});return el?el.getAttribute(${JSON.stringify(String(act.name || ""))}):null;})()`,
+          expression: `(function(){${__MATCH_FN}; const el=__evoMatch(${JSON.stringify(sel)})[0]; return el ? el.getAttribute(${JSON.stringify(String(act.name || act.attribute || ""))}) : null; })()`,
         });
         return { ok: true, value: r.value ?? null };
       }
       if (an === "isVisible" || an === "isEnabled") {
         const r = await engine({
           method: "evaluate",
-          expression: `(function(){const el=document.querySelector(${JSON.stringify(sel)});if(!el)return false;${an === "isEnabled" ? "return !el.disabled;" : "const s=getComputedStyle(el);return s.display!=='none'&&s.visibility!=='hidden'&&el.getBoundingClientRect().width>0;"})()`,
+          expression: `(function(){${__MATCH_FN}; const el=__evoMatch(${JSON.stringify(sel)})[0]; if(!el)return false; ${an === "isEnabled" ? "return !el.disabled;" : "const s=getComputedStyle(el); return s.display!=='none'&&s.visibility!=='hidden'&&el.getBoundingClientRect().width>0;"} })()`,
         });
         return { ok: true, value: !!r.value };
       }
       if (an === "count") {
+        await __bridgeLog(`[browser-bridge] locator op=count mode=${__locatorMode(sel)} sel=${sel.slice(0, 160)}`);
         const r = await engine({
           method: "evaluate",
-          expression: `(function(){return document.querySelectorAll(${JSON.stringify(sel)}).length;})()`,
+          expression: `(function(){${__MATCH_FN}; return __evoMatch(${JSON.stringify(sel)}).length; })()`,
         });
-        return { ok: true, value: Number(r.value) || 0 };
+        const n = Number(r.value) || 0;
+        await __bridgeLog(`[browser-bridge] locator count=${n} mode=${__locatorMode(sel)}`);
+        return { ok: true, value: n };
       }
       if (an === "waitFor") {
         return { ok: true, value: true };
@@ -332,6 +475,15 @@ ${lines.join(String.fromCharCode(10))}` };
         ? { ...command, ...command.params }
         : command;
       const name = cmd?.method || "";
+      if (!globalThis.__evoflowBridgeAnnounced) {
+        globalThis.__evoflowBridgeAnnounced = true;
+        await __bridgeLog(`[browser-bridge] ready docsRoot=${__docsRoot || "(empty)"} caps=playwrightWaitForTimeout,evaluate-awaitPromise,role,text,xpath,dom-outline`);
+      }
+      // Agent sometimes nests url as { url: "https://..." } — flatten before engine.
+      if (cmd && cmd.url && typeof cmd.url === "object" && cmd.url !== null) {
+        const nested = cmd.url.url || cmd.url.href || cmd.url.uri;
+        if (nested) cmd.url = String(nested);
+      }
       const url = cmd?.url || "";
       try {
         let result;
@@ -339,10 +491,33 @@ ${lines.join(String.fromCharCode(10))}` };
           result = __local[name](cmd);
         } else if (name === "playwright") {
           result = await __pwHandle(cmd);
+        } else if (name === "playwrightWaitForTimeout") {
+          const ms = Math.min(Math.max(Number(cmd.timeoutMs) || 0, 0), 10000);
+          await __bridgeLog(`[browser-bridge] playwrightWaitForTimeout ms=${ms}`);
+          await new Promise((r) => setTimeout(r, ms));
+          result = { ok: true, value: true };
         } else if (__direct.has(name)) {
-          result = await __gwFetch("/api/browser/execute", { method: "POST", body: JSON.stringify({ command: cmd }) });
+          if (name === "navigate") {
+            const u = typeof cmd.url === "string" ? cmd.url.trim() : "";
+            if (!u) {
+              await __bridgeLog(`[browser-bridge] navigate rejected: empty url cmd=${JSON.stringify(cmd).slice(0, 200)}`);
+              result = { ok: false, error: { code: "execution_error", message: "navigate requires url" } };
+            } else {
+              await __bridgeLog(`[browser-bridge] navigate url=${u.slice(0, 160)}`);
+              result = await __gwFetch("/api/browser/execute", { method: "POST", body: JSON.stringify({ command: cmd }) });
+            }
+          } else {
+            result = await __gwFetch("/api/browser/execute", { method: "POST", body: JSON.stringify({ command: cmd }) });
+          }
         } else if (__map[name]) {
           const mapped = __map[name](cmd, _browserId);
+          if (mapped && mapped.url && typeof mapped.url === "object" && mapped.url !== null) {
+            const nested = mapped.url.url || mapped.url.href || mapped.url.uri;
+            if (nested) mapped.url = String(nested);
+          }
+          if (name === "newTab") {
+            await __bridgeLog(`[browser-bridge] newTab -> ${mapped.method}${mapped.url ? " url=" + String(mapped.url).slice(0, 120) : " (no url, getState)"}`);
+          }
           result = await __gwFetch("/api/browser/execute", { method: "POST", body: JSON.stringify({ command: mapped }) });
           if (mapped.__tab) result.tab = mapped.__tab;
           if ("__dialog" in mapped) result.dialog = mapped.__dialog;
@@ -560,6 +735,17 @@ def _latest_plugin_root(storage_root: Path, plugin_name: str) -> Path | None:
     return version_dirs[-1] if version_dirs else None
 
 
+def _browser_docs_root(storage_root: Path) -> str:
+    """Plugin ``docs/`` so ``agent.documentation.get("screenshots")`` resolves."""
+    root = _latest_plugin_root(storage_root, _BROWSER_USE_PLUGIN)
+    if root is None:
+        return ""
+    docs = root / "docs"
+    if (docs / "documents.json").is_file():
+        return str(docs)
+    return ""
+
+
 def _ensure_process() -> subprocess.Popen:
     global _proc, _reader_thread
     if _proc is not None and _proc.poll() is None:
@@ -596,6 +782,14 @@ def _ensure_process() -> subprocess.Popen:
             plugin_root = _latest_plugin_root(storage_root, plugin_name)
             if plugin_root:
                 kernel_env[env_key] = str(plugin_root)
+    docs_root = _browser_docs_root(storage_root)
+    if docs_root:
+        kernel_env["EVOFLOW_BROWSER_DOCS_ROOT"] = docs_root
+    _ulog(
+        "kernel env "
+        f"docsRoot={docs_root or '(empty)'} "
+        f"pluginRoot={kernel_env.get('ZCODE_PLUGIN_ROOT') or '(empty)'}"
+    )
     # CUA 原生链路：helper 运行时可用时注入 broker socket + fork 配方，
     # 激活宿主自带的 broker（14 工具面 + UIA + 图标 + 会话租约）。
     # 不可用时保持无 socket，内核桥 JS 会回退到网关 v1 视觉桥。

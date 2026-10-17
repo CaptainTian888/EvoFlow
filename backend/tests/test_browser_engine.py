@@ -198,7 +198,11 @@ class FakeBridge:
             if "roleOf" in expr and "interactiveElements" in expr:
                 return {"result": {"value": self._snapshot_payload()}}
             if "location.href" in expr:
-                return {"result": {"value": self._state_payload()}}
+                payload = self._state_payload()
+                payload["ready"] = "complete"
+                payload["canBack"] = self.history_index > 0
+                payload["canForward"] = False
+                return {"result": {"value": payload}}
             if "document.readyState" in expr:
                 return {"result": {"value": "complete"}}
             if self.evaluate_exception is not None:
@@ -286,24 +290,27 @@ def test_evaluate_reports_page_exception(bridge, engine):
 
 
 # ---------------------------------------------------------------------------
-# Engine: history navigation (CDP has no Page.goBack)
+# Engine: history navigation (embed: history.back via Runtime.evaluate)
 # ---------------------------------------------------------------------------
 
 
-def test_back_walks_session_history(bridge, engine):
-    bridge.history_index = 1
+def test_back_uses_history_api(bridge, engine):
     result = _execute(engine, {"method": "back"})
     assert result["ok"], result
-    nav = [c for c in bridge.calls if c[0] == "Page.navigateToHistoryEntry"]
-    assert len(nav) == 1
-    assert nav[0][1]["entryId"] == "1"
+    evals = [
+        params.get("expression", "")
+        for method, params in bridge.calls
+        if method == "Runtime.evaluate"
+    ]
+    assert any("history.back()" in expr for expr in evals)
+    assert result["state"]["canGoForward"] is True
 
 
-def test_back_at_first_entry_is_noop(bridge, engine):
+def test_back_still_ok_when_history_is_empty(bridge, engine):
+    # WebView history.back() is a no-op at the first entry; engine still settles.
     bridge.history_index = 0
     result = _execute(engine, {"method": "back"})
     assert result["ok"], result
-    assert not [c for c in bridge.calls if c[0] == "Page.navigateToHistoryEntry"]
 
 
 # ---------------------------------------------------------------------------
@@ -402,6 +409,26 @@ def test_navigate_requires_url(bridge, engine):
     assert not result["ok"]
 
 
+def test_navigate_unwraps_nested_url_dict(bridge, engine):
+    result = _execute(
+        engine,
+        {"method": "navigate", "url": {"url": "https://www.tianqi.com/nanyang/"}},
+    )
+    assert result["ok"], result
+    nav = [c for c in bridge.calls if c[0] == "Page.navigate"]
+    assert nav and nav[0][1]["url"] == "https://www.tianqi.com/nanyang/"
+
+
+def test_navigate_unwraps_python_dict_repr_url(bridge, engine):
+    result = _execute(
+        engine,
+        {"method": "navigate", "url": "{'url': 'https://www.tianqi.com/nanyang/'}"},
+    )
+    assert result["ok"], result
+    nav = [c for c in bridge.calls if c[0] == "Page.navigate"]
+    assert nav and nav[0][1]["url"] == "https://www.tianqi.com/nanyang/"
+
+
 def test_unsupported_method_is_capability_error(bridge, engine):
     result = _execute(engine, {"method": "download"})
     assert not result["ok"]
@@ -432,7 +459,8 @@ def test_navigate_surfaces_timeout_when_readyState_never_completes(monkeypatch, 
             if method == "Runtime.evaluate":
                 expr = str((params or {}).get("expression") or "")
                 if "document.readyState" in expr:
-                    return {"result": {"value": "loading"}}  # ← stuck
+                    # Settle script and legacy readyState polls both stay loading.
+                    return {"result": {"value": "loading"}}
                 if "location.href" in expr:
                     return {"result": {"value": {
                         "url": "https://pingan.chuangzhan.com/insurance",

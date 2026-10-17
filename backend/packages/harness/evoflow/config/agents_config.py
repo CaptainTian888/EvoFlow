@@ -242,6 +242,10 @@ class AgentConfig(BaseModel):
         model: Model to use (optional).
         tool_groups: Optional tool group whitelist.
         tools: Optional tool whitelist (builtin tool names).
+            Semantics differ by truthiness source: ``None`` = mount ALL configurable
+            tools (inherit), ``[]`` = mount NONE, ``["a","b"]`` = only listed.
+            Callers MUST branch on ``is not None`` — never on ``if cfg.tools:`` —
+            otherwise ``[]`` collapses into ``None`` and silently re-enables every tool.
         mcp_servers: Optional MCP server names.
         skills: Skill names injected into prompt; missing or null means none (see resolve_skill_allowlist_for_lead_prompt).
         agent_type: Type of agent - 'custom', 'subagent', or 'acp'.
@@ -263,6 +267,8 @@ class AgentConfig(BaseModel):
     tool_groups: list[str] | None = None
 
     # Tool / MCP / Skills / Knowledge configuration
+    # ``tools`` tri-state: None = all configurable tools (inherit), [] = none,
+    # ["a","b"] = only listed. Always test with ``is not None`` before filtering.
     tools: list[str] | None = None
     mcp_servers: list[str] | None = None
     skills: list[str] | None = None

@@ -219,7 +219,9 @@ pub fn embed_guest_init_script(http_port: u16, webview_label: &str) -> String {
     }}).catch(function(err){{
       ping('fetch-err:' + err);
     }}).finally(function(){{
-      setTimeout(function(){{ tick(port); }}, 80);
+      // Idle poll only backs ExecuteScript. 80ms made every page fetch
+      // loopback ~12 times a second and fought the page's own main thread.
+      setTimeout(function(){{ tick(port); }}, 400);
     }});
   }}
   ping('boot');

@@ -45,12 +45,39 @@ def screenshot_api_path(thread_id: str, screenshot_id: str) -> str:
     return f"/api/threads/{tid}/browser-snapshots/{sid}"
 
 
+_BROWSER_SNAPSHOT_REF_RE = re.compile(
+    r"(?:^|/)api/threads/(?P<tid>[^/?#]+)/browser-snapshots/(?P<sid>[0-9a-f]{12,32})/?$",
+    re.IGNORECASE,
+)
+
+
 def resolve_screenshot_file(thread_id: str, screenshot_id: str) -> Path | None:
     sid = str(screenshot_id or "").strip()
     if not sid or not re.fullmatch(r"[0-9a-f]{12,32}", sid):
         return None
     path = screenshots_dir(thread_id) / f"{sid}.png"
     return path if path.is_file() else None
+
+
+def resolve_browser_snapshot_ref(ref: str) -> Path | None:
+    """Map ``/api/threads/{tid}/browser-snapshots/{sid}`` (or URL ending that way) to the PNG on disk.
+
+    Models often pass the ``image_url`` from screenshot tool results into ``view_image``;
+    that ref is not an absolute filesystem path and must be resolved here.
+    """
+    text = str(ref or "").strip().replace("\\", "/")
+    if not text:
+        return None
+    # Strip query/fragment from full URLs before matching the path tail.
+    if "://" in text:
+        text = text.split("://", 1)[1]
+        slash = text.find("/")
+        text = text[slash:] if slash >= 0 else ""
+    text = text.split("?", 1)[0].split("#", 1)[0]
+    match = _BROWSER_SNAPSHOT_REF_RE.search(text)
+    if not match:
+        return None
+    return resolve_screenshot_file(match.group("tid"), match.group("sid"))
 
 
 def save_screenshot_png(

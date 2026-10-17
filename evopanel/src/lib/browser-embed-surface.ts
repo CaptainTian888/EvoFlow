@@ -14,6 +14,11 @@
  * 1. 右栏展开且激活页是浏览器页
  * 2. 没有盖住聊天区的全局遮罩（overlayDepth === 0）
  * 全局弹窗打开时隐藏 HWND，关掉后再按右栏状态贴回。
+ *
+ * 层级：WebView2 是主窗口子 HWND，不吃 CSS z-index。
+ * 凡是要盖在它上面的 HTML（工具详情、审批、右栏菜单）都走同一条 overlay 计数：
+ * - `.react-chat-modal-overlay` / `[data-above-native-embed]` 由文末观察器自动登记
+ * - 还没进 DOM 的右栏 chrome 状态用 beginGlobalOverlay / useGlobalOverlayWhen
  */
 import {
   browserEmbedPark,
@@ -242,3 +247,64 @@ rightStageStore.subscribe(() => {
   syncNativeEmbed('right-stage')
 })
 syncNativeEmbed('boot')
+
+/**
+ * 和右栏菜单同一关系：HTML 层出现就藏 HWND，消失再贴回。
+ * 工具详情等 `.react-chat-modal-overlay` 不用各自记得调用 begin/end。
+ */
+const ABOVE_NATIVE_SELECTOR = '.react-chat-modal-overlay, [data-above-native-embed]'
+
+function nodeHostsAboveNative(node: Node): boolean {
+  if (!(node instanceof Element)) return false
+  if (node.matches(ABOVE_NATIVE_SELECTOR)) return true
+  return Boolean(node.querySelector(ABOVE_NATIVE_SELECTOR))
+}
+
+function installHtmlAboveNativeGate() {
+  if (typeof document === 'undefined' || typeof MutationObserver === 'undefined') return
+  const tracked = new Set<Element>()
+  let raf = 0
+  const reconcile = () => {
+    raf = 0
+    const live = new Set(document.querySelectorAll(ABOVE_NATIVE_SELECTOR))
+    for (const el of tracked) {
+      if (live.has(el)) continue
+      tracked.delete(el)
+      endGlobalOverlay('html-above-native')
+    }
+    for (const el of live) {
+      if (tracked.has(el)) continue
+      tracked.add(el)
+      beginGlobalOverlay('html-above-native')
+    }
+  }
+  const schedule = () => {
+    if (raf) return
+    raf = requestAnimationFrame(reconcile)
+  }
+  const mo = new MutationObserver((records) => {
+    for (const record of records) {
+      for (const node of record.addedNodes) {
+        if (nodeHostsAboveNative(node)) {
+          schedule()
+          return
+        }
+      }
+      for (const node of record.removedNodes) {
+        if (nodeHostsAboveNative(node)) {
+          schedule()
+          return
+        }
+      }
+    }
+  })
+  const start = () => {
+    if (!document.body) return
+    mo.observe(document.body, { childList: true, subtree: true })
+    schedule()
+  }
+  if (document.body) start()
+  else document.addEventListener('DOMContentLoaded', start, { once: true })
+}
+
+installHtmlAboveNativeGate()

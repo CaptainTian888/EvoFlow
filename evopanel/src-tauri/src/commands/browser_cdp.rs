@@ -92,6 +92,7 @@ pub fn register_embed_debug_port(label: &str, port: u16) {
     ));
 }
 
+#[allow(dead_code)] // port is still assigned at window create; evaluate no longer dials it
 fn embed_debug_port(label: &str) -> Option<u16> {
     embed_debug_ports()
         .lock()
@@ -420,11 +421,24 @@ fn call_cdp_locked(
         return outcome;
     }
     if method == "Runtime.evaluate" {
-        let expression = serde_json::from_str::<Value>(params_json)
-            .ok()
+        let parsed = serde_json::from_str::<Value>(params_json).ok();
+        let expression = parsed
+            .as_ref()
             .and_then(|v| v.get("expression").and_then(|u| u.as_str()).map(str::to_string))
             .unwrap_or_default();
-        let outcome = native_evaluate(app, &window, label, &expression);
+        let await_promise = parsed
+            .as_ref()
+            .and_then(|v| v.get("awaitPromise").and_then(|u| u.as_bool()))
+            .unwrap_or(false);
+        let outcome = if await_promise {
+            crate::commands::browser_cdp_server::log_line(&format!(
+                "[browser-cdp] Runtime.evaluate awaitPromise=1 label={label} expr={}",
+                truncate(&expression, 120)
+            ));
+            eval_await_on_stashed(app, label, &expression)
+        } else {
+            native_evaluate(app, &window, label, &expression)
+        };
         write_cdp_trace(&trace_path, label, method, &outcome);
         return outcome;
     }
@@ -561,7 +575,9 @@ fn native_navigate(
     Ok(json!({ "frameId": "evopanel", "loaderId": "evopanel" }).to_string())
 }
 
-/// Evaluate: cached URL → stashed CoreWebView2 ExecuteScript → HTTP guest poll.
+/// Evaluate on the panel WebView: cached URL, else ExecuteScript, else the guest poller.
+/// Never dial the embed debug port — it does not expose a page target and each
+/// attempt used to block the call for about four seconds.
 fn native_evaluate(
     app: &AppHandle,
     window: &WebviewWindow,
@@ -594,24 +610,10 @@ fn native_evaluate(
         }
     }
 
-    // Primary: real Chromium CDP on the embed's remote-debugging-port.
-    if let Some(port) = embed_debug_port(label) {
-        match evaluate_via_remote_cdp(port, expr) {
-            Ok(value) => {
-                crate::commands::browser_cdp_server::log_line(
-                    "[browser-cdp] native_evaluate via remote CDP ok",
-                );
-                return Ok(cdp_evaluate_result(value));
-            }
-            Err(e) => {
-                crate::commands::browser_cdp_server::log_line(&format!(
-                    "[browser-cdp] remote CDP miss ({e}); trying COM stash"
-                ));
-            }
-        }
-    }
-
-    // Secondary: stashed CoreWebView2 ExecuteScript (works if capture succeeded).
+    // Panel WebView only. Do not probe `--remote-debugging-port` first: that
+    // port accepts TCP but never exposes a page `webSocketDebuggerUrl`, and
+    // each probe blocked ~4s before the COM path that actually works.
+    // Stashed CoreWebView2 ExecuteScript is the page the user is looking at.
     let has_stash = core_webview_store()
         .lock()
         .ok()
@@ -648,208 +650,6 @@ fn native_evaluate(
             Err(e)
         }
     }
-}
-
-/// `Runtime.evaluate` over the embed WebView2 `--remote-debugging-port` WS.
-fn evaluate_via_remote_cdp(port: u16, expression: &str) -> Result<Value, String> {
-    use std::io::{Read as _, Write as _};
-    use std::net::TcpStream;
-    use std::time::Duration;
-
-    let list_url = format!("http://127.0.0.1:{port}/json/list");
-    let deadline = std::time::Instant::now() + Duration::from_secs(3);
-    let mut ws_url = String::new();
-    while std::time::Instant::now() < deadline {
-        match ureq_get_json(&list_url) {
-            Ok(list) => {
-                if let Some(url) = list
-                    .as_array()
-                    .and_then(|arr| {
-                        arr.iter().find_map(|t| {
-                            t.get("webSocketDebuggerUrl")
-                                .and_then(|u| u.as_str())
-                                .map(str::to_string)
-                        })
-                    })
-                {
-                    ws_url = url;
-                    break;
-                }
-            }
-            Err(_) => {}
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    if ws_url.is_empty() {
-        return Err(format!("no webSocketDebuggerUrl on debug port {port}"));
-    }
-
-    // ws://127.0.0.1:PORT/devtools/page/ID
-    let httpish = ws_url.replacen("ws://", "http://", 1);
-    let parsed = url::Url::parse(&httpish).map_err(|e| format!("bad ws url {ws_url}: {e}"))?;
-    let ws_host = parsed.host_str().unwrap_or("127.0.0.1");
-    let ws_port = parsed.port().unwrap_or(port);
-    let ws_path = if parsed.query().is_some() {
-        format!("{}?{}", parsed.path(), parsed.query().unwrap_or(""))
-    } else {
-        parsed.path().to_string()
-    };
-    let mut stream = TcpStream::connect(format!("{ws_host}:{ws_port}"))
-        .map_err(|e| format!("cdp ws connect failed: {e}"))?;
-    stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .ok();
-    stream
-        .set_write_timeout(Some(Duration::from_secs(5)))
-        .ok();
-
-    let key = {
-        let mut b = [0u8; 16];
-        getrandom_simple(&mut b);
-        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, b)
-    };
-    let req = format!(
-        "GET {ws_path} HTTP/1.1\r\nHost: {ws_host}:{ws_port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
-    );
-    stream
-        .write_all(req.as_bytes())
-        .map_err(|e| format!("cdp ws handshake write: {e}"))?;
-    let mut buf = [0u8; 4096];
-    let n = stream
-        .read(&mut buf)
-        .map_err(|e| format!("cdp ws handshake read: {e}"))?;
-    let resp = String::from_utf8_lossy(&buf[..n]);
-    if !resp.contains("101") {
-        return Err(format!("cdp ws handshake rejected: {}", truncate(&resp, 200)));
-    }
-
-    let id = 1u64;
-    let payload = json!({
-        "id": id,
-        "method": "Runtime.evaluate",
-        "params": { "expression": expression, "returnByValue": true }
-    })
-    .to_string();
-    write_ws_text(&mut stream, &payload)?;
-
-    let raw = read_ws_text(&mut stream)?;
-    let msg: Value = serde_json::from_str(&raw).map_err(|e| format!("cdp ws json: {e}"))?;
-    if let Some(err) = msg.get("error") {
-        return Err(format!("cdp evaluate error: {err}"));
-    }
-    let result = msg
-        .pointer("/result/result")
-        .cloned()
-        .ok_or_else(|| format!("cdp evaluate missing result: {}", truncate(&raw, 200)))?;
-    // CDP shape: { type, value, ... } — unwrap value when present.
-    if let Some(v) = result.get("value") {
-        return Ok(v.clone());
-    }
-    if result.get("type").and_then(|t| t.as_str()) == Some("undefined") {
-        return Ok(Value::Null);
-    }
-    Ok(result)
-}
-
-fn ureq_get_json(url: &str) -> Result<Value, String> {
-    // Tiny blocking GET via std — avoid pulling another HTTP client into the hot path.
-    use std::io::{Read as _, Write as _};
-    let url = url::Url::parse(url).map_err(|e| e.to_string())?;
-    let host = url.host_str().unwrap_or("127.0.0.1");
-    let port = url.port_or_known_default().unwrap_or(80);
-    let path = if url.query().is_some() {
-        format!("{}?{}", url.path(), url.query().unwrap_or(""))
-    } else {
-        url.path().to_string()
-    };
-    let mut stream = std::net::TcpStream::connect(format!("{host}:{port}"))
-        .map_err(|e| e.to_string())?;
-    stream
-        .set_read_timeout(Some(std::time::Duration::from_secs(2)))
-        .ok();
-    let req = format!("GET {path} HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n\r\n");
-    stream.write_all(req.as_bytes()).map_err(|e| e.to_string())?;
-    let mut buf = Vec::new();
-    stream.read_to_end(&mut buf).map_err(|e| e.to_string())?;
-    let text = String::from_utf8_lossy(&buf);
-    let body = text
-        .split_once("\r\n\r\n")
-        .or_else(|| text.split_once("\n\n"))
-        .map(|(_, b)| b)
-        .unwrap_or("");
-    serde_json::from_str(body.trim()).map_err(|e| format!("json list parse: {e}"))
-}
-
-fn getrandom_simple(out: &mut [u8]) {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let mut x = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0x12345678);
-    for b in out.iter_mut() {
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        *b = (x & 0xff) as u8;
-    }
-}
-
-fn write_ws_text(stream: &mut std::net::TcpStream, text: &str) -> Result<(), String> {
-    use std::io::Write as _;
-    let payload = text.as_bytes();
-    let mut frame = Vec::with_capacity(2 + 4 + payload.len());
-    frame.push(0x81); // FIN + text
-    if payload.len() < 126 {
-        frame.push(0x80 | (payload.len() as u8)); // masked
-    } else if payload.len() <= 65535 {
-        frame.push(0x80 | 126);
-        frame.extend_from_slice(&(payload.len() as u16).to_be_bytes());
-    } else {
-        return Err("cdp ws payload too large".into());
-    }
-    let mask = [0x11u8, 0x22, 0x33, 0x44];
-    frame.extend_from_slice(&mask);
-    for (i, b) in payload.iter().enumerate() {
-        frame.push(b ^ mask[i % 4]);
-    }
-    stream
-        .write_all(&frame)
-        .map_err(|e| format!("cdp ws write: {e}"))
-}
-
-fn read_ws_text(stream: &mut std::net::TcpStream) -> Result<String, String> {
-    use std::io::Read as _;
-    let mut hdr = [0u8; 2];
-    stream
-        .read_exact(&mut hdr)
-        .map_err(|e| format!("cdp ws hdr: {e}"))?;
-    let opcode = hdr[0] & 0x0f;
-    let mut len = (hdr[1] & 0x7f) as usize;
-    let masked = (hdr[1] & 0x80) != 0;
-    if len == 126 {
-        let mut ext = [0u8; 2];
-        stream.read_exact(&mut ext).map_err(|e| e.to_string())?;
-        len = u16::from_be_bytes(ext) as usize;
-    } else if len == 127 {
-        return Err("cdp ws 64-bit length unsupported".into());
-    }
-    let mut mask = [0u8; 4];
-    if masked {
-        stream.read_exact(&mut mask).map_err(|e| e.to_string())?;
-    }
-    let mut payload = vec![0u8; len];
-    stream
-        .read_exact(&mut payload)
-        .map_err(|e| format!("cdp ws payload: {e}"))?;
-    if masked {
-        for (i, b) in payload.iter_mut().enumerate() {
-            *b ^= mask[i % 4];
-        }
-    }
-    if opcode != 0x1 {
-        return Err(format!("cdp ws unexpected opcode {opcode}"));
-    }
-    String::from_utf8(payload).map_err(|e| e.to_string())
 }
 
 /// Look up stashed CoreWebView2 on the main thread and ExecuteScript with pump.
@@ -904,6 +704,68 @@ fn execute_script_on_stashed(
         return Err(format!("evaluate threw: {err}"));
     }
     Ok(value)
+}
+
+/// `Runtime.evaluate` with `awaitPromise` on the stashed panel WebView.
+/// ExecuteScript JSON-serializes a Promise as `{}` and does not wait; DevTools
+/// protocol on the same CoreWebView2 does.
+fn eval_await_on_stashed(app: &AppHandle, label: &str, expression: &str) -> Result<String, String> {
+    use webview2_com::CallDevToolsProtocolMethodCompletedHandler;
+
+    let (tx, rx) = std::sync::mpsc::channel::<Result<String, String>>();
+    let label_owned = label.to_string();
+    let params = json!({
+        "expression": expression,
+        "awaitPromise": true,
+        "returnByValue": true,
+    })
+    .to_string();
+    app.run_on_main_thread(move || {
+        let wv = match core_webview_store()
+            .lock()
+            .ok()
+            .and_then(|g| g.get(&label_owned).map(|s| s.0.clone()))
+        {
+            Some(w) => w,
+            None => {
+                let _ = tx.send(Err(format!(
+                    "no stashed CoreWebView2 for {label_owned} (awaitPromise)"
+                )));
+                return;
+            }
+        };
+        let tx_done = tx.clone();
+        let completed: CompletedClosure<windows_core::HRESULT, PCWSTR> =
+            Box::new(move |error_code, raw_json| {
+                let outcome = match &error_code {
+                    Ok(()) => Ok(raw_json),
+                    Err(err) => Err(format!("Runtime.evaluate awaitPromise failed: {err}")),
+                };
+                let _ = tx_done.send(outcome);
+                error_code
+            });
+        let handler = CallDevToolsProtocolMethodCompletedHandler::create(completed);
+        let method_pw = CoTaskMemPWSTR::from("Runtime.evaluate");
+        let params_pw = CoTaskMemPWSTR::from(params.as_str());
+        let start = unsafe {
+            wv.CallDevToolsProtocolMethod(
+                *method_pw.as_ref().as_pcwstr(),
+                *params_pw.as_ref().as_pcwstr(),
+                &handler,
+            )
+        };
+        if let Err(err) = start {
+            let _ = tx.send(Err(format!(
+                "Runtime.evaluate CallDevToolsProtocolMethod failed: {err}"
+            )));
+        } else {
+            std::mem::forget(handler);
+        }
+    })
+    .map_err(|e| format!("run_on_main_thread failed: {e}"))?;
+
+    rx.recv_timeout(std::time::Duration::from_secs(25))
+        .map_err(|_| "Runtime.evaluate awaitPromise timed out".to_string())?
 }
 
 fn cdp_evaluate_result(value: Value) -> String {
