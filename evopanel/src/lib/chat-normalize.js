@@ -4931,3 +4931,73 @@ export function messagesToDisplayRows(rawMessages) {
   outRev.reverse()
   return outRev
 }
+
+// ---------------------------------------------------------------------------
+// EvoFlow CUA display 标记（node_repl js 工具结果尾部）
+//
+// 后端 plugins/node_repl_tool.py 在 Computer Use 结果末尾追加一行
+// `{evoflow-cua-display:{...}}` JSON 标记（目标应用身份 + 截图 URL + 状态）。
+// 老对话流式路径（ToolCallList）从这里解析出展示载荷；ZCode 的 v4 display 块
+// 协议不经过老路径，这是等价的平台侧实现。
+// ---------------------------------------------------------------------------
+
+export const EVOFLOW_CUA_DISPLAY_PREFIX = '{evoflow-cua-display:'
+
+/** 解析工具输出尾部的 CUA display 标记；无标记或载荷不合法返回 null。 */
+export function parseEvoflowCuaDisplay(value) {
+  let text = ''
+  if (typeof value === 'string') {
+    text = stripAnsi(value)
+  } else if (value && typeof value === 'object') {
+    text =
+      typeof value.text === 'string'
+        ? value.text
+        : typeof value.output === 'string'
+          ? value.output
+          : ''
+  }
+  if (!text) return null
+  const lines = text.split('\n')
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i].trim()
+    if (!line) continue
+    if (!line.startsWith(EVOFLOW_CUA_DISPLAY_PREFIX)) return null
+    try {
+      const payload = JSON.parse(line.slice(EVOFLOW_CUA_DISPLAY_PREFIX.length, -1))
+      if (payload && typeof payload === 'object' && !Array.isArray(payload)) return payload
+    } catch {
+      /* malformed marker */
+    }
+    return null
+  }
+  return null
+}
+
+/** 从输出文本中剥掉 CUA display 标记行（正文展示用）。 */
+export function stripEvoflowCuaDisplayMarker(text) {
+  if (typeof text !== 'string' || !text.includes(EVOFLOW_CUA_DISPLAY_PREFIX)) return text
+  return text
+    .split('\n')
+    .filter((line) => !line.trim().startsWith(EVOFLOW_CUA_DISPLAY_PREFIX))
+    .join('\n')
+    .replace(/\n{3,}$/, '\n\n')
+    .trimEnd()
+}
+
+/** ZCode appKey（`windows-exe:c:\...`）→ 面板 ApplicationIconRequest locator。 */
+export function evoflowCuaAppKeyToIconRequest(appKey) {
+  const raw = String(appKey || '').trim()
+  const sep = raw.indexOf(':')
+  if (sep <= 0) return null
+  const scheme = raw.slice(0, sep).toLowerCase()
+  const value = raw.slice(sep + 1).trim()
+  if (!value) return null
+  const kinds = {
+    darwin: 'darwin-bundle-id',
+    'windows-aumid': 'windows-aumid',
+    'windows-exe': 'windows-executable-path',
+  }
+  const kind = kinds[scheme]
+  if (!kind) return null
+  return { locators: [{ kind, value }] }
+}

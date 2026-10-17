@@ -145,10 +145,34 @@ const __evoflowBridgeSymbol = Symbol.for("zcode.node-repl.browser-control-bridge
     getDialog: () => ({ method: "getState", __dialog: null }),
     handleDialog: (command) => ({ method: "getState", __dialog: null }),
   };
-  const __unsupported = (name) => ({
+  const __unsupported = (name, cmd) => ({
     ok: false,
-    error: { code: "unsupported", message: `EvoFlow browser bridge v1 不支持命令: ${name}（录屏/桌面控制属后续平台集成）`, sideEffect: "none" },
+    error: { code: "unsupported", message: `EvoFlow browser bridge v1 不支持命令: ${name}（收到: ${JSON.stringify(cmd || {}).slice(0, 200)}；录屏/桌面控制属后续平台集成）`, sideEffect: "none" },
   });
+  // ZCode 运行时契约：每个浏览器命令结果都必须带 tab 摘要（BrowsersFacade 的
+  // expectPayload(result.tab)），缺了直接抛 "Browser result missing tab"。
+  // 单 webview 模型：永远附加 primary tab，字段优先取引擎回传的 state。
+  const __attachTab = (result) => {
+    try {
+      if (!result || typeof result !== "object" || result.tab) return result;
+      const st = result.state || {};
+      result.tab = {
+        id: "primary",
+        tabId: "primary",
+        active: true,
+        lifecycle: "active",
+        url: st.url || "",
+        title: st.title || "",
+        viewport: st.viewport || { width: 1280, height: 720 },
+      };
+    } catch {}
+    return result;
+  };
+  // 插件运行时的本地命令（无需引擎）：结果直接在桥内合成。
+  const __local = {
+    listUserTabs: () => ({ ok: true, userTabs: [] }),
+    finalizeTabs: () => ({ ok: true }),
+  };
   // 命令日志：每次浏览器命令的 method/url/结果状态，供工具结果回传给模型与排查
   globalThis.__evoflowBrowserLog = [];
   const __logCmd = (entry) => {
@@ -184,7 +208,9 @@ const __evoflowBridgeSymbol = Symbol.for("zcode.node-repl.browser-control-bridge
       const url = cmd?.url || "";
       try {
         let result;
-        if (__direct.has(name)) {
+        if (__local[name]) {
+          result = __local[name](cmd);
+        } else if (__direct.has(name)) {
           result = await __gwFetch("/api/browser/execute", { method: "POST", body: JSON.stringify({ command: cmd }) });
         } else if (__map[name]) {
           const mapped = __map[name](cmd, _browserId);
@@ -192,13 +218,16 @@ const __evoflowBridgeSymbol = Symbol.for("zcode.node-repl.browser-control-bridge
           if (mapped.__tab) result.tab = mapped.__tab;
           if ("__dialog" in mapped) result.dialog = mapped.__dialog;
         } else {
-          result = __unsupported(name);
+          result = __unsupported(name, cmd);
         }
+        __attachTab(result);
         __logCmd({ kind: name, url, ok: result?.ok !== false });
         return result;
       } catch (err) {
         __logCmd({ kind: name, url, ok: false, error: String(err).slice(0, 160) });
-        throw err;
+        // 错误回显收到的命令：模型看到后能自纠命令形状（如 navigate 缺 url）。
+        const cmdEcho = JSON.stringify(cmd || {}).slice(0, 200);
+        throw new Error(`${String(err && err.message || err).slice(0, 300)} | cmd=${cmdEcho}`);
       }
     },
   };

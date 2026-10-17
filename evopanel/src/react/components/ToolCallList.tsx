@@ -27,12 +27,15 @@ import {
   isTerminalToolFailed,
   isToolRunning,
   parseBrowserStepToolOutput,
+  parseEvoflowCuaDisplay,
   parseMediaImagePreview,
+  stripEvoflowCuaDisplayMarker,
   toolLabel,
   toolOmitFromChatPanel,
   toolOmitFromStreamingChatPanel,
   isGoalProposalToolName,
 } from '../../lib/chat-normalize.js'
+import { CuaToolPreview } from './CuaToolPreview.js'
 import {
   toolApprovalHintFromMeta,
 } from '../../lib/tool-approval.js'
@@ -1420,12 +1423,21 @@ function ToolCallListInner({
           return toolShortLabel(toolName, t)
         })()
         const inputJson = formatToolDisplayValue(t.input)
+        // EvoFlow CUA（node_repl js）：结果尾部带 {evoflow-cua-display:...} 标记，
+        // 解析出目标应用/截图做预览卡，并把标记行从正文展示里剥掉。
+        const isNodeReplTool = toolKind.includes('node_repl')
+        const cuaDisplay = isNodeReplTool ? parseEvoflowCuaDisplay(t.output) : null
+        const displayOutput = cuaDisplay
+          ? typeof t.output === 'string'
+            ? stripEvoflowCuaDisplayMarker(t.output)
+            : t.output
+          : t.output
         const outputJson =
           toolKind === 'subtask_outcome_report'
             ? formatSubtaskOutcomeReportOutput(t.output, inputObj)
             : toolKind === 'subtask_work_checklist'
               ? formatSubtaskWorkChecklistOutput(t.output)
-              : formatToolOutputForUserDisplay(t.output, toolName)
+              : formatToolOutputForUserDisplay(displayOutput, toolName)
         const toolFailed = isTerminalToolFailed({
           status: t.status,
           output: t.output ?? t.result,
@@ -2068,6 +2080,7 @@ function ToolCallListInner({
               />
             ) : null}
             {browserScreenshotOutput ? <BrowserScreenshotPreview output={browserScreenshotOutput} /> : null}
+            {cuaDisplay ? <CuaToolPreview display={cuaDisplay} /> : null}
             <ToolCallCollapsible
               toolKind={toolKind}
               running={running}

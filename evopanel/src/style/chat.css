@@ -2142,6 +2142,39 @@ button.msg-file-card.msg-file-card--button:focus-visible {
   font-size: 11px;
   color: var(--text-secondary, #666);
 }
+
+/* EvoFlow CUA（电脑控制）工具预览卡 —— node_repl js 结果的目标应用徽标 + 截图 */
+.msg-tool-cua {
+  margin: 4px 0;
+}
+.msg-tool-cua-target {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 6px;
+}
+.msg-tool-cua-icon {
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+.msg-tool-cua-app {
+  font-size: var(--ef-text-sm, 13px);
+  font-weight: 500;
+  color: var(--text-primary, #222);
+  word-break: break-all;
+}
+.msg-tool-cua-status {
+  margin-left: auto;
+  font-size: var(--ef-text-xs, 11px);
+  color: var(--text-secondary, #666);
+  flex-shrink: 0;
+}
+.msg-tool-cua-status--failed {
+  color: var(--danger, #c62828);
+}
 .msg-tool-screenshot-error {
   margin: 0;
   font-size: 11px;

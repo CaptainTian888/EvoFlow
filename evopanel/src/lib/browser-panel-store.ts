@@ -188,9 +188,11 @@ export function notifyBrowserToolStart(
   const toolName = String(opts?.toolName || '').trim().toLowerCase()
   const isNodeRepl = toolName === 'mcp__node_repl__js'
   const { action, url } = parseBrowserToolArgs(argsText)
+  // node_repl 只有代码里真的出现浏览器 API 才自动拉起面板；纯数据处理 JS 保持侧栏安静。
+  const nodeReplBrowser = isNodeRepl && nodeReplArgsTouchBrowser(argsText)
   dbgLog(
     `[browser-panel-store] tool start toolCallId=${toolCallId} tool=${toolName || '(n/a)'} ` +
-      `action=${action} url=${url || '(none)'} argsText=${(argsText || '').slice(0, 200)}`,
+      `action=${action} url=${url || '(none)'} browserIntent=${nodeReplBrowser} argsText=${(argsText || '').slice(0, 200)}`,
   )
   // node-repl / browser-use always drives the shared bridge WebView2. Bind the
   // panel to that session *before* ensureBrowserStage so the embed host mounts
@@ -203,12 +205,12 @@ export function notifyBrowserToolStart(
     operatingAction: action || (isNodeRepl ? 'node_repl' : ''),
     operatingToolCallId: String(toolCallId || '').trim(),
   })
-  // For page-opening actions (and every node-repl browser call), raise the
-  // right stage *before* the result arrives so the user can see the live
+  // For page-opening actions (and node_repl calls whose code drives the browser),
+  // raise the right stage *before* the result arrives so the user can see the live
   // panel mount while the agent is still working.
   if (
     opts?.forceOpen ||
-    isNodeRepl ||
+    nodeReplBrowser ||
     action === 'open' ||
     action === 'navigate' ||
     action === 'snapshot'
@@ -227,7 +229,11 @@ export function notifyBrowserToolStart(
   return true
 }
 
-export function notifyBrowserToolResult(toolCallId: string, resultText?: string | null): boolean {
+export function notifyBrowserToolResult(
+  toolCallId: string,
+  resultText?: string | null,
+  opts?: { nodeReplBrowser?: boolean },
+): boolean {
   const live = parseBrowserLiveToolOutput(resultText)
   const liveSummary = live
     ? { mode: live.mode, pageUrl: live.pageUrl, streamWs: live.streamWs, headed: live.headed }
@@ -244,7 +250,9 @@ export function notifyBrowserToolResult(toolCallId: string, resultText?: string 
     operating: state.operatingToolCallId === String(toolCallId || '').trim() ? false : state.operating,
   }
   // If we are already on the node-repl bridge session (or just opened for it),
-  // keep the panel up even without a browser_live payload.
+  // keep the panel up even without a browser_live payload — but only when this
+  // call actually drove the browser; a pure-JS node_repl result must not re-raise
+  // a panel the user closed.
   const onBridge =
     state.streamThreadId === NODE_REPL_BRIDGE_THREAD_ID ||
     state.operatingAction === 'node_repl'
@@ -252,7 +260,7 @@ export function notifyBrowserToolResult(toolCallId: string, resultText?: string 
     next.streamThreadId = NODE_REPL_BRIDGE_THREAD_ID
     next.browserMode = next.browserMode || state.browserMode || 'embed'
     next.sharedBrowser = false
-    ensureBrowserStage()
+    if (opts?.nodeReplBrowser !== false) ensureBrowserStage()
   }
   if (live) {
     const backendTid = extractThreadIdFromStreamPath(
@@ -311,6 +319,35 @@ function extractUrlFromNodeReplCode(code: string): string {
     /(?:browsers\.open|tabs\.new|\.navigate|agent\.browsers\.open)\(\s*["'`]([^"'`]+)["'`]/,
   )
   return String(openMatch?.[1] || '').trim()
+}
+
+/** browser-use 技能写进 node_repl 代码的浏览器 API 面（control-browser SKILL 形状：
+ * agent.browsers.* / tabs.new / tab.navigate / b.execute({method:...}) / 桥符号）。
+ * 刻意排除 computer-use（agent.computerUse.*）——桌面控制没有浏览器面板可展示；
+ * 也排除常见数据处理词形（tabs 数组的 .map/.forEach/.length 不会命中）。
+ * 召回优先：漏判的浏览器调用还有后端 browser-panel-request（CDP 真驱动 WebView2
+ * 时必发）兜底拉起面板，不会出现「浏览器动了、面板不在」。 */
+const NODE_REPL_BROWSER_INTENT_RE = new RegExp(
+  [
+    'agent\\.browsers\\b',
+    '\\bbrowsers\\s*\\.\\s*(open|get|getForUrl|getDefault|list)\\b',
+    "\\btabs?\\s*\\.\\s*(new|get|list|finalize|activate|claim|close|reload|navigate|snapshot|screenshot|click|fill|type|press|scroll|hover|select|check|drag|back|forward|evaluate|waitFor|getState|elementInfo)\\s*\\(",
+    '\\.\\s*navigate\\s*\\(',
+    '\\.\\s*(newTab|activateTab|claimTab|browserViewportSet)\\s*\\(',
+    // \\? 吃掉 JSON 转义引号前的反斜杠（argsText 里是 method: \"navigate\"）
+    "\\bmethod\\s*:\\s*\\\\?[\"'`]?(?:navigate|back|forward|reload|snapshot|click|fill|type|press|scroll|hover|select|check|drag|screenshot|evaluate|waitFor|elementInfo|getState|close|newTab|activateTab|claimTab|browserViewportSet)\\b",
+    'browser-control-bridge',
+  ].join('|'),
+  'i',
+)
+
+/** Does this node_repl ``js`` tool args payload drive the browser?
+ *  Runs on the raw (possibly partial, JSON-escaped) args text — streamed
+ *  TOOL_CALL_ARGS chunks must already trigger the intent, not only complete JSON. */
+export function nodeReplArgsTouchBrowser(argsText?: string | null): boolean {
+  const raw = String(argsText || '')
+  if (!raw) return false
+  return NODE_REPL_BROWSER_INTENT_RE.test(raw)
 }
 
 /** Pull the requested URL out of the tool arguments, tolerating a partial

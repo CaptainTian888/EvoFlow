@@ -4,6 +4,7 @@ import { blog } from './browser-unified-log.js'
 import {
   ensureBrowserStage,
   NODE_REPL_BRIDGE_THREAD_ID,
+  nodeReplArgsTouchBrowser,
   notifyBrowserToolEnd,
   notifyBrowserToolResult,
   notifyBrowserToolStart,
@@ -16,8 +17,10 @@ import type { BrowserPanelState } from './browser-panel-screenshots.js'
 export function isBrowserToolWireName(name: string): boolean {
   const n = String(name || '').trim().toLowerCase()
   if (n === 'browser' || n.startsWith('browser_') || n === 'preview_url') return true
-  // ZCode 插件运行时内核工具：browser-use / computer-use 技能的唯一执行入口，
-  // 面板随调用自动展开（与 browser* 工具同等的「所见即所控」体验）。
+  // ZCode 插件运行时内核工具：browser-use / computer-use 技能的唯一执行入口。
+  // 面板不再随调用无条件展开——先按 code 里的浏览器 API 识别意图
+  // （nodeReplArgsTouchBrowser），纯数据处理 JS 调用保持侧栏安静；
+  // 漏判由后端 browser-panel-request（CDP 真驱动 WebView2 时必发）兜底。
   return n === 'mcp__node_repl__js'
 }
 
@@ -172,6 +175,9 @@ export function syncBrowserPanelFromAgUiEvent(
   const type = String(aguiEvent.type || '').toUpperCase()
   const toolCallId = String(aguiEvent.toolCallId || '').trim()
   const tc = toolCallId ? toolCalls?.get(toolCallId) : undefined
+  // node_repl 只有代码真的触碰浏览器才展开面板；forceOpen 只留给真浏览器工具。
+  const isNodeRepl = toolName === 'mcp__node_repl__js'
+  const nodeReplBrowser = isNodeRepl && nodeReplArgsTouchBrowser(tc?.argsText)
   // 浏览器工具事件进统一日志（browser-debug.log），与后端引擎/内核桥时间线对齐。
   blog(
     'info',
@@ -183,7 +189,7 @@ export function syncBrowserPanelFromAgUiEvent(
     setBrowserPanelThreadId(NODE_REPL_BRIDGE_THREAD_ID)
   }
   if (type === 'TOOL_CALL_START' || type === 'TOOL_CALL_ARGS') {
-    return notifyBrowserToolStart(toolCallId, tc?.argsText, { toolName, forceOpen: true })
+    return notifyBrowserToolStart(toolCallId, tc?.argsText, { toolName, forceOpen: !isNodeRepl })
   }
   if (type === 'TOOL_CALL_RESULT') {
     const result =
@@ -193,10 +199,11 @@ export function syncBrowserPanelFromAgUiEvent(
           ? (aguiEvent as { content?: string }).content
           : null
     blog('info', `[tool] result for id=${toolCallId}: ${String(result || '').replace(/\s+/g, ' ').slice(0, 200) || '(empty)'}`)
-    // Keep the panel open even when the tool result is not a browser_live JSON
-    // blob (node-repl returns JS stdout / structured SDK results).
-    ensureBrowserStage()
-    const changed = notifyBrowserToolResult(toolCallId, result)
+    // Keep the panel open for browser-driving calls even when the tool result is
+    // not a browser_live JSON blob (node-repl returns JS stdout / structured SDK
+    // results). Pure-JS node_repl results must not re-raise a closed panel.
+    if (!isNodeRepl || nodeReplBrowser) ensureBrowserStage()
+    const changed = notifyBrowserToolResult(toolCallId, result, { nodeReplBrowser })
     notifyBrowserToolEnd(toolCallId)
     // AG-UI can deliver TOOL_CALL_RESULT before the reducer has stored
     // ``tc.result`` on the map entry. Re-read once on the next microtask so the
@@ -206,15 +213,15 @@ export function syncBrowserPanelFromAgUiEvent(
         const late = toolCalls.get(toolCallId)
         const lateResult = typeof late?.result === 'string' ? late.result : null
         if (lateResult) {
-          notifyBrowserToolResult(toolCallId, lateResult)
-          ensureBrowserStage()
+          notifyBrowserToolResult(toolCallId, lateResult, { nodeReplBrowser })
+          if (!isNodeRepl || nodeReplBrowser) ensureBrowserStage()
         }
       })
     }
     return changed || true
   }
   if (type === 'TOOL_CALL_END') {
-    ensureBrowserStage()
+    if (!isNodeRepl || nodeReplBrowser) ensureBrowserStage()
     notifyBrowserToolEnd(toolCallId)
     return true
   }
