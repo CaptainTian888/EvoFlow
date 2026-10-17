@@ -1,10 +1,10 @@
 {
-  "version": "1.0.9",
-  "minAppVersion": "1.0.9",
+  "version": "1.1.0",
+  "minAppVersion": "1.1.0",
   "updateKind": "full",
   "assetKind": "installer",
   "hash": "",
-  "url": "https://github.com/EvovexAI/EvoFlow/releases/download/v1.0.9/EvoFlow_1.0.9_x64-setup.exe",
+  "url": "https://github.com/EvovexAI/EvoFlow/releases/download/v1.1.0/EvoFlow_1.1.0_x64-setup.exe",
   "size": 0,
-  "changelog": "EvoFlow 1.0.9 三大基础能力合并发布：UI 扩展注册表 API（/api/ui-extensions/*）+ Tauri 端 ui_extensions 命令（兼容 PowerShell 5.1 UTF-8 BOM 与单对象 registry）、evoflow doctor 本机自检（SQLite 锁/WAL 残留、Python 残留进程、技能根目录错位、EVOFLOW_* 环境变量、网关运行时）、技能路由注册后端（按角色挂载 + HTTP 入口）。体验侧：主窗口流式 markdown 统一走 Streamdown（文件 chip/协议白名单/表格放大/代码块分行）、流式结束自动折叠执行过程、桌面端默认优先直连 API、会话列表流式探针、streamperf 多维性能监控默认开启。修复 1.0.8 之后累积回归：聊天长思考合并、折叠态豁免待授权工具、流式尾窗/合并行齿轮熄灭/60s 自愈把 live 视图打回 DB 视图三处根因、RUN_FINISHED 帧 reducer 崩溃（TypeError: state.timeline）、编辑消息图片增删同步；Markdown 把内联 hashtag/全角括号行/表格行误判标题/URL 编码换行/false-positive heading；Windows select() FD 耗尽（loading_extended 重试打爆 socket）、loading_extended 缺 v4 不再卡 503、/runs/stream 回退到 /runs/wait；react-vlist-scroller 滚动不丝滑 + thumb 跳动、fastdom/fastdom-promised 桩与 mermaid 11.17+ ESM 互操作；agent 模式 platform/panel_set 被错误移除恢复；知识库（owned KB）重建索引期间搜索不再断流、staged chunk 分配串行化；企业微信图文混合消息、模型限流过期、Anthropic 超时映射、thinking 跟随模型默认、桌面端 health 探测路径、会话列表漏掉未绑定会话、主动角色未绑定飞书推送误发。覆盖安装即可。"
+  "changelog": "EvoFlow 1.1.0（相对 1.0.9）：新增任务失败步骤重试与术语规范（恢复执行 / 重试失败步骤 / 重新执行）；插件系统（管理页 + 聊天选用 + 内置 guide/skill-kit）；浏览器桥接与右侧 WebView2 嵌入（跟窗缩放、重建恢复、Playwright/node_repl 命令面、CUA 预览卡）；MCP 服务器管理与连接池；右侧舞台标签化；聊天摘要浮动卡（与右栏互斥）；任务完成通知音；统一写入「插件控制日志.log」。审批：折叠不再藏待授权、多轮 id 精确匹配与防闪烁、「始终允许本项目」追溯同批 pending、挂起时保留批准按钮、点击即时回执。聊天/流式：折叠头最后一步、spinner 事件化、proactive panel:activity、行渲染与 stream-perf 噪音收敛。浏览器：park→show 抬层、setBounds 失败按 URL 重建、覆盖层 z-index。模型：thinking.type=disabled 被拒 400 时剥参重试。另含子任务 outcome、SSE 归一化、会话/权限预设、vendor package.json CI 跟踪等修复。覆盖安装即可。"
 }
