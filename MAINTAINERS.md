@@ -26,6 +26,7 @@ Trusted, sustained contributors may be invited. There is no open self-nomination
 
 ## Related
 
+- **[RELEASE.md](RELEASE.md) — 每次升版本必读清单**（VERSION / CHANGELOG / PRODUCT-NOTES / latest.json / tag）
 - [CONTRIBUTING.md](CONTRIBUTING.md)
 - [SUPPORT.md](SUPPORT.md)
 - [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
