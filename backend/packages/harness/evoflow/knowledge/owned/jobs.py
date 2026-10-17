@@ -299,6 +299,23 @@ def complete(job_id: str, *, error: str | None = None, permanent: bool = False) 
                     job_id,
                 ),
             )
+            # A later successful run supersedes older terminal-error rows of the
+            # same document + job type. Without this, ``job_stats`` keeps
+            # returning the stale error rows and the UI index-status banner
+            # shows a failure forever even though the document re-parsed fine.
+            if doc_id:
+                # ``created_at`` is second-precision; ``rowid`` gives the strict
+                # insertion order needed for same-second retry chains.
+                conn.execute(
+                    """
+                    UPDATE kb_jobs SET state='cancelled',
+                      error_message='superseded by a successful re-run',
+                      finished_at=?, updated_at=?, locked_by='', locked_at=NULL
+                    WHERE kb_id=? AND doc_id=? AND type=? AND state='error'
+                      AND rowid < (SELECT rowid FROM kb_jobs WHERE id=?)
+                    """,
+                    (now, now, kb_id, doc_id, jtype, job_id),
+                )
 
 
 def cancel_for_kb(kb_id: str) -> int:
