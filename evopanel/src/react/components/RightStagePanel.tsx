@@ -35,6 +35,7 @@ import {
   resolveStageTabsOverflow,
   resolveStageTabsOverflowEdges,
 } from './rightStageTabLayout.js'
+import { useGlobalOverlayWhen } from '../hooks/useGlobalOverlayWhen.js'
 
 /** 失活仍挂载：切签像浏览器标签一样保活（含工作流/导图）。 */
 const FORCE_MOUNT_KINDS = new Set([
@@ -96,6 +97,7 @@ function StageTabChip({
   const key = tabKeyOf(tab)
   const title = tabTitleOf(tab)
   const kind = normalizeRightStageKind(tab.kind)
+  const faviconUrl = kind === 'browser' ? String(tab.data?.faviconUrl || '') : ''
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: key,
   })
@@ -125,7 +127,7 @@ function StageTabChip({
       {...listeners}
       role="tab"
     >
-      <KindTabIcon kind={kind} />
+      <KindTabIcon kind={kind} faviconUrl={faviconUrl} />
       <span className="react-chat-stage-tab-content">
         <span className="react-chat-stage-tab-title">{title}</span>
       </span>
@@ -213,6 +215,8 @@ export const RightStagePanel = memo(function RightStagePanel({
 
   /** 菜单/拖拽进行中强制露出标签条，避免 Portal 弹出后 mouseleave 把条收回去。 */
   const chromeForcedOpen = overviewOpen || addMenuOpen || !!tabCtx || !!draggingKey
+  // 原生 WebView2 不吃 CSS z-index；下拉/总览打开时先藏 HWND，否则菜单被网页挡住。
+  useGlobalOverlayWhen(chromeForcedOpen, 'right-stage-chrome')
 
   const visibleActiveKey = useMemo(() => {
     if (activeKey && tabs.some((t) => tabKeyOf(t) === activeKey)) return activeKey
@@ -477,7 +481,14 @@ export const RightStagePanel = memo(function RightStagePanel({
                     className="react-chat-stage-tab is-active is-dragging-overlay"
                     data-tauri-no-drag
                   >
-                    <KindTabIcon kind={normalizeRightStageKind(draggingTab.kind)} />
+                    <KindTabIcon
+                      kind={normalizeRightStageKind(draggingTab.kind)}
+                      faviconUrl={
+                        normalizeRightStageKind(draggingTab.kind) === 'browser'
+                          ? String(draggingTab.data?.faviconUrl || '')
+                          : ''
+                      }
+                    />
                     <span className="react-chat-stage-tab-content">
                       <span className="react-chat-stage-tab-title">{tabTitleOf(draggingTab)}</span>
                     </span>

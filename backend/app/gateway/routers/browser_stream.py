@@ -345,81 +345,25 @@ async def scroll_browser_route(
 class _BrowserCommandBody(BaseModel):
     """Navigation commands from the EvoPanel toolbar (whitelisted methods only)."""
 
-    method: Literal["navigate", "back", "forward"]
+    method: Literal["navigate", "back", "forward", "reload"]
     url: str = Field(default="")
 
 
 @router.post(
     "/{thread_id}/browser-command",
-    summary="Navigate / back / forward on the live browser (toolbar whitelist)",
+    summary="Navigate / back / forward / reload on the live browser (toolbar whitelist)",
 )
 async def browser_command_route(
     request: Request, thread_id: str, body: _BrowserCommandBody
 ) -> dict[str, object]:
     require_thread_visible(request, thread_id)
 
-    # Panel toolbar: first check if the embedded WebView2 has a registered CDP URL.
-    # If so, route directly through the Rust HTTP broker instead of the Playwright
-    # engine — the WebView2 is owned by the Tauri desktop process, not by Playwright.
-    from evoflow.tools.builtins.browser_embed_cdp import get_thread_cdp_url
-
-    embedded_cdp_url = await asyncio.to_thread(get_thread_cdp_url, thread_id)
-
-    if embedded_cdp_url:
-        # Extract port from ws://127.0.0.1:PORT/... and call Rust HTTP broker.
-        # The HTTP broker is on the same host as the CDP WS broker (same port file).
-        import re, httpx
-
-        base_url = await _get_browser_cdp_url()
-        if not base_url:
-            raise HTTPException(status_code=503, detail="CDP HTTP broker not running")
-
-        cdp_method = {
-            "navigate": "Page.navigate",
-            "back": "Page.goBack",
-            "forward": "Page.goForward",
-        }.get(body.method, body.method)
-
-        if body.method == "navigate":
-            raw_url = body.url.strip()
-            if not raw_url:
-                raise HTTPException(status_code=400, detail="navigate requires a URL")
-            if not raw_url.startswith(("http://", "https://")):
-                raw_url = "https://" + raw_url
-            from urllib.parse import urlparse
-            if not urlparse(raw_url).hostname:
-                raise HTTPException(status_code=400, detail=f"invalid url: {raw_url}")
-            params_json = asyncio.to_thread(
-                lambda: json.dumps({"url": raw_url})
-            )
-        else:
-            params_json = asyncio.to_thread(lambda: json.dumps({}))
-
-        params_str = await params_json
-        url = f"{base_url}/browser-cdp/command?thread_id={thread_id}&method={cdp_method}"
-        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as client:
-            resp = await client.post(url, content=params_str)
-        if resp.status_code != 200:
-            logger.warning(
-                "browser_command embedded HTTP %s thread=%s method=%s: %s",
-                resp.status_code, thread_id, body.method, resp.text[:200],
-            )
-            raise HTTPException(status_code=502, detail=f"CDP HTTP error: {resp.text[:200]}")
-        data = resp.json()
-        if data.get("error"):
-            raise HTTPException(status_code=500, detail=str(data["error"]))
-
-        # Synthesize a minimal response so _browser_route_payload can feed the panel.
-        result = {
-            "ok": True,
-            "state": {
-                "url": body.url.strip() if body.method == "navigate" else "",
-                "title": "",
-            },
-        }
-        return _browser_route_payload(thread_id, result)
-
-    # No embedded CDP: fall back to the Playwright engine.
+    # Always dispatch through the in-process engine. It already talks to the
+    # panel WebView2 over the same CDP HTTP broker, and correctly implements
+    # back/forward via Page.getNavigationHistory (CDP has no Page.goBack).
+    # The previous shortcut called Page.goBack/Page.goForward directly, which
+    # silently failed — toolbar buttons looked clickable but did nothing, and
+    # the synthetic response wiped page_url / page_title.
     command: dict[str, object] = {"method": body.method}
     if body.method == "navigate":
         url = body.url.strip()

@@ -3778,16 +3778,15 @@ html.dark .browser-panel-iframe {
 
 .browser-panel-embed-slot {
   flex: 1 1 auto;
-  min-height: 240px;
-  border-radius: 10px;
-  border: 1px dashed color-mix(in srgb, var(--accent, #2563eb) 28%, var(--border, #cbd5e1));
-  background: color-mix(in srgb, var(--bg, #fff) 88%, #dbeafe);
+  min-height: 0;
+  border-radius: 0;
+  border: 0;
+  background: transparent;
 }
 
 html[data-theme='dark'] .browser-panel-embed-slot,
 html.dark .browser-panel-embed-slot {
-  background: color-mix(in srgb, #0b1220 90%, #1d4ed8);
-  border-color: color-mix(in srgb, #60a5fa 30%, #334155);
+  background: transparent;
 }
 
 .browser-panel-spinner-anchor {
@@ -32159,8 +32158,9 @@ html[data-theme="dark"] .group\/user-row .msg-user-context-file-pill {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  min-width: 0;
-  max-width: 75%;
+  min-width: 72px;
+  max-width: 180px;
+  flex: 0 1 180px;
   height: 28px;
   padding: 0 6px 0 8px;
   border: 1px solid var(--border);
@@ -32953,6 +32953,12 @@ html[data-theme='dark'] .react-chat-stage-tab.is-active {
   flex-shrink: 0;
   align-items: center;
   justify-content: center;
+}
+.react-chat-stage-tab-favicon {
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  object-fit: contain;
 }
 /* 标题层：不做硬省略，改用 mask 渐隐；
  * --tab-fade-offset 由 active/hover 抬到 1.25rem，给右侧关闭按钮让出淡出带。 */

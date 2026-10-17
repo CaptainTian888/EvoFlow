@@ -303,12 +303,18 @@ pub fn reposition_embeds_after_main_move(app: &tauri::AppHandle) {
     }
 }
 
+/// 主窗标题拖拽区大约占这么高（物理 px）。子 HWND 的 y 不得更小，否则盖住
+/// React `data-tauri-drag-region` 的双击还原。前端也会再测真实 floor。
+const EMBED_CHROME_FLOOR_Y: f64 = 48.0;
+
 /// 把客户端相对矩形钳制进主窗口内容区，embed 永远不会停在客户区之外。
 fn clamp_rect(x: f64, y: f64, w: f64, h: f64, iw: f64, ih: f64) -> (f64, f64, f64, f64) {
     let w = w.clamp(120.0, (iw - 16.0).max(120.0));
-    let h = h.clamp(80.0, (ih - 16.0).max(80.0));
+    let mut y = y.max(EMBED_CHROME_FLOOR_Y);
+    let max_h = (ih - y - 8.0).max(80.0);
+    let h = h.clamp(80.0, max_h.min((ih - 16.0).max(80.0)));
     let x = x.clamp(0.0, (iw - w).max(0.0));
-    let y = y.clamp(0.0, (ih - h).max(0.0));
+    y = y.clamp(EMBED_CHROME_FLOOR_Y, (ih - h).max(EMBED_CHROME_FLOOR_Y));
     (x, y, w, h)
 }
 
@@ -522,6 +528,16 @@ fn normalize_target_url(raw: &str) -> Result<url::Url, String> {
     if trimmed.is_empty() {
         return Ok(url::Url::parse("about:blank").expect("about:blank is a valid URL"));
     }
+    let lower = trimmed.to_ascii_lowercase();
+    // 导航失败后 WebView 会停在 chrome-error://chromewebdata；再 navigate 进去会死循环。
+    if lower.starts_with("chrome-error:")
+        || lower.starts_with("chrome://")
+        || lower.starts_with("edge://")
+        || lower.starts_with("devtools://")
+        || lower.contains("chromewebdata")
+    {
+        return Err(format!("reject internal error url {trimmed:?}"));
+    }
     if trimmed.starts_with("about:") {
         return trimmed
             .parse()
@@ -620,6 +636,9 @@ async fn serve_cdp_client(
 
     let closed = Arc::new(AtomicBool::new(false));
     let (out_tx, out_rx) = mpsc::unbounded_channel::<String>();
+    // Reader loop also hands replies to the writer task, so keep a sender
+    // before the sink closure takes its own.
+    let out_tx_reader = out_tx.clone();
 
     // Route WebView2 protocol events into this client. The sink closure and the
     // session record each need their own handle on the shutdown flag.
@@ -644,6 +663,7 @@ async fn serve_cdp_client(
         app.clone(),
         label.clone(),
         socket,
+        out_tx_reader,
         out_rx,
         closed.clone(),
     )
@@ -661,14 +681,15 @@ async fn pump_both_ways(
     app: tauri::AppHandle,
     label: String,
     socket: tokio::net::TcpStream,
+    out_tx: mpsc::UnboundedSender<String>,
     mut out_rx: mpsc::UnboundedReceiver<String>,
     closed: Arc<AtomicBool>,
 ) -> Result<(), String> {
     // `into_split` yields owned halves, so both the reader loop and the writer
     // task can hold one without borrowing `socket`. The writer half is shared
-    // because the reader also answers requests inline; WebSocket forbids two
-    // concurrent writers, so serialise through a mutex (a `tokio::sync::Mutex`
-    // because the guard is held across an `.await`).
+    // because requests are answered on a separate thread and events arrive from
+    // the sink; WebSocket forbids two concurrent writers, so serialise through
+    // a mutex (a `tokio::sync::Mutex` because the guard is held across an `.await`).
     let (mut read_half, write_half) = socket.into_split();
     let write_half = Arc::new(tokio::sync::Mutex::new(write_half));
 
@@ -682,13 +703,38 @@ async fn pump_both_ways(
         }
     });
 
+    // Requests run on a dedicated OS thread: `handle_client_frame` blocks on the
+    // CDP global lock plus a main-thread dispatch, which can hold for seconds on
+    // a busy page. Handling them inline stalled this async read loop — pings went
+    // unanswered and the socket buffer filled while a slow command ran. Events
+    // bypass this thread entirely (sink → out_tx → writer task).
+    let (req_tx, mut req_rx) = mpsc::unbounded_channel::<String>();
+    let app_req = app.clone();
+    let label_req = label.clone();
+    let out_tx_req = out_tx.clone();
+    let closed_req = closed.clone();
+    let req_thread = std::thread::Builder::new()
+        .name("cdp-broker-requests".into())
+        .spawn(move || {
+            // Plain OS thread: use the blocking recv, not the async one.
+            while let Some(text) = req_rx.blocking_recv() {
+                if closed_req.load(Ordering::SeqCst) {
+                    break;
+                }
+                if let Some(reply) = handle_client_frame(&app_req, &label_req, &text) {
+                    if out_tx_req.send(reply).is_err() {
+                        break;
+                    }
+                }
+            }
+        });
+
     let mut pending = Vec::new();
     loop {
         if closed.load(Ordering::SeqCst) {
             break;
         }
         let mut chunk = vec![0u8; 16 * 1024];
-        // The reader blocks, so events still flow through the writer task.
         let n = match read_half.read(&mut chunk).await {
             Ok(0) => break,
             Ok(n) => n,
@@ -703,12 +749,9 @@ async fn pump_both_ways(
             pending.drain(..consumed);
             match frame {
                 WsFrame::Text(text) => {
-                    if let Some(reply) = handle_client_frame(&app, &label, &text) {
-                        let mut guard = write_half.lock().await;
-                        if guard.write_all(&ws_frame(&reply)).await.is_err() {
-                            writer.abort();
-                            return Ok(());
-                        }
+                    if req_tx.send(text).is_err() {
+                        writer.abort();
+                        return Ok(());
                     }
                 }
                 WsFrame::Ping(payload) => {
@@ -728,6 +771,13 @@ async fn pump_both_ways(
         }
     }
     writer.abort();
+    // Closing req_tx ends the request thread; join only on the natural exit path
+    // so an in-flight CDP call finishes (bounded by the 25s dispatch timeout)
+    // before serve_cdp_client tears the session down.
+    drop(req_tx);
+    if let Ok(handle) = req_thread {
+        let _ = handle.join();
+    }
     Ok(())
 }
 
@@ -1148,18 +1198,32 @@ fn nest_embed_into_main(_embed: &WebviewWindow, _main: &WebviewWindow) -> Result
 #[cfg(target_os = "windows")]
 fn nest_embed_into_main(embed: &WebviewWindow, main: &WebviewWindow) -> Result<(), String> {
     use windows::Win32::UI::WindowsAndMessaging::{
-        GetWindowLongW, SetParent, SetWindowLongW, SetWindowPos, GWL_STYLE, HWND_TOP,
-        SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_CAPTION,
-        WS_CHILD, WS_POPUP, WS_SYSMENU, WS_THICKFRAME,
+        GetWindowLongW, SetParent, SetWindowLongW, SetWindowPos, GWL_EXSTYLE, GWL_STYLE, HWND_TOP,
+        SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_BORDER,
+        WS_CAPTION, WS_CHILD, WS_DLGFRAME, WS_EX_CLIENTEDGE, WS_EX_STATICEDGE, WS_EX_WINDOWEDGE,
+        WS_POPUP, WS_SYSMENU, WS_THICKFRAME,
     };
     let child = embed.hwnd().map_err(|e| format!("embed hwnd: {e}"))?;
     let owner = main.hwnd().map_err(|e| format!("main hwnd: {e}"))?;
     unsafe {
         let style = GetWindowLongW(child, GWL_STYLE) as u32;
-        if style & WS_CHILD.0 == 0 {
-            let stripped =
-                (style & !(WS_POPUP.0 | WS_CAPTION.0 | WS_THICKFRAME.0 | WS_SYSMENU.0)) | WS_CHILD.0;
+        // 去掉标题栏和客户区边框，否则 SetWindowPos 的外框会比槽位多出 1～数像素，
+        // 盖住右栏左侧分隔线。
+        let frame = WS_POPUP.0
+            | WS_CAPTION.0
+            | WS_THICKFRAME.0
+            | WS_SYSMENU.0
+            | WS_BORDER.0
+            | WS_DLGFRAME.0;
+        let stripped = (style & !frame) | WS_CHILD.0;
+        let ex = GetWindowLongW(child, GWL_EXSTYLE) as u32;
+        let ex_frame = WS_EX_CLIENTEDGE.0 | WS_EX_STATICEDGE.0 | WS_EX_WINDOWEDGE.0;
+        let ex_stripped = ex & !ex_frame;
+        if style != stripped || ex != ex_stripped {
             SetWindowLongW(child, GWL_STYLE, stripped as i32);
+            SetWindowLongW(child, GWL_EXSTYLE, ex_stripped as i32);
+        }
+        if style & WS_CHILD.0 == 0 {
             SetParent(child, Some(owner)).map_err(|e| format!("SetParent failed: {e}"))?;
             // 首次嵌套需要抬到主 WebView 之上，否则槽位被整页 WebView 挡住。
             let _ = SetWindowPos(
@@ -1174,8 +1238,18 @@ fn nest_embed_into_main(embed: &WebviewWindow, main: &WebviewWindow) -> Result<(
             browser_cdp_server::log_line(&format!(
                 "[browser-embed] nested popup into main client hwnd={child:?} parent={owner:?}"
             ));
+        } else if style != stripped || ex != ex_stripped {
+            // 边框刚剥掉，必须 FRAMECHANGED，否则外框仍比槽位宽一圈。
+            let _ = SetWindowPos(
+                child,
+                None,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER | SWP_FRAMECHANGED,
+            );
         } else {
-            // 已是子窗口：不要每次 nest 再 HWND_TOP，避免无谓抬升。
             let _ = SetWindowPos(
                 child,
                 None,
@@ -1277,6 +1351,25 @@ fn place_embed_client(
         ));
         (ox + x as i32, oy + y as i32)
     };
+    let want_w = w as i32;
+    let want_h = h as i32;
+    // 跟上次登记的槽位一样就别再 SetWindowPos（outer_position 对 WS_CHILD 是屏幕坐标，不能比）。
+    {
+        let label = window.label();
+        if let Ok(map) = EMBED_LAST_BOUNDS.lock() {
+            if let Some((lx, ly, lw, lh)) = map.get(label) {
+                if (*lx - x).abs() <= 1.0
+                    && (*ly - y).abs() <= 1.0
+                    && (*lw - w).abs() <= 1.0
+                    && (*lh - h).abs() <= 1.0
+                    && window.is_visible().unwrap_or(false)
+                    && !is_parked(label)
+                {
+                    return Ok(());
+                }
+            }
+        }
+    }
     // 必须 SHOW：子 WebView2 一直 hidden 时 guest poll / CDP 会卡死。
     // 贴位时要 HWND_TOP：否则 park 后再 show 会落在主 WebView2 下面，右侧槽位空白。
     // 全局弹窗仍靠前端 overlay 计数 park（SW_HIDE），不靠 CSS 压原生窗。
@@ -1287,8 +1380,8 @@ fn place_embed_client(
             Some(HWND_TOP),
             px,
             py,
-            w as i32,
-            h as i32,
+            want_w,
+            want_h,
             SWP_NOACTIVATE | SWP_SHOWWINDOW,
         )
         .map_err(|e| format!("SetWindowPos embed failed: {e}"))?;
@@ -1689,10 +1782,11 @@ pub async fn browser_embed_upsert(
     viewport_width: Option<f64>,
     viewport_height: Option<f64>,
     managed_only: Option<bool>,
+    replace_url: Option<bool>,
 ) -> Result<BrowserEmbedInfo, String> {
     #[cfg(not(target_os = "windows"))]
     {
-        let _ = (app, state, thread_id, url, x, y, width, height, viewport_width, viewport_height, managed_only);
+        let _ = (app, state, thread_id, url, x, y, width, height, viewport_width, viewport_height, managed_only, replace_url);
         return Err("Embedded browser panel is only supported on Windows WebView2 builds".into());
     }
     #[cfg(target_os = "windows")]
@@ -1808,16 +1902,33 @@ pub async fn browser_embed_upsert(
         // no-op on a dying HWND, so without this the operator only sees "ready".
         log_window_state(&existing, "upsert/reuse after place+resize");        // tauri-agent / native_navigate path: use WebviewWindow::navigate —
         // never with_webview ExecuteScript (hangs on child embeds).
+        // replace_url：切签用 location.replace，避免多标签共用 HWND 时把后退栈串在一起。
         if let Some(raw_url) = url.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
             match normalize_target_url(raw_url) {
-                Ok(parsed) => match existing.navigate(parsed.clone()) {
-                    Ok(()) => browser_cdp_server::log_line(&format!(
-                        "[browser-embed] reuse navigate ok label={label} -> {parsed}"
-                    )),
-                    Err(e) => browser_cdp_server::log_line(&format!(
-                        "[browser-embed] reuse navigate FAILED label={label} -> {parsed}: {e}"
-                    )),
-                },
+                Ok(parsed) => {
+                    let use_replace = replace_url.unwrap_or(false);
+                    let nav_result = if use_replace {
+                        let href = parsed.as_str();
+                        let js = format!(
+                            "(function(){{try{{location.replace({});}}catch(e){{location.href={};}}return true;}})()",
+                            serde_json::to_string(href).unwrap_or_else(|_| "\"about:blank\"".into()),
+                            serde_json::to_string(href).unwrap_or_else(|_| "\"about:blank\"".into()),
+                        );
+                        existing.eval(js).map(|_| ()).map_err(|e| e.to_string())
+                    } else {
+                        existing
+                            .navigate(parsed.clone())
+                            .map_err(|e| e.to_string())
+                    };
+                    match nav_result {
+                        Ok(()) => browser_cdp_server::log_line(&format!(
+                            "[browser-embed] reuse navigate ok label={label} replace={use_replace} -> {parsed}"
+                        )),
+                        Err(e) => browser_cdp_server::log_line(&format!(
+                            "[browser-embed] reuse navigate FAILED label={label} replace={use_replace} -> {parsed}: {e}"
+                        )),
+                    }
+                }
                 Err(e) => browser_cdp_server::log_line(&format!(
                     "[browser-embed] reuse navigate bad url {raw_url:?}: {e}"
                 )),
@@ -2038,6 +2149,20 @@ pub async fn browser_embed_set_bounds(
             ));
             return Ok(false);
         }
+        // 槽位没变且已可见：跳过 nest/show/SetWindowPos，拖动窗口时 IPC 连发不会卡 UI。
+        if window.is_visible().unwrap_or(false) && !is_parked(&label) {
+            if let Ok(map) = EMBED_LAST_BOUNDS.lock() {
+                if let Some((lx, ly, lw, lh)) = map.get(&label) {
+                    if (*lx - x).abs() <= 1.0
+                        && (*ly - y).abs() <= 1.0
+                        && (*lw - width.max(120.0)).abs() <= 1.0
+                        && (*lh - height.max(80.0)).abs() <= 1.0
+                    {
+                        return Ok(true);
+                    }
+                }
+            }
+        }
         mark_parked(&label, false);
         let _ = window.show();
         let _ = window.unminimize();
@@ -2099,6 +2224,37 @@ pub async fn browser_embed_set_bounds(
         }
         Ok(true)
     } // cfg(target_os = "windows") for browser_embed_set_bounds body
+}
+
+/// 内嵌浏览器页面缩放（WebView2 ZoomFactor）。默认约 0.75 便于小槽位看全页；
+/// 用户亦可在页面里 Ctrl+滚轮，与本命令写入的是同一套缩放。
+#[tauri::command]
+pub async fn browser_embed_set_zoom(
+    app: tauri::AppHandle,
+    thread_id: String,
+    factor: f64,
+) -> Result<bool, String> {
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (app, thread_id, factor);
+        return Ok(false);
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use tauri::Manager;
+        let label = webview_label_for_thread(&thread_id);
+        let Some(window) = app.get_webview_window(&label) else {
+            return Ok(false);
+        };
+        let scale = factor.clamp(0.5, 2.5);
+        window
+            .set_zoom(scale)
+            .map_err(|e| format!("embed set_zoom failed: {e}"))?;
+        browser_cdp_server::log_line(&format!(
+            "[browser-embed] set_zoom label={label} factor={scale:.2}"
+        ));
+        Ok(true)
+    }
 }
 
 /// operation ran.

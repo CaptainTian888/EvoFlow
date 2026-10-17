@@ -1,12 +1,14 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from 'react'
 import {
   browserEmbedClose,
+  browserEmbedSetZoom,
   browserEmbedSupported,
   browserEmbedSupportedSync,
   clearBrowserEmbedCdp,
   registerBrowserEmbedCdp,
 } from '../../lib/browser-embed-client.js'
 import { ensureNativeEmbed, reportEmbedSlot } from '../../lib/browser-embed-surface.js'
+import { useGlobalOverlayWhen } from '../hooks/useGlobalOverlayWhen.js'
 import {
   buildBrowserStreamPath,
   connectBrowserStream,
@@ -17,9 +19,6 @@ import {
   scrollBrowserBy,
   sendBrowserCommand,
   listBrowserTabs,
-  newBrowserTab,
-  selectBrowserTab,
-  closeBrowserTab,
   DEFAULT_BROWSER_VIEWPORT,
   setBrowserViewport,
   type BrowserViewportPresetId,
@@ -28,9 +27,16 @@ import {
 import {
   getBrowserRuntimeSnapshot,
   applyBrowserCommandResponse,
+  pushBrowserTabHistory,
   setBrowserTabs,
+  stepBrowserTabHistory,
   subscribeBrowserRuntime,
 } from '../../lib/browser-panel-store.js'
+import {
+  isBrowserInternalErrorUrl,
+  isNavigableBrowserUrl,
+  sanitizeBrowserPageUrl,
+} from '../../lib/browser-page-url.js'
 import {
   clearBrowserDebug,
   dbgLog,
@@ -43,14 +49,56 @@ import {
 export type BrowserStreamStatus = 'connecting' | 'live' | 'reconnecting' | 'error' | 'closed' | 'idle'
 
 /** Zoom presets ported from ZCode browser viewport zoom (fit + fixed percentages). */
-const ZOOM_OPTIONS = ['fit', '50', '75', '100', '125', '150', '200'] as const
+const ZOOM_OPTIONS = ['fit', '50', '67', '75', '100', '125', '150', '200'] as const
 type ZoomOption = (typeof ZOOM_OPTIONS)[number]
+const EMBED_ZOOM_STORAGE_KEY = 'evoflow-browser-embed-zoom-v2'
+/** 默认「适应窗口」：按槽位宽高自动挑缩放——窄栏更小、大窗更大。 */
+const DEFAULT_EMBED_ZOOM: ZoomOption = 'fit'
+
+function readStoredEmbedZoom(): ZoomOption {
+  try {
+    const raw = String(localStorage.getItem(EMBED_ZOOM_STORAGE_KEY) || '').trim()
+    if ((ZOOM_OPTIONS as readonly string[]).includes(raw)) return raw as ZoomOption
+  } catch {
+    /* ignore */
+  }
+  return DEFAULT_EMBED_ZOOM
+}
+
+/**
+ * 按槽位 CSS 像素估 ZoomFactor。
+ * 右栏很窄时压到 ~50%，方便一屏多看；窗口放大、槽位变宽后提到 ~100%。
+ */
+function fitZoomFromSlot(cssWidth: number, cssHeight: number): number {
+  const w = Math.max(0, cssWidth)
+  const h = Math.max(0, cssHeight)
+  let factor: number
+  if (w < 480) factor = 0.5
+  else if (w < 620) factor = 0.55
+  else if (w < 760) factor = 0.65
+  else if (w < 920) factor = 0.8
+  else if (w < 1100) factor = 0.9
+  else factor = 1.0
+  if (h > 0 && h < 400 && factor > 0.55) factor = Math.max(0.5, factor - 0.1)
+  if (h >= 720 && w >= 920) factor = Math.min(1.1, factor + 0.05)
+  return Math.min(1.25, Math.max(0.5, Math.round(factor * 100) / 100))
+}
+
+function embedZoomFactor(zoom: ZoomOption, slotCssWidth = 0, slotCssHeight = 0): number {
+  if (zoom === 'fit') return fitZoomFromSlot(slotCssWidth, slotCssHeight)
+  const n = Number(zoom)
+  if (!Number.isFinite(n) || n <= 0) return fitZoomFromSlot(slotCssWidth, slotCssHeight)
+  return Math.min(2.5, Math.max(0.5, n / 100))
+}
 
 
 
 function formatDisplayUrl(raw: string): string {
   const url = String(raw || '').trim()
   if (!url) return ''
+  // about:blank（新标签/空白页）在地址栏里只显示成没头没尾的「blank」，
+  // 留空让 placeholder 出来；其它 about: 页同样按无地址处理。
+  if (url.startsWith('about:')) return ''
   try {
     const u = new URL(url)
     const path = u.pathname === '/' ? '' : u.pathname.replace(/\/$/, '')
@@ -196,6 +244,8 @@ function BrowserChromeBar({
   onNavigate,
   onBack,
   onForward,
+  canGoBack,
+  canGoForward,
   navBusy,
   onZoomChange,
   onRefresh,
@@ -215,6 +265,8 @@ function BrowserChromeBar({
   onNavigate?: (url: string) => void
   onBack?: () => void
   onForward?: () => void
+  canGoBack?: boolean | null
+  canGoForward?: boolean | null
   navBusy?: boolean
   onZoomChange?: (zoom: ZoomOption) => void
   onRefresh?: () => void
@@ -232,6 +284,8 @@ function BrowserChromeBar({
     if (!urlEditing) setUrlDraft(displayUrl)
   }, [displayUrl, urlEditing])
   const [moreOpen, setMoreOpen] = useState(false)
+  // 原生 WebView2 盖在 HTML 之上，菜单打开时必须藏 HWND，否则下拉被网页挡住。
+  useGlobalOverlayWhen(moreOpen, 'browser-chrome-more')
   const [dimWidth, setDimWidth] = useState<string>(
     viewport?.width ? String(viewport.width) : String(DEFAULT_BROWSER_VIEWPORT.width),
   )
@@ -274,7 +328,7 @@ function BrowserChromeBar({
           className="browser-panel-tb-btn"
           title="后退"
           aria-label="后退"
-          disabled={navBusy || !onBack}
+          disabled={navBusy || !onBack || canGoBack === false}
           onClick={() => onBack?.()}
         >
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="m15 18-6-6 6-6" /></svg>
@@ -284,7 +338,7 @@ function BrowserChromeBar({
           className="browser-panel-tb-btn"
           title="前进"
           aria-label="前进"
-          disabled={navBusy || !onForward}
+          disabled={navBusy || !onForward || canGoForward === false}
           onClick={() => onForward?.()}
         >
           <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="m9 18 6-6-6-6" /></svg>
@@ -319,6 +373,21 @@ function BrowserChromeBar({
           }}
         />
         <button type="submit" style={{ display: 'none' }} />
+        {zoomVisible || onZoomChange ? (
+          <select
+            className="browser-panel-zoom"
+            value={zoom || DEFAULT_EMBED_ZOOM}
+            title="页面缩放：适应窗口随侧栏宽窄自动调整；页面内也可 Ctrl+滚轮"
+            aria-label="页面缩放"
+            onChange={(event) => onZoomChange?.(event.target.value as ZoomOption)}
+          >
+            {ZOOM_OPTIONS.map((option) => (
+              <option key={option} value={option}>
+                {option === 'fit' ? '适应窗口' : `${option}%`}
+              </option>
+            ))}
+          </select>
+        ) : null}
         <button
           type="button"
           className={`browser-panel-tb-btn${isResponsiveMode ? ' is-pressed is-secondary' : ''}`}
@@ -354,7 +423,7 @@ function BrowserChromeBar({
           <>
             <div className="browser-panel-menu-backdrop" onClick={() => setMoreOpen(false)} aria-hidden="true"></div>
             <div className="browser-panel-menu" role="menu" aria-label="更多浏览器操作">
-              {pageUrl ? (
+              {pageUrl && !pageUrl.startsWith('about:') ? (
                 <a
                   className="browser-panel-menu-item"
                   href={pageUrl}
@@ -426,200 +495,32 @@ function BrowserChromeBar({
             }}
             onBlur={commitDims}
           />
-          {zoomVisible || onZoomChange ? (
-            <select
-              className="browser-panel-zoom"
-              value={zoom || 'fit'}
-              title="缩放"
-              aria-label="缩放"
-              onChange={(event) => onZoomChange?.(event.target.value as ZoomOption)}
-            >
-              {ZOOM_OPTIONS.map((option) => (
-                <option key={option} value={option}>
-                  {option === 'fit' ? '适应窗口' : `${option}%`}
-                </option>
-              ))}
-            </select>
-          ) : null}
         </div>
       ) : null}
     </>
   )
 }
 
-/** Site favicon (`origin/favicon.ico`); null falls back to the globe glyph. */
-function faviconUrlFor(url: string): string | null {
-  try {
-    return `${new URL(url).origin}/favicon.ico`
-  } catch {
-    return null
-  }
-}
-
-type SurfaceTabKind = 'browser' | 'collab-workflow' | 'mind-map'
-
-interface SurfaceTabRender {
-  key: string
-  kind: SurfaceTabKind
-  /** engineIndex: -2 = home chip，-1 = 占位 / surface tab，>=0 = 浏览器引擎 tab。 */
-  engineIndex: number
-  title: string
-  url: string
-  active: boolean
-  /** 标识是不是 non-browser surface（工作流 / 思维导图），关闭按钮的行为不同。 */
-  isSurface?: boolean
-  /** 标识是不是浏览器 home chip：永远存在，不可拖拽，无关闭按钮。 */
-  isHome?: boolean
-}
-
-function SurfaceIcon({ kind }: { kind: SurfaceTabKind }) {
-  if (kind === 'collab-workflow') {
-    return (
-      <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-        <rect x="3" y="3" width="6" height="6" rx="1" />
-        <rect x="15" y="3" width="6" height="6" rx="1" />
-        <rect x="3" y="15" width="6" height="6" rx="1" />
-        <rect x="15" y="15" width="6" height="6" rx="1" />
-        <path d="M9 6h6M9 18h6M6 9v6M18 9v6" />
-      </svg>
-    )
-  }
-  if (kind === 'mind-map') {
-    return (
-      <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-        <circle cx="12" cy="12" r="3" />
-        <circle cx="4" cy="5" r="2" />
-        <circle cx="20" cy="5" r="2" />
-        <circle cx="4" cy="19" r="2" />
-        <circle cx="20" cy="19" r="2" />
-        <path d="M11 10 6 7M13 10l5-3M11 14l-5 3M13 14l5 3" />
-      </svg>
-    )
-  }
-  // browser fallback (shouldn't really happen — surfaceTabs for browser always has a favicon URL)
-  return (
-    <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden>
-      <circle cx="12" cy="12" r="10" />
-      <path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20" />
-      <path d="M2 12h20" />
-    </svg>
-  )
-}
-
-function SurfaceTabChipInner({
-  tab,
-  onSelect,
-  onClose,
-  onCloseWebTab,
-  onSelectWebTab,
-  onDragStartChip,
-  onDragOverChip,
-  onDropChip,
-}: {
-  tab: SurfaceTabRender
-  onSelect: (kind: SurfaceTabKind) => void
-  onClose: (kind: SurfaceTabKind) => void
-  onCloseWebTab: (engineIndex: number) => void
-  onSelectWebTab: (engineIndex: number) => void
-  onDragStartChip: (engineIndex: number) => void
-  onDragOverChip: (engineIndex: number) => void
-  onDropChip: () => void
-}) {
-  const isWebTab = !tab.isSurface && !tab.isHome
-  const isHomeChip = !!tab.isHome
-  const [faviconFailed, setFaviconFailed] = useState(false)
-  const favSrc = isWebTab ? faviconUrlFor(tab.url) : ''
-  const label = tab.title
-  const draggable = isWebTab
-  return (
-    <div
-      className={`browser-panel-tabchip${tab.active ? ' is-active' : ''}${tab.isSurface ? ' is-surface' : ''}`}
-      title={tab.url || undefined}
-      role="tab"
-      tabIndex={0}
-      aria-selected={tab.active}
-      draggable={draggable}
-      onDragStart={(e) => {
-        if (!draggable) return
-        e.dataTransfer.effectAllowed = 'move'
-        e.dataTransfer.setData('text/plain', String(tab.engineIndex))
-        onDragStartChip(tab.engineIndex)
-      }}
-      onDragOver={(e) => {
-        if (!draggable) return
-        e.preventDefault()
-        onDragOverChip(tab.engineIndex)
-      }}
-      onDrop={(e) => {
-        if (!draggable) return
-        e.preventDefault()
-        onDropChip()
-      }}
-      onClick={() => {
-        if (!tab.active) {
-          if (isWebTab) onSelectWebTab(tab.engineIndex)
-          else onSelect(tab.kind)
-        }
-      }}
-      onKeyDown={(e) => {
-        if ((e.key === 'Enter' || e.key === ' ') && !tab.active) {
-          e.preventDefault()
-          if (isWebTab) onSelectWebTab(tab.engineIndex)
-          else onSelect(tab.kind)
-        }
-      }}
-    >
-      <span className="browser-panel-tabchip-icon" aria-hidden="true">
-        {isWebTab ? (
-          favSrc && !faviconFailed ? (
-            <img
-              src={favSrc}
-              alt=""
-              className="browser-panel-tabchip-favicon"
-              draggable={false}
-              referrerPolicy="no-referrer"
-              onError={() => setFaviconFailed(true)}
-            />
-          ) : (
-            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden>
-              <circle cx="12" cy="12" r="10" />
-              <path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20" />
-              <path d="M2 12h20" />
-            </svg>
-          )
-        ) : (
-          <SurfaceIcon kind={tab.kind} />
-        )}
-      </span>
-      <span className="browser-panel-tabchip-title">{label}</span>
-      {!isHomeChip ? (
-        <button
-          type="button"
-          className="browser-panel-tabchip-close"
-          title={isWebTab ? '关闭标签页' : '关闭视图'}
-          aria-label={`关闭 ${label}`}
-          onClick={(e) => {
-            e.stopPropagation()
-            if (isWebTab) onCloseWebTab(tab.engineIndex)
-            else onClose(tab.kind)
-          }}
-        >
-          <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden>
-            <path d="M18 6 6 18" />
-            <path d="m6 6 12 12" />
-          </svg>
-        </button>
-      ) : null}
-    </div>
-  )
-}
-
-const SurfaceTabChip = memo(SurfaceTabChipInner)
-
 let lastRegionLogAt = 0
 let lastRegionKey = ''
 let lastCoordsConsoleAt = 0
 let lastCoordsPhase = ''
+
+/** 主窗标题拖拽区底边。子 HWND 的 y 绝不能小于它，否则双击还原被原生窗吞掉。 */
+function chromeFloorY(): number {
+  try {
+    const nodes = document.querySelectorAll<HTMLElement>('[data-tauri-drag-region]')
+    let floor = 0
+    nodes.forEach((el) => {
+      const b = el.getBoundingClientRect().bottom
+      if (b > floor) floor = b
+    })
+    if (floor >= 24) return Math.ceil(floor)
+  } catch {
+    /* ignore */
+  }
+  return 48
+}
 
 function readEmbedBounds(el: HTMLElement | null, opts?: { forceRegionLog?: boolean }) {
   if (!el) return null
@@ -629,11 +530,23 @@ function readEmbedBounds(el: HTMLElement | null, opts?: { forceRegionLog?: boole
   // 不要再乘 devicePixelRatio。实测 dpr=1.75 时 CSS 槽位已是 (894,97 532x706)，
   // 乘完变成 (1565,169 932x1236)，主客户区只有约 1440x810，窗口被推到主窗口外面。
   const dpr = window.devicePixelRatio || 1
+  // 右栏外壳有 1px 左边线，拖拽条还用负边距压进面板约 3px。
+  // 原生 HWND 在所有 HTML 之上，贴齐槽位左缘就会盖住这条分隔线。
+  // 左侧让出 4px，窗口才和「框定区域」重合，分隔线留在外面。
+  const insetLeft = 4
+  const floor = chromeFloorY()
+  let y = Math.round(rect.top)
+  let height = Math.round(rect.height)
+  // 顶栏地板：最大化后槽位若顶到标题条，把 y 压下来并缩短高度，保住双击还原。
+  if (y < floor) {
+    height = Math.max(80, height - (floor - y))
+    y = floor
+  }
   const bounds = {
-    x: Math.round(rect.left),
-    y: Math.round(rect.top),
-    width: Math.round(rect.width),
-    height: Math.round(rect.height),
+    x: Math.round(rect.left) + insetLeft,
+    y,
+    width: Math.max(120, Math.round(rect.width) - insetLeft),
+    height,
     // Rust 用主窗口客户区像素 / 这个视口，把 CSS 槽位换成 SetWindowPos 坐标。
     viewportWidth: Math.round(window.innerWidth || rect.width),
     viewportHeight: Math.round(window.innerHeight || rect.height),
@@ -707,12 +620,12 @@ function BrowserEmbedHost({
   const stageIdRef = useRef(stageId)
   stageIdRef.current = stageId
 
-  const syncBounds = useCallback(async () => {
+  const syncBounds = useCallback(async (force = false) => {
     if (!surfaceActiveRef.current || !isOpen) return
     const bounds = readEmbedBounds(slotRef.current)
     if (!bounds) return
     const started = performance.now()
-    reportEmbedSlot(stageIdRef.current, bounds, { url: pageUrlRef.current })
+    reportEmbedSlot(stageIdRef.current, bounds, { url: pageUrlRef.current, force })
     const elapsed = Math.round(performance.now() - started)
     if (elapsed >= 200) {
       console.warn(
@@ -720,7 +633,7 @@ function BrowserEmbedHost({
       )
     }
   }, [isOpen])
-  syncBoundsRef.current = syncBounds
+  syncBoundsRef.current = () => syncBounds(true)
 
   useLayoutEffect(() => {
     let cancelled = false
@@ -778,6 +691,11 @@ function BrowserEmbedHost({
     }
 
     const mount = async () => {
+      // 后台标签也 force-mount，但绝不能抢 HWND（否则新标签 blank 会被旧标签 URL 顶掉）。
+      if (!surfaceActiveRef.current) {
+        dbgLog(`[browser-embed] effect skip mount (inactive) tid=${tid} stage=${stageIdRef.current}`)
+        return
+      }
       const supported = await browserEmbedSupported()
       const pageUrlNow = pageUrlRef.current
       dbgLog(`[browser-embed] supported=${supported} tid=${tid} pageUrl=${pageUrlNow || '(none)'}`)
@@ -795,7 +713,9 @@ function BrowserEmbedHost({
           // Cleared latch below in cleanup; abort before creating a HWND.
           return
         }
+        if (!surfaceActiveRef.current) return
       }
+      if (!surfaceActiveRef.current) return
       const bounds = await waitForEmbedBounds(slotRef.current)
       if (!bounds) {
         dbgWarn(`[browser-embed] slot has no layout box yet thread=${tid}`)
@@ -841,7 +761,8 @@ function BrowserEmbedHost({
         dbgLog(`[browser-embed] effect cleanup cleared mount latch tid=${tid}`)
       }
     }
-  }, [isOpen, threadId])
+    // surfaceActive：后台 force-mount 时跳过抢 HWND；切到前台后再真正 upsert。
+  }, [isOpen, threadId, surfaceActive])
 
   // Once the webview exists, agent navigations only need to re-point the existing
   // window — `browser_embed_upsert` detects the live label and navigates in place.
@@ -854,6 +775,12 @@ function BrowserEmbedHost({
     const next = String(pageUrl || '').trim()
     if (!tid || !next || next === lastNavigatedRef.current) return
     if (!surfaceActiveRef.current) return
+    // chrome-error:// 是导航失败后的内部页，再 navigate 只会死循环刷错页。
+    if (!isNavigableBrowserUrl(next)) {
+      dbgWarn(`[browser-embed] navigate skipped internal/error url=${next}`)
+      lastNavigatedRef.current = next
+      return
+    }
     // Re-measure before re-pointing the window. Falling back to a hardcoded
     // origin here used to fling the embedded browser into the top-left corner
     // of the screen whenever the slot had not been laid out yet.
@@ -878,7 +805,16 @@ function BrowserEmbedHost({
 
   useEffect(() => {
     if (!ready || !isOpen || !surfaceActive) return
+    // 切签后槽位可能刚从 hidden 恢复，连贴几次避免和 ensure 竞态丢显影。
     void syncBounds()
+    const t1 = window.setTimeout(() => void syncBoundsRef.current(), 50)
+    const t2 = window.setTimeout(() => void syncBoundsRef.current(), 200)
+    const t3 = window.setTimeout(() => void syncBoundsRef.current(), 500)
+    return () => {
+      window.clearTimeout(t1)
+      window.clearTimeout(t2)
+      window.clearTimeout(t3)
+    }
   }, [surfaceActive, ready, isOpen, syncBounds])
 
   // 显隐不在这里做。browser-embed-surface 看到激活页离开浏览器 id 就会隐藏。
@@ -890,6 +826,8 @@ function BrowserEmbedHost({
       if (!surfaceActiveRef.current) return
       dbgLog(`[browser-embed] gate show id=${detail.id || '(none)'} → sync bounds`)
       void syncBoundsRef.current()
+      window.setTimeout(() => void syncBoundsRef.current(), 80)
+      window.setTimeout(() => void syncBoundsRef.current(), 250)
     }
     window.addEventListener('browser-embed-gate', onGate)
     return () => window.removeEventListener('browser-embed-gate', onGate)
@@ -897,14 +835,14 @@ function BrowserEmbedHost({
 
   useEffect(() => {
     if (!isOpen || !ready || !surfaceActive) return
-    // 拖动/缩放时 resize 与 ResizeObserver 会一帧多次。每次都打到 Rust
-    // SetWindowPos，IPC 堆在 UI 线程上，整窗拖不动。
+    // 拖动/缩放/最大化：节流贴位；force 绕过相同槽位去重，避免最大化后旧 bounds
+    // 仍盖住标题条导致双击还原失效。
     let timer = 0
     const schedule = () => {
       window.clearTimeout(timer)
       timer = window.setTimeout(() => {
-        void syncBounds()
-      }, 80)
+        void syncBounds(true)
+      }, 120)
     }
     window.addEventListener('resize', schedule)
     const ro =
@@ -914,8 +852,12 @@ function BrowserEmbedHost({
           })
         : null
     if (slotRef.current) ro?.observe(slotRef.current)
+    // 最大化切换后布局晚一拍，连贴两次确保顶栏地板生效。
+    schedule()
+    const t2 = window.setTimeout(schedule, 280)
     return () => {
       window.clearTimeout(timer)
+      window.clearTimeout(t2)
       window.removeEventListener('resize', schedule)
       ro?.disconnect()
     }
@@ -1285,13 +1227,20 @@ export const BrowserPanel = memo(function BrowserPanel({
   stageId = 'primary',
 }: BrowserPanelProps) {
   const runtime = useSyncExternalStore(subscribeBrowserRuntime, getBrowserRuntimeSnapshot)
-  // Props win when a parent provides them; runtime store feeds the standalone right-stage mount.
-  const effectivePageUrl = String(pageUrl || runtime.pageUrl || '').trim() || undefined
+  // 多标签：每个 BrowserPanel 只展示本标签的 pageUrl（props）。
+  // 前台标签在导航瞬间用 runtime 跟 HWND 对齐；后台标签绝不能读 runtime，否则会串成同一网址。
+  const tabPageUrl = String(pageUrl || '').trim()
+  const livePageUrl = String(runtime.pageUrl || '').trim()
+  const effectivePageUrl = (
+    surfaceActive
+      ? livePageUrl || tabPageUrl
+      : tabPageUrl || ''
+  ).trim() || undefined
   const effectiveThreadId = String(streamThreadId || runtime.streamThreadId || '').trim()
   const effectiveMode = browserMode || runtime.browserMode
   const effectiveShared = sharedBrowser || runtime.sharedBrowser
   const operating = runtime.operating
-  const [zoom, setZoom] = useState<ZoomOption>('fit')
+  const [zoom, setZoom] = useState<ZoomOption>(() => readStoredEmbedZoom())
   const [streamStatus, setStreamStatus] = useState<BrowserStreamStatus>('idle')
   const [refreshNonce, setRefreshNonce] = useState(0)
   const [refreshBusy, setRefreshBusy] = useState(false)
@@ -1363,21 +1312,44 @@ export const BrowserPanel = memo(function BrowserPanel({
       setIframeNonce((n) => n + 1)
       return
     }
-    if (refreshBusy || !streamPath) return
-    dbgLog(`[browser-panel] refresh thread=${effectiveThreadId}`)
-    setRefreshBusy(true)
-    setStreamStatus((prev) => (prev === 'live' ? 'reconnecting' : prev))
+    if (refreshBusy) return
     const tid = effectiveThreadId
-    if (tid) {
-      try {
-        await restartBrowserStream(tid)
-      } catch (err) {
-        dbgWarn(`[browser-panel] refresh restart failed ${String(err)}`)
+    dbgLog(`[browser-panel] refresh thread=${tid || '(none)'} embed=${preferEmbeddedBrowser}`)
+    setRefreshBusy(true)
+    try {
+      if (preferEmbeddedBrowser && tid) {
+        // Embed path: reload the live WebView2 page (not the old screencast).
+        const result = await sendBrowserCommand(tid, 'reload')
+        if (result) {
+          applyBrowserCommandResponse({
+            threadId: result.threadId || tid,
+            pageUrl: result.pageUrl,
+            pageTitle: result.pageTitle,
+            streamWs: result.streamWs,
+            canGoBack: result.canGoBack,
+            canGoForward: result.canGoForward,
+          })
+        }
+      } else if (streamPath && tid) {
+        setStreamStatus((prev) => (prev === 'live' ? 'reconnecting' : prev))
+        try {
+          await restartBrowserStream(tid)
+        } catch (err) {
+          dbgWarn(`[browser-panel] refresh restart failed ${String(err)}`)
+        }
       }
+      setRefreshNonce((n) => n + 1)
+    } finally {
+      setRefreshBusy(false)
     }
-    setRefreshNonce((n) => n + 1)
-    setRefreshBusy(false)
-  }, [refreshBusy, streamPath, effectiveThreadId, iframeFallback, embedSupported])
+  }, [
+    refreshBusy,
+    streamPath,
+    effectiveThreadId,
+    iframeFallback,
+    embedSupported,
+    preferEmbeddedBrowser,
+  ])
 
   // Frame metadata keeps the click overlay mapped to current viewport CSS px.
   const handleFrameMeta = useCallback(
@@ -1443,6 +1415,7 @@ export const BrowserPanel = memo(function BrowserPanel({
           pageUrl: normalized,
           pageTitle: '',
           streamWs: '',
+          pushHistory: true,
         })
         return
       }
@@ -1450,14 +1423,31 @@ export const BrowserPanel = memo(function BrowserPanel({
       setNavBusy(true)
       setNavError('')
       try {
-        // 嵌入路径：只更新 runtime URL，由 BrowserEmbedHost 按 slot 真实边界 upsert，
-        // 禁止写死 0,0,1280×720（会把原生窗口甩到屏幕左上角）。
+        // 先压逻辑栈并 seed URL，再让引擎/ HWND 导航。
         applyBrowserCommandResponse({
           threadId: tid,
           pageUrl: normalized,
           pageTitle: '',
           streamWs: '',
+          pushHistory: true,
         })
+        const result = await sendBrowserCommand(tid, 'navigate', normalized)
+        if (result) {
+          const settled = sanitizeBrowserPageUrl(result.pageUrl, normalized) || normalized
+          if (isBrowserInternalErrorUrl(result.pageUrl)) {
+            setNavError('页面加载失败，请检查网址或网络后重试')
+          } else if (settled !== normalized) {
+            // 重定向：用最终 URL 更新栈顶（再 push 一次会去重同 URL）。
+            pushBrowserTabHistory(settled, result.pageTitle || '')
+          }
+          applyBrowserCommandResponse({
+            threadId: result.threadId || tid,
+            pageUrl: settled,
+            pageTitle: result.pageTitle,
+            streamWs: result.streamWs,
+          })
+        }
+        setRefreshNonce((n) => n + 1)
       } finally {
         setNavBusy(false)
       }
@@ -1469,45 +1459,46 @@ export const BrowserPanel = memo(function BrowserPanel({
       iframeRef.current?.contentWindow?.history.back()
       return
     }
-    const tid = effectiveThreadId
-    if (!tid || navBusy) return
+    if (navBusy) return
+    const target = stepBrowserTabHistory(-1)
+    if (!target) return
     setNavBusy(true)
+    setNavError('')
     try {
-      const result = await sendBrowserCommand(tid, 'back')
-      if (result) {
-        applyBrowserCommandResponse({
-          threadId: result.threadId || tid,
-          pageUrl: result.pageUrl,
-          pageTitle: result.pageTitle,
-          streamWs: result.streamWs,
-        })
-      }
+      // 单 HWND：用 replace 跳到逻辑栈目标，不碰 window.history.back()。
+      await ensureNativeEmbed({
+        url: target,
+        stageId,
+        reason: 'history-back',
+        replace: true,
+      })
+      setRefreshNonce((n) => n + 1)
     } finally {
       setNavBusy(false)
     }
-  }, [effectiveThreadId, navBusy, iframeFallback, embedSupported])
+  }, [navBusy, iframeFallback, embedSupported, stageId])
   const handleForward = useCallback(async () => {
     if (iframeFallback || !embedSupported) {
       iframeRef.current?.contentWindow?.history.forward()
       return
     }
-    const tid = effectiveThreadId
-    if (!tid || navBusy) return
+    if (navBusy) return
+    const target = stepBrowserTabHistory(1)
+    if (!target) return
     setNavBusy(true)
+    setNavError('')
     try {
-      const result = await sendBrowserCommand(tid, 'forward')
-      if (result) {
-        applyBrowserCommandResponse({
-          threadId: result.threadId || tid,
-          pageUrl: result.pageUrl,
-          pageTitle: result.pageTitle,
-          streamWs: result.streamWs,
-        })
-      }
+      await ensureNativeEmbed({
+        url: target,
+        stageId,
+        reason: 'history-forward',
+        replace: true,
+      })
+      setRefreshNonce((n) => n + 1)
     } finally {
       setNavBusy(false)
     }
-  }, [effectiveThreadId, navBusy, iframeFallback, embedSupported])
+  }, [navBusy, iframeFallback, embedSupported, stageId])
 
   // 引擎标签页轮询：面板打开时拉取（含 agent 工具引起的页面变化），3s 节流。
   //
@@ -1570,98 +1561,6 @@ export const BrowserPanel = memo(function BrowserPanel({
   const handleStreamError = useCallback((message: string) => {
     setStreamError(String(message || '').trim())
   }, [])
-
-  const handleSelectTab = useCallback(
-    async (index: number) => {
-      const tid = effectiveThreadId
-      if (!tid) return
-      if (await selectBrowserTab(tid, index)) {
-        applyBrowserCommandResponse({ threadId: tid })
-        setRefreshNonce((n) => n + 1)
-      }
-    },
-    [effectiveThreadId],
-  )
-  const handleNewTab = useCallback(async () => {
-    const tid = effectiveThreadId
-    if (!tid) return
-    const result = await newBrowserTab(tid)
-    if (result) {
-      applyBrowserCommandResponse({
-        threadId: result.threadId || tid,
-        pageUrl: result.pageUrl,
-        pageTitle: result.pageTitle,
-        streamWs: result.streamWs,
-      })
-      setRefreshNonce((n) => n + 1)
-    }
-  }, [effectiveThreadId])
-  const handleCloseTab = useCallback(
-    async (index: number) => {
-      const tid = effectiveThreadId
-      if (!tid) return
-      if (await closeBrowserTab(tid, index)) setRefreshNonce((n) => n + 1)
-    },
-    [effectiveThreadId],
-  )
-
-  // Tab bar: search overlay + drag-to-reorder. `tabDisplayOrder` maps display
-  // position -> engine tab index, so a reorder survives new tabs being appended.
-  const [tabSearchOpen, setTabSearchOpen] = useState(false)
-  const [tabDisplayOrder, setTabDisplayOrder] = useState<number[]>([])
-  const dragTabRef = useRef<number | null>(null)
-  useEffect(() => {
-    // Reset the order when the engine tab count changes; a stale order would
-    // point at tabs that no longer exist.
-    setTabDisplayOrder((prev) => (prev.length === runtime.tabs.length ? prev : []))
-  }, [runtime.tabs.length])
-  const handleTabDragStart = useCallback((engineIndex: number) => {
-    dragTabRef.current = engineIndex
-  }, [])
-  const handleTabDragOver = useCallback(
-    (targetEngineIndex: number) => {
-      const from = dragTabRef.current
-      if (from == null || from === targetEngineIndex) return
-      setTabDisplayOrder((prev) => {
-        const base =
-          prev.length === runtime.tabs.length && prev.every((i) => i >= 0 && i < runtime.tabs.length)
-            ? [...prev]
-            : Array.from({ length: runtime.tabs.length }, (_, i) => i)
-        const fromPos = base.indexOf(from)
-        const toPos = base.indexOf(targetEngineIndex)
-        if (fromPos < 0 || toPos < 0) return prev
-        base.splice(fromPos, 1)
-        base.splice(toPos, 0, from)
-        return base
-      })
-    },
-    [runtime.tabs],
-  )
-  const handleTabDrop = useCallback(() => {
-    dragTabRef.current = null
-  }, [])
-
-  const tabTitle = useMemo(() => {
-    const raw = String(pageUrl || '').trim()
-    if (!raw) return '浏览器'
-    try {
-      return new URL(raw).hostname || '浏览器'
-    } catch {
-      return raw.slice(0, 40) || '浏览器'
-    }
-  }, [pageUrl])
-
-  const tabsForRender = useMemo(() => {
-    const n = runtime.tabs.length
-    if (n <= 0) {
-      return [{ engineIndex: -1, tab: { url: pageUrl || '', title: tabTitle } }]
-    }
-    const order =
-      tabDisplayOrder.length === n && tabDisplayOrder.every((i) => i >= 0 && i < n)
-        ? tabDisplayOrder
-        : Array.from({ length: n }, (_, i) => i)
-    return order.map((engineIndex) => ({ engineIndex, tab: runtime.tabs[engineIndex] }))
-  }, [runtime.tabs, tabDisplayOrder, pageUrl, tabTitle])
 
   // Stable identities for BrowserEmbedHost. Inline arrows here would be new
   // references on every parent render, and since `mount()` is keyed on
@@ -1737,7 +1636,57 @@ export const BrowserPanel = memo(function BrowserPanel({
       ? '已连接你本机的 Chrome，请直接在那个窗口操作（与 Agent 共用同一浏览器）。'
       : 'Chrome 已在桌面打开，请直接在那个窗口操作（与 Agent 共用同一浏览器）。'
   const showStreamPreviewLabel = showSharedBrowserHint && hasStream
-  const zoomVisible = hasStream && !useEmbeddedBrowser
+  const zoomVisible = preferEmbeddedBrowser || (hasStream && !useEmbeddedBrowser)
+
+  const panelRootRef = useRef<HTMLDivElement | null>(null)
+
+  const handleZoomChange = useCallback((next: ZoomOption) => {
+    setZoom(next)
+    try {
+      localStorage.setItem(EMBED_ZOOM_STORAGE_KEY, next)
+    } catch {
+      /* ignore */
+    }
+  }, [])
+
+  // 把工具栏缩放落到 WebView2 ZoomFactor（CSS zoom 管不到原生 HWND）。
+  // 「适应窗口」跟槽位尺寸走：侧栏窄 → 更小；窗口放大 → 更大。
+  useEffect(() => {
+    if (!preferEmbeddedBrowser || !embedReady || !surfaceActive) return
+    const tid = String(embedThreadId || effectiveThreadId || '').trim()
+    if (!tid) return
+
+    const apply = () => {
+      const slot =
+        panelRootRef.current?.querySelector('.browser-panel-embed-slot') ||
+        panelRootRef.current?.querySelector('.browser-panel-body')
+      const rect = slot instanceof HTMLElement ? slot.getBoundingClientRect() : null
+      const factor = embedZoomFactor(zoom, rect?.width || 0, rect?.height || 0)
+      void browserEmbedSetZoom(tid, factor).then((ok) => {
+        if (!ok) dbgWarn(`[browser-panel] setZoom failed factor=${factor} zoom=${zoom}`)
+      })
+    }
+
+    apply()
+    if (zoom !== 'fit') return
+
+    let timer = 0
+    const schedule = () => {
+      window.clearTimeout(timer)
+      timer = window.setTimeout(apply, 120)
+    }
+    window.addEventListener('resize', schedule)
+    const ro =
+      typeof ResizeObserver !== 'undefined' && panelRootRef.current
+        ? new ResizeObserver(schedule)
+        : null
+    if (panelRootRef.current) ro?.observe(panelRootRef.current)
+    return () => {
+      window.clearTimeout(timer)
+      window.removeEventListener('resize', schedule)
+      ro?.disconnect()
+    }
+  }, [preferEmbeddedBrowser, embedReady, surfaceActive, embedThreadId, effectiveThreadId, zoom])
 
   // 内嵌 WebView2 可用时不要再铺一层 iframe。iframe 只显示打开时的地址
   // （例如百度首页），CDP 仍驱动槽外的原生窗口去搜索，两扇窗各看各的。
@@ -1745,81 +1694,44 @@ export const BrowserPanel = memo(function BrowserPanel({
     if (preferEmbeddedBrowser && iframeFallback) setIframeFallback(false)
   }, [preferEmbeddedBrowser, iframeFallback])
 
-  const engineTabs = useMemo(() => {
-    if (!hasStream) return [] as SurfaceTabRender[]
-    return tabsForRender.map(({ engineIndex, tab }) => ({
-      key: `ws-tab-${engineIndex}`,
-      kind: 'browser' as const,
-      engineIndex,
-      title: tab.title || tab.url || '新标签页',
-      url: tab.url || '',
-      active: engineIndex < 0 ? false : Boolean(runtime.tabs[engineIndex]?.active),
-    }))
-  }, [tabsForRender, runtime.tabs, hasStream])
-
   return (
     <div
+      ref={panelRootRef}
       className={`react-chat-collab-exec-panel react-chat-browser-panel react-chat-browser-panel-content is-browser-surface${
         operating ? ' is-agent-operating' : ''
       }`}
       role="region"
       aria-label="Browser"
     >
-      {engineTabs.length > 0 ? (
-        <div className="browser-panel-subtabs" role="tablist" aria-label="浏览器标签页">
-          <button
-            type="button"
-            className={`browser-panel-tb-btn${tabSearchOpen ? ' is-pressed' : ''}`}
-            data-tauri-no-drag
-            title="搜索标签页"
-            aria-label="搜索标签页"
-            aria-haspopup="menu"
-            aria-expanded={tabSearchOpen}
-            onClick={() => setTabSearchOpen((v) => !v)}
-          >
-            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="m7 6 5 5 5-5" /><path d="m7 13 5 5 5-5" /></svg>
-          </button>
-
-          {engineTabs.map((engineTab) => (
-            <SurfaceTabChip
-              key={engineTab.key}
-              tab={engineTab}
-              onSelect={() => {}}
-              onClose={() => {}}
-              onCloseWebTab={(engineIndex) => void handleCloseTab(engineIndex)}
-              onSelectWebTab={(engineIndex) => void handleSelectTab(engineIndex)}
-              onDragStartChip={handleTabDragStart}
-              onDragOverChip={handleTabDragOver}
-              onDropChip={handleTabDrop}
-            />
-          ))}
-
-          <button
-            type="button"
-            className="browser-panel-tb-btn"
-            title="新建浏览器标签页"
-            aria-label="新建浏览器标签页"
-            onClick={() => void handleNewTab()}
-          >
-            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden><path d="M5 12h14" /><path d="M12 5v14" /></svg>
-          </button>
-        </div>
-      ) : null}
-
       <BrowserChromeBar
         pageUrl={effectivePageUrl || iframeSrc || undefined}
         refreshBusy={refreshBusy}
-        canRefresh={hasStream || iframeFallback || Boolean(iframeSrc || effectivePageUrl)}
+        canRefresh={
+          preferEmbeddedBrowser ||
+          hasStream ||
+          iframeFallback ||
+          Boolean(iframeSrc || effectivePageUrl)
+        }
         zoom={zoom}
         zoomVisible={zoomVisible || isResponsiveMode}
         viewportBusy={viewportBusy}
         viewport={viewport || DEFAULT_BROWSER_VIEWPORT}
         onViewportSizeChange={(size) => void applyViewport(size, 'custom')}
         onNavigate={(url) => void handleNavigate(url)}
-        onBack={iframeFallback || hasStream || Boolean(effectiveThreadId) ? () => void handleBack() : undefined}
-        onForward={iframeFallback || hasStream || Boolean(effectiveThreadId) ? () => void handleForward() : undefined}
+        onBack={
+          iframeFallback || hasStream || preferEmbeddedBrowser || Boolean(effectiveThreadId)
+            ? () => void handleBack()
+            : undefined
+        }
+        onForward={
+          iframeFallback || hasStream || preferEmbeddedBrowser || Boolean(effectiveThreadId)
+            ? () => void handleForward()
+            : undefined
+        }
+        canGoBack={runtime.canGoBack}
+        canGoForward={runtime.canGoForward}
         navBusy={navBusy}
-        onZoomChange={setZoom}
+        onZoomChange={handleZoomChange}
         onRefresh={() => void handleRefresh()}
         isResponsiveMode={isResponsiveMode}
         onToggleResponsiveMode={() => setIsResponsiveMode((v) => !v)}
@@ -1850,39 +1762,6 @@ export const BrowserPanel = memo(function BrowserPanel({
           </button>
         </div>
       ) : null}
-      {tabSearchOpen && engineTabs.length > 0 ? (
-        <>
-          <div className="browser-panel-menu-backdrop" onClick={() => setTabSearchOpen(false)} aria-hidden="true"></div>
-          <div className="browser-panel-menu browser-panel-tabsearch" role="menu" aria-label="标签页列表">
-            <div className="browser-panel-menu-title">打开的标签页</div>
-            {engineTabs.map((engineTab) => (
-              <button
-                key={engineTab.key}
-                type="button"
-                className={`browser-panel-menu-item${engineTab.active ? ' is-active' : ''}`}
-                onClick={() => {
-                  if (engineTab.engineIndex >= 0) void handleSelectTab(engineTab.engineIndex)
-                  setTabSearchOpen(false)
-                }}
-              >
-                <span className="browser-panel-menu-item-label">{engineTab.title}</span>
-                <span className="browser-panel-menu-item-hint">
-                  {engineTab.url
-                    ? (() => {
-                        try {
-                          return new URL(engineTab.url).hostname
-                        } catch {
-                          return ''
-                        }
-                      })()
-                    : ''}
-                </span>
-              </button>
-            ))}
-          </div>
-        </>
-      ) : null}
-
       <div className="react-chat-collab-exec-panel-body browser-panel-body browser-panel-body-live">
         {showSharedBrowserHint ? (
           <div className="browser-panel-shared-hint" role="status">

@@ -56,11 +56,13 @@ export async function browserEmbedUpsert(opts: {
   viewportHeight?: number
   /** 早处理器/引擎兜底的估算边界调用必须置 true：面板接管后估算值不得移动窗口。 */
   respectManagedBounds?: boolean
+  /** 切签：用 location.replace，避免多标签共用 HWND 时污染后退栈。 */
+  replaceUrl?: boolean
 }): Promise<BrowserEmbedInfo | null> {
   if (!isDesktopTauri()) return null
   blog(
     'info',
-    `[client] upsert tid=${opts.threadId} bounds=(${opts.x},${opts.y} ${opts.width}x${opts.height}) url=${opts.url || 'about:blank'}${opts.respectManagedBounds ? ' managed-only' : ''}`,
+    `[client] upsert tid=${opts.threadId} bounds=(${opts.x},${opts.y} ${opts.width}x${opts.height}) url=${opts.url || 'about:blank'}${opts.respectManagedBounds ? ' managed-only' : ''}${opts.replaceUrl ? ' replace' : ''}`,
   )
   try {
     const url = String(opts.url || '').trim()
@@ -76,6 +78,7 @@ export async function browserEmbedUpsert(opts: {
       viewportWidth: opts.viewportWidth ?? null,
       viewportHeight: opts.viewportHeight ?? null,
       managedOnly: opts.respectManagedBounds === true ? true : null,
+      replaceUrl: opts.replaceUrl === true ? true : null,
     })
   } catch (err) {
     console.warn('[browser-embed] upsert failed', err)
@@ -96,10 +99,7 @@ export async function browserEmbedSetBounds(opts: {
   present?: boolean
 }): Promise<boolean> {
   if (!isDesktopTauri()) return false
-  blog(
-    'info',
-    `[client] set-bounds tid=${opts.threadId} present=${opts.present === true} bounds=(${opts.x},${opts.y} ${opts.width}x${opts.height})`,
-  )
+  // 贴位很密，默认不打 info，避免拖动时日志拖慢 IPC。
   try {
     return await invokeTauri<boolean>('browser_embed_set_bounds', {
       threadId: opts.threadId,
@@ -113,6 +113,28 @@ export async function browserEmbedSetBounds(opts: {
     })
   } catch (err) {
     console.warn('[browser-embed] setBounds failed', err)
+    return false
+  }
+}
+
+/** 内嵌页 ZoomFactor（0.5–2.5）。与页面内 Ctrl+滚轮同一套缩放。 */
+export async function browserEmbedSetZoom(threadId: string, factor: number): Promise<boolean> {
+  const tid = String(threadId || '').trim()
+  if (!isDesktopTauri() || !tid) return false
+  const scale = Math.min(2.5, Math.max(0.5, Number(factor) || 1))
+  try {
+    const ok = await invokeTauri<boolean>('browser_embed_set_zoom', {
+      threadId: tid,
+      factor: scale,
+    })
+    if (!ok) {
+      console.warn('[browser-embed] setZoom returned false', { tid, scale })
+      blog('warn', `[client] setZoom missed tid=${tid} factor=${scale}`)
+    }
+    return ok
+  } catch (err) {
+    console.warn('[browser-embed] setZoom failed', err)
+    blog('warn', `[client] setZoom failed tid=${tid} err=${err}`)
     return false
   }
 }

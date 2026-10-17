@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { normalizeRightStageKind } from '../../lib/right-stage/right-stage-types.js'
 
 /** kind → 16px 线性图标（lucide 风格，stroke 用 currentColor）。 */
@@ -80,8 +80,28 @@ const KIND_TAB_ICONS: Record<string, ReactNode> = {
   ),
 }
 
-export function KindTabIcon({ kind }: { kind: string }) {
+export function KindTabIcon({ kind, faviconUrl }: { kind: string; faviconUrl?: string | null }) {
   const k = normalizeRightStageKind(kind)
+  const src = String(faviconUrl || '').trim()
+  const [failed, setFailed] = useState(false)
+  useEffect(() => {
+    setFailed(false)
+  }, [src])
+  if (k === 'browser' && src && !failed) {
+    return (
+      <span className="react-chat-stage-tab-icon" aria-hidden="true">
+        <img
+          key={src}
+          src={src}
+          alt=""
+          className="react-chat-stage-tab-favicon"
+          draggable={false}
+          referrerPolicy="no-referrer"
+          onError={() => setFailed(true)}
+        />
+      </span>
+    )
+  }
   return (
     <span className="react-chat-stage-tab-icon" aria-hidden="true">
       <svg

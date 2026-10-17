@@ -53,20 +53,64 @@ pub(crate) fn log_line(s: &str) {
     eprintln!("{s}");
     // 统一浏览器调试日志：Rust（窗口生命周期/CDP）、Python 引擎、前端面板
     // 三端全部追加到同一个文件，排两窗口/贴合/导航问题时只看这一处。
-    if let Some(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(evoflow_dir().join("插件控制日志.log"))
-        .ok()
-    {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default();
-        let secs = now.as_secs();
-        let millis = now.subsec_millis();
-        let _ = writeln!(f, "ts:{secs}.{millis:03} [rust] {s}");
-        let _ = f.flush();
+    //
+    // 写入走专用线程：log_line 会被 CDP 事件回调在主线程（= UI 线程）上高频调用，
+    // 之前每条日志 open+append+flush 三次系统调用，忙页面下直接把 UI 线程打满。
+    // 这里只做 channel send（一次内存拷贝），落盘由 browser-log 线程批量完成。
+    use std::sync::OnceLock;
+    static LOG_TX: OnceLock<std::sync::mpsc::Sender<String>> = OnceLock::new();
+    let tx = LOG_TX.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        let spawned = std::thread::Builder::new()
+            .name("browser-log".into())
+            .spawn(move || {
+                let mut file = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(evoflow_dir().join("插件控制日志.log"))
+                    .ok();
+                loop {
+                    let Ok(first) = rx.recv() else { break };
+                    if let Some(f) = file.as_mut() {
+                        write_log_line(f, &first);
+                        // 把队列里已有的行一次写完再 flush：突发风暴合并成一次落盘。
+                        while let Ok(line) = rx.try_recv() {
+                            write_log_line(f, &line);
+                        }
+                        let _ = f.flush();
+                    }
+                }
+            });
+        if spawned.is_err() {
+            eprintln!("[browser-log] writer thread spawn failed — falling back to sync writes");
+        }
+        tx
+    });
+    if tx.send(s.to_string()).is_err() {
+        // 写线程已死（理论不可达）：退回同步写，日志不能静默丢失。
+        if let Some(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(evoflow_dir().join("插件控制日志.log"))
+            .ok()
+        {
+            write_log_line(&mut f, s);
+            let _ = f.flush();
+        }
     }
+}
+
+fn write_log_line(f: &mut std::fs::File, s: &str) {
+    use std::io::Write as _;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let _ = writeln!(
+        f,
+        "ts:{}.{:03} [rust] {s}",
+        now.as_secs(),
+        now.subsec_millis()
+    );
 }
 
 /// Write a transport marker so Python knows which backend is active.

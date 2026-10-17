@@ -649,10 +649,26 @@ _INTERACTIVE_AT_POINT_JS = r"""
 """
 
 _PAGE_STATE_JS = (
-    "({url: location.href, title: document.title || '', "
-    "sx: window.scrollX || 0, sy: window.scrollY || 0, "
-    "vw: window.innerWidth || 0, vh: window.innerHeight || 0, "
-    "hl: history.length || 0})"
+    "(() => {"
+    "  const nav = window.navigation;"
+    "  let canBack = null;"
+    "  let canForward = null;"
+    "  try {"
+    "    if (nav && typeof nav.canGoBack === 'boolean') canBack = nav.canGoBack;"
+    "    if (nav && typeof nav.canGoForward === 'boolean') canForward = nav.canGoForward;"
+    "  } catch (e) {}"
+    "  return {"
+    "    url: location.href,"
+    "    title: document.title || '',"
+    "    sx: window.scrollX || 0,"
+    "    sy: window.scrollY || 0,"
+    "    vw: window.innerWidth || 0,"
+    "    vh: window.innerHeight || 0,"
+    "    hl: history.length || 0,"
+    "    canBack,"
+    "    canForward"
+    "  };"
+    "})()"
 )
 
 
@@ -691,6 +707,7 @@ class _Session:
         self.next_ref_index = 0
         self.last_dialog: dict[str, Any] | None = None
         self.last_url = ""
+        self.last_title = ""
         self.last_used = time.time()
 
 
@@ -911,7 +928,12 @@ class BrowserEngine:
             return None
 
     async def _page_state(self, session: _Session, tid: str) -> PageState:
-        """Read the page state in one Runtime.evaluate round trip."""
+        """Read page URL/title via Runtime.evaluate (native WebView2 fast-path).
+
+        Do **not** call Page.getNavigationHistory here: on the embed CDP bridge
+        that method goes through CallDevToolsProtocolMethod and can hang, which
+        made toolbar back/forward look broken.
+        """
         try:
             raw = await _dispatch_run(
                 tid,
@@ -921,11 +943,44 @@ class BrowserEngine:
             info = raw.get("result", {}).get("value", {}) if isinstance(raw, dict) else {}
         except Exception:
             info = {}
+        # Prefer Navigation API (Chromium). Fallback: history.length>1 ⇒ can go back;
+        # forward stack is invisible via length — leave False until back() sets True.
+        if "canBack" in info and info.get("canBack") is not None:
+            can_go_back = bool(info.get("canBack"))
+        else:
+            can_go_back = bool(info.get("hl", 0) > 1)
+        if "canForward" in info and info.get("canForward") is not None:
+            can_go_forward = bool(info.get("canForward"))
+        else:
+            can_go_forward = False
+        raw_url = str(info.get("url") or "")
+        # chrome-error://chromewebdata 是导航失败后的内部页；写进 last_url /
+        # PageState 会让面板反复 upsert 错误页，看起来像「页面一直在报错」。
+        def _is_internal_error_url(u: str) -> bool:
+            low = (u or "").strip().lower()
+            return (
+                low.startswith("chrome-error:")
+                or low.startswith("chrome://")
+                or low.startswith("edge://")
+                or low.startswith("devtools://")
+                or "chromewebdata" in low
+            )
+
+        if raw_url and not _is_internal_error_url(raw_url):
+            session.last_url = raw_url
+            url = raw_url
+        else:
+            url = session.last_url or ""
+        title = str(info.get("title", ""))
+        if title and not _is_internal_error_url(raw_url):
+            session.last_title = title
+        elif not title:
+            title = session.last_title or ""
         return PageState(
-            url=str(info.get("url") or session.last_url or ""),
-            title=str(info.get("title", "")),
-            canGoBack=bool(info.get("hl", 0) > 1),
-            canGoForward=False,
+            url=url,
+            title=title if not _is_internal_error_url(raw_url) else (session.last_title or title),
+            canGoBack=can_go_back,
+            canGoForward=can_go_forward,
             scrollX=float(info.get("sx") or 0),
             scrollY=float(info.get("sy") or 0),
             viewportWidth=float(info.get("vw") or 0) or None,
@@ -1070,17 +1125,18 @@ class BrowserEngine:
 
     async def _wv2_back(self, session: _Session, command: dict[str, Any]) -> CommandResult:
         tid = session.tid
-        # CDP has no Page.goBack — walk the session history explicitly.
-        history = await _dispatch_run(tid, "Page.getNavigationHistory", {})
-        index = int(history.get("index", 0)) if isinstance(history, dict) else 0
-        entries = history.get("entries") or [] if isinstance(history, dict) else []
-        if index <= 0 or index >= len(entries):
-            return CommandResult(ok=True, state=await self._page_state(session, tid))
+        # Embed bridge: use window.history via Runtime.evaluate (native fast-path).
+        # Page.getNavigationHistory / navigateToHistoryEntry hang or no-op on WebView2.
         await _dispatch_run(
-            tid, "Page.navigateToHistoryEntry", {"entryId": entries[index - 1]["id"]}
+            tid,
+            "Runtime.evaluate",
+            {"expression": "history.back(); true", "returnByValue": True},
         )
         ready = await self._wait_document_ready(tid, timeout_ms=8000)
         state = await self._page_state(session, tid)
+        # We just left a page, so forward must be available even though
+        # history.length cannot express the forward stack.
+        state = state.model_copy(update={"canGoForward": True})
         if not ready:
             return CommandResult(
                 ok=False,
@@ -1094,13 +1150,10 @@ class BrowserEngine:
 
     async def _wv2_forward(self, session: _Session, command: dict[str, Any]) -> CommandResult:
         tid = session.tid
-        history = await _dispatch_run(tid, "Page.getNavigationHistory", {})
-        index = int(history.get("index", 0)) if isinstance(history, dict) else 0
-        entries = history.get("entries") or [] if isinstance(history, dict) else []
-        if index + 1 >= len(entries) or index < 0:
-            return CommandResult(ok=True, state=await self._page_state(session, tid))
         await _dispatch_run(
-            tid, "Page.navigateToHistoryEntry", {"entryId": entries[index + 1]["id"]}
+            tid,
+            "Runtime.evaluate",
+            {"expression": "history.forward(); true", "returnByValue": True},
         )
         ready = await self._wait_document_ready(tid, timeout_ms=8000)
         state = await self._page_state(session, tid)
@@ -1116,7 +1169,12 @@ class BrowserEngine:
         return CommandResult(ok=True, state=state)
 
     async def _wv2_reload(self, session: _Session, command: dict[str, Any]) -> CommandResult:
-        await _dispatch_run(session.tid, "Page.reload", {})
+        # Same as back/forward: Page.reload via DevTools can hang; evaluate is native.
+        await _dispatch_run(
+            session.tid,
+            "Runtime.evaluate",
+            {"expression": "location.reload(); true", "returnByValue": True},
+        )
         ready = await self._wait_document_ready(session.tid, timeout_ms=8000)
         state = await self._page_state(session, session.tid)
         if not ready:

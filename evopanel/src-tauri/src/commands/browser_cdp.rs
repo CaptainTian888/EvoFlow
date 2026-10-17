@@ -157,18 +157,17 @@ fn install_same_window_popup_takeover(webview: &ICoreWebView2, label: &str) {
     }
 }
 
-/// Capture CoreWebView2 right after embed create. Must pump on the main thread.
+/// Capture CoreWebView2 right after embed create.
+/// Wait on the caller thread — never PeekMessage-pump on the UI thread.
 pub fn capture_core_webview2(app: &AppHandle, window: &WebviewWindow, label: &str) {
     let (tx, rx) = std::sync::mpsc::sync_channel::<bool>(1);
     let win = window.clone();
     let label_owned = label.to_string();
     if app
         .run_on_main_thread(move || {
-            let entered = Arc::new(AtomicBool::new(false));
-            let flag = entered.clone();
             let label_cb = label_owned.clone();
+            let tx_done = tx.clone();
             if let Err(e) = win.with_webview(move |platform| {
-                flag.store(true, Ordering::SeqCst);
                 match unsafe { platform.controller().CoreWebView2() } {
                     Ok(wv) => {
                         install_same_window_popup_takeover(&wv, &label_cb);
@@ -178,11 +177,13 @@ pub fn capture_core_webview2(app: &AppHandle, window: &WebviewWindow, label: &st
                         crate::commands::browser_cdp_server::log_line(&format!(
                             "[browser-cdp] captured CoreWebView2 label={label_cb}"
                         ));
+                        let _ = tx_done.send(true);
                     }
                     Err(e) => {
                         crate::commands::browser_cdp_server::log_line(&format!(
                             "[browser-cdp] CoreWebView2 capture failed label={label_cb}: {e}"
                         ));
+                        let _ = tx_done.send(false);
                     }
                 }
             }) {
@@ -190,18 +191,7 @@ pub fn capture_core_webview2(app: &AppHandle, window: &WebviewWindow, label: &st
                     "[browser-cdp] capture with_webview enqueue failed: {e}"
                 ));
                 let _ = tx.send(false);
-                return;
             }
-            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(1500);
-            while std::time::Instant::now() < deadline {
-                if entered.load(Ordering::SeqCst) {
-                    let _ = tx.send(true);
-                    return;
-                }
-                pump_win32_messages_once();
-                std::thread::sleep(std::time::Duration::from_millis(2));
-            }
-            let _ = tx.send(false);
         })
         .is_err()
     {
@@ -217,6 +207,18 @@ pub fn capture_core_webview2(app: &AppHandle, window: &WebviewWindow, label: &st
 
 /// label -> sink for unsolicited protocol events.
 type EventSink = Arc<dyn Fn(&str) + Send + Sync>;
+
+/// Per-event payload logging is off by default: it fires once per forwarded
+/// protocol event on the UI thread, and busy pages emit hundreds per second.
+/// Set `EVOFLOW_CDP_EVENT_LOG=1` to trace event traffic while debugging.
+fn cdp_event_log_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("EVOFLOW_CDP_EVENT_LOG")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+    })
+}
 
 /// Protocol events the panel forwards. WebView2 only delivers events for which a
 /// receiver has been created, so this list is the bridge's event surface: it
@@ -314,6 +316,12 @@ impl CdpBrokerState {
     }
 
     /// Forward one already-named protocol event to the attached client.
+    ///
+    /// Hot path: runs inside the WebView2 event callback on the UI thread.
+    /// `params_json` comes from `ParameterObjectAsJson` and is valid JSON, so
+    /// embed it verbatim — the previous parse→`json!`→`to_string` round-trip
+    /// allocated the full payload twice per event for large frames (DOM
+    /// snapshots, screencast).
     fn emit_event(&self, label: &str, method: &str, params_json: &str) {
         let sink = match self.sinks.lock() {
             Ok(map) => map.get(label).cloned(),
@@ -323,9 +331,8 @@ impl CdpBrokerState {
             crate::commands::browser_cdp_server::log_line(&format!("[browser-cdp] event {method} dropped: no sink for {label}"));
             return;
         };
-        let params: Value = serde_json::from_str(params_json).unwrap_or_else(|_| json!({}));
-        crate::commands::browser_cdp_server::log_line(&format!("[browser-cdp] event {method} -> sink"));
-        sink(&json!({ "method": method, "params": params }).to_string());
+        let method_json = serde_json::to_string(method).unwrap_or_else(|_| "\"\"".to_string());
+        sink(&format!("{{\"method\":{method_json},\"params\":{params_json}}}"));
     }
 }
 
@@ -435,92 +442,70 @@ fn call_cdp_on_main_thread(
     method: &str,
     params_json: &str,
 ) -> Result<String, String> {
+    // 只在主线程发起 COM 调用，然后立刻返回。等待放在调用线程。
+    // 以前在主线程里 PeekMessage 空转等回调，子 WebView 的鼠标/拖动消息被重入派发，
+    // 整窗消息循环死锁，表现为「点一下网页，客户端拖不动」。
     let (tx, rx) = std::sync::mpsc::channel::<Result<String, String>>();
     let window = window.clone();
     let method_owned = method.to_string();
     let params_owned = params_json.to_string();
+    let started = Arc::new(AtomicBool::new(false));
+    let started_flag = started.clone();
     app.run_on_main_thread(move || {
-        let cell: Arc<Mutex<Option<Result<String, String>>>> = Arc::new(Mutex::new(None));
-        let cell_inner = cell.clone();
-        let entered = Arc::new(AtomicBool::new(false));
-        let entered_flag = entered.clone();
-        let method_for_closure = method_owned.clone();
+        // with_webview 会吃掉 tx；enqueue 失败要用另一份 clone。
+        let tx_enqueue = tx.clone();
         if let Err(e) = window.with_webview(move |platform| {
-            entered_flag.store(true, Ordering::SeqCst);
+            started_flag.store(true, Ordering::SeqCst);
             let webview = match core_webview2(&platform.controller()) {
                 Ok(w) => w,
                 Err(e) => {
-                    crate::commands::browser_cdp_server::log_line(&format!("[browser-cdp] core_webview2 failed: {e}"));
-                    if let Ok(mut guard) = cell_inner.lock() {
-                        *guard = Some(Err(e));
-                    }
+                    let _ = tx.send(Err(e));
                     return;
                 }
             };
-            let cell_cb = cell_inner.clone();
-            let method_name_for_completed = method_for_closure.clone();
+            let tx_done = tx.clone();
+            let method_name = method_owned.clone();
             let completed: CompletedClosure<windows_core::HRESULT, PCWSTR> =
                 Box::new(move |error_code, raw_json| {
                     let outcome = match &error_code {
                         Ok(()) => Ok(raw_json),
-                        Err(err) => Err(format!("{method_name_for_completed} failed: {err}")),
+                        Err(err) => Err(format!("{method_name} failed: {err}")),
                     };
-                    if let Ok(mut guard) = cell_cb.lock() {
-                        *guard = Some(outcome);
-                    }
+                    let _ = tx_done.send(outcome);
                     error_code
                 });
-            let method_pw = CoTaskMemPWSTR::from(method_for_closure.as_str());
+            let handler = CallDevToolsProtocolMethodCompletedHandler::create(completed);
+            let method_pw = CoTaskMemPWSTR::from(method_owned.as_str());
             let params_pw = CoTaskMemPWSTR::from(params_owned.as_str());
             let start = unsafe {
                 webview.CallDevToolsProtocolMethod(
                     *method_pw.as_ref().as_pcwstr(),
                     *params_pw.as_ref().as_pcwstr(),
-                    &CallDevToolsProtocolMethodCompletedHandler::create(completed),
+                    &handler,
                 )
             };
             if let Err(err) = start {
-                if let Ok(mut guard) = cell_inner.lock() {
-                    *guard = Some(Err(format!(
-                        "{method_for_closure} CallDevToolsProtocolMethod failed: {err}"
-                    )));
-                }
+                let _ = tx.send(Err(format!(
+                    "{method_owned} CallDevToolsProtocolMethod failed: {err}"
+                )));
+            } else {
+                // 回调到来前 handler 必须存活。
+                std::mem::forget(handler);
             }
         }) {
-            let _ = tx.send(Err(format!("with_webview enqueue failed: {e}")));
-            return;
-        }
-
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(25);
-        loop {
-            if let Some(outcome) = cell.lock().ok().and_then(|mut g| g.take()) {
-                let _ = tx.send(outcome);
-                return;
-            }
-            if std::time::Instant::now() >= deadline {
-                let entered_ok = entered.load(Ordering::SeqCst);
-                let detail = if entered_ok {
-                    format!(
-                        "{method_owned} timed out waiting for CDP callback \
-                         (with_webview ran; COM completion never arrived)"
-                    )
-                } else {
-                    format!(
-                        "{method_owned} timed out waiting for the webview UI thread to dispatch the closure"
-                    )
-                };
-                crate::commands::browser_cdp_server::log_line(&format!("[browser-cdp] {detail}"));
-                let _ = tx.send(Err(detail));
-                return;
-            }
-            pump_win32_messages_once();
-            std::thread::sleep(std::time::Duration::from_millis(2));
+            let _ = tx_enqueue.send(Err(format!("with_webview enqueue failed: {e}")));
         }
     })
     .map_err(|e| format!("run_on_main_thread failed: {e}"))?;
 
-    rx.recv_timeout(std::time::Duration::from_secs(30))
-        .map_err(|e| format!("CDP main-thread wait failed: {e}"))?
+    rx.recv_timeout(std::time::Duration::from_secs(25))
+        .map_err(|_| {
+            if started.load(Ordering::SeqCst) {
+                format!("{method} timed out waiting for CDP callback")
+            } else {
+                format!("{method} timed out waiting for the webview UI thread")
+            }
+        })?
 }
 
 fn write_cdp_trace(
@@ -892,37 +877,22 @@ fn execute_script_on_stashed(
                 return;
             }
         };
-        let cell: Arc<Mutex<Option<Result<String, String>>>> = Arc::new(Mutex::new(None));
-        let cell_cb = cell.clone();
+        let tx_com = tx.clone();
         let handler = ExecuteScriptCompletedHandler::create(Box::new(move |error_code, result| {
             let out = match error_code {
                 Ok(()) => Ok(result),
                 Err(err) => Err(format!("ExecuteScript failed: {err}")),
             };
-            if let Ok(mut g) = cell_cb.lock() {
-                *g = Some(out);
-            }
+            let _ = tx.send(out);
             Ok(())
         }));
         let hstr = windows::core::HSTRING::from(js.as_str());
         if let Err(e) = unsafe { wv.ExecuteScript(&hstr, &handler) } {
-            let _ = tx.send(Err(format!("ExecuteScript COM error: {e}")));
+            let _ = tx_com.send(Err(format!("ExecuteScript COM error: {e}")));
             return;
         }
+        // 回调还要活到 COM 完成。forget 避免 handler 在闭包结束时被释放。
         std::mem::forget(handler);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        loop {
-            if let Some(outcome) = cell.lock().ok().and_then(|mut g| g.take()) {
-                let _ = tx.send(outcome);
-                return;
-            }
-            if std::time::Instant::now() >= deadline {
-                let _ = tx.send(Err("stashed ExecuteScript timed out".into()));
-                return;
-            }
-            pump_win32_messages_once();
-            std::thread::sleep(std::time::Duration::from_millis(2));
-        }
     })
     .map_err(|e| format!("run_on_main_thread failed: {e}"))?;
 
@@ -945,26 +915,6 @@ fn cdp_evaluate_result(value: Value) -> String {
         Value::Array(_) | Value::Object(_) => "object",
     };
     json!({ "result": { "type": type_name, "value": value } }).to_string()
-}
-
-/// Pump the Windows message queue so `with_webview` / COM completions can run
-/// while we are blocked inside `run_on_main_thread` (tao's loop is paused).
-///
-/// Also used by `browser_embed::wait_webview2_ready` / `probe_webview_dispatch`
-/// — readiness probes must share this pump or they report false timeouts while
-/// CDP itself would succeed on the same HWND.
-#[cfg(target_os = "windows")]
-pub(crate) fn pump_win32_messages_once() {
-    use windows::Win32::UI::WindowsAndMessaging::{
-        DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE,
-    };
-    unsafe {
-        let mut msg = std::mem::zeroed::<MSG>();
-        while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
-            let _ = TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
-    }
 }
 
 /// Keep CDP logs readable: screenshot payloads and DOM snapshots run to
@@ -1048,7 +998,9 @@ pub fn subscribe_events(
                             crate::commands::browser_cdp_server::log_line(&format!("[browser-cdp] event {name} had empty params"));
                             return Ok(());
                         }
-                        crate::commands::browser_cdp_server::log_line(&format!("[browser-cdp] event {label}/{name} = {:.200}", params));
+                        if cdp_event_log_enabled() {
+                            crate::commands::browser_cdp_server::log_line(&format!("[browser-cdp] event {label}/{name} = {:.200}", params));
+                        }
                         state.emit_event(&label, &name, &params);
                         Ok(())
                     },

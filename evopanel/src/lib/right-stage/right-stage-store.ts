@@ -261,6 +261,28 @@ export class RightStageStore {
     this.bump()
   }
 
+  findTab(key: string): RightStageSurface | null {
+    const k = String(key || '').trim()
+    const tab = this.tabs.find((t) => this.tabKeyOf(t) === k)
+    return tab ? { ...tab, data: { ...tab.data } } : null
+  }
+
+  /** 只改标题/data，不激活、不展开。用于浏览器页标题和图标回写外层标签。 */
+  patchTab(key: string, patch: { title?: string; data?: Record<string, unknown> }): boolean {
+    const k = String(key || '').trim()
+    const idx = this.tabs.findIndex((t) => this.tabKeyOf(t) === k)
+    if (idx < 0) return false
+    const prev = this.tabs[idx]
+    const title = patch.title !== undefined ? patch.title.trim() || prev.title : prev.title
+    const data = patch.data ? { ...prev.data, ...patch.data } : prev.data
+    if (prev.title === title && JSON.stringify(prev.data) === JSON.stringify(data)) return false
+    const nextTabs = this.tabs.slice()
+    nextTabs[idx] = { ...prev, title, data }
+    this.tabs = nextTabs
+    this.bump()
+    return true
+  }
+
   /** 关闭除 keepKey 外的全部标签（写入 recentClosed）。 */
   closeOtherTabs(keepKey: string) {
     const keep = String(keepKey || '').trim()

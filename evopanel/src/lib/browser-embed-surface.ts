@@ -21,6 +21,7 @@ import {
   browserEmbedUpsert,
   type BrowserEmbedInfo,
 } from './browser-embed-client.js'
+import { isNavigableBrowserUrl, sanitizeBrowserPageUrl } from './browser-page-url.js'
 import { blog } from './browser-unified-log.js'
 import { rightStageStore } from './right-stage/right-stage-store.js'
 
@@ -64,6 +65,8 @@ let desiredStageId = ''
 /** 遮罩为 0 且 desired 非空时真正显示的 id。 */
 let visibleStageId = ''
 let overlayDepth = 0
+/** 上次成功发出的槽位；park/换页时清掉，相同槽位去重。 */
+let lastReportedSlotKey = ''
 
 export function currentEmbedPlacement(): EmbedPlacement {
   return { stageId: visibleStageId, reason: lastPlacementKey, overlayDepth }
@@ -88,6 +91,8 @@ export function syncNativeEmbed(reason = 'right-stage') {
   if (key === lastPlacementKey) return
   lastPlacementKey = key
   visibleStageId = shownId
+  // park / 换页后槽位必须重新上报，不能吃旧的 lastReportedSlotKey。
+  lastReportedSlotKey = ''
   const active = rightStageStore.getSnapshot().activeKey || '(none)'
   const line = `[browser-embed-surface] ${key} reason=${reason} active=${active} overlay=${overlayDepth}`
   console.info(line)
@@ -131,9 +136,12 @@ export function endGlobalOverlay(reason = 'overlay') {
  * 槽位布局变了。只有这个 stageId 正是前台浏览器页且无全局遮罩时才贴位。
  * 窗口若已销毁（park/崩溃后），改走 ensure 重建，避免右侧空白。
  */
-export function reportEmbedSlot(stageId: string, slot: EmbedSlot, opts?: { url?: string }) {
+export function reportEmbedSlot(stageId: string, slot: EmbedSlot, opts?: { url?: string; force?: boolean }) {
   const id = String(stageId || '').trim()
   if (!id || id !== visibleStageId || overlayDepth > 0) return
+  const key = `${id}:${slot.x},${slot.y},${slot.width}x${slot.height}:${slot.viewportWidth || 0}x${slot.viewportHeight || 0}`
+  if (!opts?.force && key === lastReportedSlotKey) return
+  lastReportedSlotKey = key
   void (async () => {
     const applied = await browserEmbedSetBounds({
       threadId: NATIVE_EMBED_THREAD_ID,
@@ -141,6 +149,8 @@ export function reportEmbedSlot(stageId: string, slot: EmbedSlot, opts?: { url?:
       present: true,
     })
     if (applied) return
+    // 失败后允许立刻重试，不要被上一次 key 卡住。
+    lastReportedSlotKey = ''
     blog('warn', `[browser-embed-surface] set-bounds missed stage=${id} — recreating`)
     await ensureNativeEmbed({
       url: opts?.url,
@@ -176,29 +186,47 @@ function slotFor(_stageId: string | undefined, slot: EmbedSlot | null | undefine
  * 创建或导航那一扇原生窗。
  * 前台就是这个浏览器页且无全局遮罩：按槽位显示。
  * 否则只保证窗口存在（给 CDP），并保持隐藏。
+ *
+ * 重要：没有实测槽位时绝不能用 estimateEmbedSlot 当「前台贴位」——
+ * 估算矩形在右上角 y≈64，会盖住标签条标题，再与真实槽位来回抢 → 抖动。
  */
 export async function ensureNativeEmbed(opts: {
   url?: string
   slot?: EmbedSlot | null
   stageId?: string
   reason: string
+  /** 切签时 true：location.replace，不往共用 history 压栈。 */
+  replace?: boolean
 }): Promise<BrowserEmbedInfo | null> {
   const stageId = String(opts.stageId || '').trim()
   const present =
     overlayDepth === 0 &&
     Boolean(desiredStageId) &&
     (!stageId || stageId === desiredStageId)
+  const hasRealSlot = Boolean(opts.slot && opts.slot.width >= 8 && opts.slot.height >= 8)
   const slot = slotFor(stageId, opts.slot)
+  // 只有「该显示 + 有真实槽位」才贴位显影；否则 managed-only（导航但不挪窗）。
+  const placeNow = present && hasRealSlot
+  // chrome-error:// 等内部页绝不能再 upsert，否则死循环刷错误页。
+  const rawUrl = String(opts.url || '').trim()
+  const navUrl = isNavigableBrowserUrl(rawUrl) ? sanitizeBrowserPageUrl(rawUrl) : ''
+  if (rawUrl && !navUrl) {
+    blog('warn', `[browser-embed-surface] ensure skip bad url reason=${opts.reason} url=${rawUrl}`)
+  }
   blog(
     'info',
-    `[browser-embed-surface] ensure reason=${opts.reason} present=${present} stage=${stageId || '(any)'} visible=${visibleStageId || '(none)'} overlay=${overlayDepth}`,
+    `[browser-embed-surface] ensure reason=${opts.reason} present=${present} place=${placeNow} stage=${stageId || '(any)'} visible=${visibleStageId || '(none)'} overlay=${overlayDepth}`,
   )
   const info = await browserEmbedUpsert({
     threadId: NATIVE_EMBED_THREAD_ID,
-    url: opts.url,
+    url: navUrl || undefined,
     ...slot,
-    respectManagedBounds: !present,
+    respectManagedBounds: !placeNow,
+    // 切签/新标签：replace 进历史，避免单 HWND 多标签把后退栈串成「抖音↔百度」。
+    replaceUrl: opts.replace === true,
   })
+  // 只有「不该显示」才 park。前台缺槽位时绝不能 park——会和随后的
+  // reportEmbedSlot/set_bounds 竞态，窗口被藏死后 lastReportedSlotKey 还挡重试。
   if (!present) void browserEmbedPark(NATIVE_EMBED_THREAD_ID)
   return info
 }

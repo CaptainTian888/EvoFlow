@@ -40,17 +40,22 @@ export function ensureRightStageKindsRegistered() {
 
   registerRightStageKind({
     kind: 'browser',
-    render: ({ surface, onClose, active }) => (
-      <BrowserPanel
-        isOpen
-        stageId={surface.id}
-        surfaceActive={active !== false}
-        onClose={() => {
-          closeBrowserStage(surface.id)
-          onClose()
-        }}
-      />
-    ),
+    render: ({ surface, onClose, active }) => {
+      const tabUrl = String(surface.data?.pageUrl || '').trim()
+      return (
+        <BrowserPanel
+          isOpen
+          stageId={surface.id}
+          surfaceActive={active !== false}
+          // 每标签各自的 URL；不能读全局 runtime，否则后台标签地址栏会跟前台串页。
+          pageUrl={tabUrl || undefined}
+          onClose={() => {
+            closeBrowserStage(surface.id)
+            onClose()
+          }}
+        />
+      )
+    },
   })
 
   registerRightStageKind({
@@ -64,11 +69,13 @@ export function ensureRightStageKindsRegistered() {
       // 不要在外面再套一层 ``react-chat-right-stage-panel`` aside —— BrowserPanel
       // 自带 ``react-chat-browser-panel`` 壳，重复壳会叠出双背景 + 双边框 + 50% 宽度。
       if (!extensionId) {
+        const tabUrl = String(data.pageUrl || data.url || data.href || '').trim()
         return (
           <BrowserPanel
             isOpen
             stageId={surface.id || 'primary'}
             surfaceActive={active !== false}
+            pageUrl={tabUrl || undefined}
             onClose={() => {
               closeBrowserStage(surface.id || 'primary')
               onClose()
