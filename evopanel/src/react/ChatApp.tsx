@@ -200,7 +200,7 @@ import {
 } from '../lib/browser-panel-store.js'
 import { dbgLog } from '../lib/browser-debug-log.js'
 import { hideRightStageIfKind, rightStageStore } from '../lib/right-stage/right-stage-store.js'
-import { ensureSummaryStage, closeSummaryStage } from '../lib/right-stage/ensure-summary-stage.js'
+import { closeSummaryStage } from '../lib/right-stage/ensure-summary-stage.js'
 import { ensureTerminalStage } from '../lib/right-stage/ensure-terminal-stage.js'
 import { filterRightStageTabsForSession } from '../lib/right-stage/right-stage-session-visibility.js'
 import {
@@ -4429,7 +4429,7 @@ export default function ChatApp() {
   const [modelConnNameMap, setModelConnNameMap] = useState<Record<string, string>>({})
   const [bottomMoreOpen, setBottomMoreOpen] = useState(false)
   /** 右侧信息 Drawer：默认关闭；与 Right Stage 互斥 */
-  const [infoRailOpen, setInfoRailOpen] = useState(true)
+  const [, setInfoRailOpen] = useState(true)
   const [infoRailTab, setInfoRailTab] = useState<InfoRailTab>('agent')
   /**
    * 用户在当前会话内是否手动关过侧栏。
@@ -4437,7 +4437,7 @@ export default function ChatApp() {
    * 这样可避免「用户点关闭后立刻被切会话 effect 拉回 true」的竞态。
    */
   const userClosedInfoRailRef = useRef(false)
-  /** 状态面板三态（面板 / 胶囊 / 隐藏），与右侧信息栏开合同为一个开关 */
+  /** 状态面板三态：右侧空白悬浮卡 / 气泡 / 隐藏。与专用 Right Stage 互斥。 */
   const [chatPanelMode, setChatPanelMode] = useState<ChatSummaryDisplayMode>(() => {
     try {
       return loadChatSummaryPrefs().displayMode
@@ -4445,49 +4445,27 @@ export default function ChatApp() {
       return 'panel'
     }
   })
-  /**
-   * 摘要收起 → 关掉 summary 标签；若右栏已无其它可见页则整栏折叠；
-   * 小气泡改挂对话列右上角，不再独自占着空侧栏。
-   * 展开 → 重新 ensure summary 并打开右栏。
-   */
   const setChatPanelDisplayMode = useCallback(
     (mode: ChatSummaryDisplayMode) => {
       setChatPanelMode(mode)
       saveChatSummaryDisplayMode(mode)
       if (mode === 'panel') {
-        userClosedInfoRailRef.current = false
-        setInfoRailOpen(true)
-        ensureSummaryStage({ sessionKey: selectedSessionKey || undefined })
-        expandRightStage()
-        return
-      }
-      userClosedInfoRailRef.current = true
-      setInfoRailOpen(false)
-      closeSummaryStage()
-      const remaining = filterRightStageTabsForSession(
-        rightStageStore.getSnapshot().tabs,
-        selectedSessionKey,
-      )
-      if (remaining.length === 0) {
+        // 悬浮卡与专用侧栏互斥：展开卡片时关掉侧栏。
         collapseRightStage()
       }
     },
-    [selectedSessionKey, expandRightStage, collapseRightStage],
+    [collapseRightStage],
   )
 
-  // 偏好已是胶囊/隐藏时：启动不要把摘要又 ensure 进右栏。
+  // 摘要已改挂对话正文右上角，启动时卸掉右栏里残留的 summary 标签。
   useEffect(() => {
-    if (chatPanelMode !== 'capsule' && chatPanelMode !== 'hidden') return
-    userClosedInfoRailRef.current = true
-    setInfoRailOpen(false)
     closeSummaryStage()
     const remaining = filterRightStageTabsForSession(
       rightStageStore.getSnapshot().tabs,
       selectedSessionKey,
     )
     if (remaining.length === 0) collapseRightStage()
-    // 仅对齐首屏偏好；之后收起/展开走 setChatPanelDisplayMode
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount sync for prefs
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount: drop leftover summary tab
   }, [])
   const publishPlatformEntries = useCallback((entries: PlatformRunEntry[], focusEntryId?: string) => {
     turnPlatformEntriesRef.current = entries
@@ -12496,17 +12474,7 @@ useEffect(() => {
     [isProactiveEmployeeSession, employeeSessionAgentCode, selectedTurnBusy, getApi],
   )
 
-  // 摘要是右栏一页，与浏览器等并存；面板态且 infoRailOpen 时才 ensure。
-  // 胶囊态只挂对话列气泡，不要把 summary 再塞回右栏。
-  useEffect(() => {
-    if (isHomeSurface || isMobileChat || !selectedSessionKey) return
-    if (userClosedInfoRailRef.current || !infoRailOpen) return
-    if (chatPanelMode !== 'panel') return
-    ensureSummaryStage({ sessionKey: selectedSessionKey })
-  }, [infoRailOpen, selectedSessionKey, isHomeSurface, isMobileChat, chatPanelMode])
-
-  // 首页不应出现右侧摘要/侧边面板：进入首页时主动折叠右栏（保留 tabs 缓存，
-  // 离开首页后由既有 ensureSummaryStage effect 决定是否恢复）。
+  // 首页不应出现右侧摘要/侧边面板：进入首页时主动折叠右栏（保留 tabs 缓存）。
   useEffect(() => {
     if (!isHomeSurface) return
     collapseRightStage()
@@ -12750,12 +12718,9 @@ useEffect(() => {
 
   // 状态面板「进程」区：以 streamRef 为唯一真相源，按 chrome tick 取快照，
   // 避免另开 state 漏掉切会话/终态收束时的终端清理。
-  const summaryStageOpen = rightStageTabs.some(
-    (t) => normalizeRightStageKind(t.kind) === 'summary',
-  )
   const liveProcessSnapshot = useLiveProcessSnapshot(
     streamRef,
-    (summaryStageOpen || infoRailOpen || chatPanelMode === 'capsule') &&
+    chatPanelMode !== 'hidden' &&
       !isHomeSurface &&
       !!selectedSessionKey &&
       !isMobileChat,
@@ -12914,13 +12879,7 @@ useEffect(() => {
     (surface: RightStageSurface): ReactNode => {
       const kind = surface.kind
       if (kind === 'summary') {
-        // 胶囊态改挂对话列；右栏 summary 页只在面板态出现。
-        if (chatPanelMode !== 'panel') return null
-        return sidePanelHeavyMount ? (
-          renderChatSummaryPanel('panel')
-        ) : (
-          <SidePanelBootShell title="摘要" className="react-chat-right-stage-panel" />
-        )
+        return null
       }
       if (kind === 'terminal') {
         const data = surface.data || {}
@@ -13074,7 +13033,6 @@ useEffect(() => {
     },
     [
       sidePanelHeavyMount,
-      chatPanelMode,
       selectedTurnBusy,
       selectedSessionKey,
       sessions,
@@ -13212,12 +13170,17 @@ useEffect(() => {
   }, [collapseRightStage, syncShellAsideForWorkspacePanel])
 
   const handleExpandRightStage = useCallback(() => {
+    // 专用侧栏与状态卡片互斥：开侧栏时把状态收成气泡偏好，避免关侧栏后又立刻弹回卡片。
+    if (chatPanelMode === 'panel') {
+      setChatPanelMode('capsule')
+      saveChatSummaryDisplayMode('capsule')
+    }
     expandRightStage()
     setInfoRailOpen(false)
     if (!isChatOverlayDeferActive()) {
       scheduleBumpRef.current?.({ immediate: true })
     }
-  }, [expandRightStage])
+  }, [expandRightStage, chatPanelMode])
 
   /**
    * 顶栏 PanelRight：对齐 ZCode 侧栏开关。
@@ -13232,6 +13195,14 @@ useEffect(() => {
     handleExpandRightStage()
     userClosedInfoRailRef.current = true
   }, [rightStageOpen, handleCollapseRightStage, handleExpandRightStage])
+
+  /** 右侧空白里的悬浮状态卡；专用侧栏打开时让位，互斥不叠放。 */
+  const showChatSummaryFloat =
+    chatPanelMode !== 'hidden' &&
+    !rightStageOpen &&
+    !isHomeSurface &&
+    !isMobileChat &&
+    !!selectedSessionKey
 
   const infoRailHeaderToggle = (
     <button
@@ -15839,6 +15810,8 @@ useEffect(() => {
             className={`react-chat-main-body${
               rightStageOpen ? ` ${mainBodyStageClasses}` : ''
             }${
+              showChatSummaryFloat ? ' is-chat-summary-split' : ''
+            }${
               anyRightPanelOpen && layoutResizeEnabled && rightPanelWidthPx != null
                 ? ' is-layout-custom-width'
                 : ''
@@ -15850,12 +15823,6 @@ useEffect(() => {
               onDragOver={handleConversationComposeDragOver}
               onDrop={handleConversationComposeDrop}
             >
-          {chatPanelMode === 'capsule' &&
-          !isHomeSurface &&
-          !isMobileChat &&
-          selectedSessionKey
-            ? renderChatSummaryPanel('capsule')
-            : null}
           {historyError && (
             <div className="react-chat-error-banner">{toUserFacingError(historyError)}</div>
           )}
@@ -16660,6 +16627,9 @@ useEffect(() => {
             </div>
           </div>
             </div>
+            {showChatSummaryFloat
+              ? renderChatSummaryPanel(chatPanelMode === 'capsule' ? 'capsule' : 'panel')
+              : null}
             {anyRightPanelOpen && layoutResizeEnabled ? (
               <PanelResizeHandle
                 direction="vertical"

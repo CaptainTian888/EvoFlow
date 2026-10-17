@@ -1,61 +1,80 @@
 /* 状态面板（ChatSummaryPanel）
  *
- * 对齐 ZCode 浮层形态：对话列右上角胶囊 / 右栏摘要页，两态靠 .is-capsule 切换。
- * 面板态挂在 right-stage summary 标签；胶囊态挂在对话列，不占空侧栏。
+ * 布局：对话列 | 右侧占位（同底色、无分割线），宽度跟卡片走。
+ * 视觉：顶对齐的悬浮卡（内容多高就多高），不是通栏侧栏块。
+ * 与专用 Right Stage 互斥。
  *
  * 令牌纪律：一律 --ef-text-* 字号，不写裸 px font-size。
  */
 
-.chat-summary-panel {
-  pointer-events: auto;
-  position: relative;
+.chat-summary-float {
+  --chat-summary-card-width: 360px;
+  --chat-summary-region-collapsed: 48px;
+  box-sizing: border-box;
+  flex: 0 0 auto;
+  width: var(--chat-summary-region-collapsed);
+  /* 纵向贴顶，高度跟卡片走，不拉成整列侧栏 */
+  align-self: flex-start;
+  min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
+  align-items: flex-end;
+  padding: 10px 20px 0 0;
+  overflow: visible;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  transition: width 280ms cubic-bezier(0.22, 1, 0.36, 1);
+  z-index: 5;
+}
+
+.chat-summary-float.is-open {
+  width: calc(var(--chat-summary-card-width) + 20px);
+  align-items: stretch;
+}
+
+.chat-summary-float.is-bubble {
+  width: calc(var(--chat-summary-region-collapsed) + 12px);
+  padding: 10px 20px 0 0;
+  align-items: flex-end;
+}
+
+.chat-summary-float .chat-summary-panel {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 auto;
+  width: var(--chat-summary-card-width);
+  min-width: 0;
+  /* 内容多高就多高；太长再封顶内滚 */
+  height: auto;
+  max-height: min(560px, calc(100vh - 120px));
+  min-height: 0;
   overflow: hidden;
   color: var(--text-primary);
-
-  /* 首层容器按 DESIGN.md 用 xl(12px)，不用 2xl */
   border: 1px solid var(--border-default, #e6e8ec);
   border-radius: 12px;
   background: var(--bg-elevated, #ffffff);
-  box-shadow: var(--shadow-md, 0 4px 12px rgba(32, 33, 36, 0.06));
-
+  box-shadow:
+    0 1px 2px rgba(15, 23, 42, 0.04),
+    0 12px 32px rgba(15, 23, 42, 0.1);
+  transform-origin: top right;
+  transform: scale(0.96) translateY(-4px);
+  opacity: 0;
   transition:
-    border-radius 300ms ease-in-out,
-    padding 300ms ease-in-out,
-    background-color 300ms ease-in-out,
-    box-shadow 300ms ease-in-out;
+    transform 240ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 200ms ease;
 }
 
-/* ── 面板态：铺满右栏正文区 ───────────────────────────── */
-/* 摘要已挂在 right-stage 标签里，宽度由侧栏槽位决定，不再自己锁 340px。
-   原先 flex-basis 340px + margin-right 8px 会在窄栏（默认 340）里被裁掉一截。
-   用 calc 扣掉四周 8px margin，避免 width:100% + margin 再次溢出。 */
-.chat-summary-panel.is-panel {
-  box-sizing: border-box;
+.chat-summary-float.is-open .chat-summary-panel {
+  transform: scale(1) translateY(0);
+  opacity: 1;
+}
+
+.chat-summary-float .chat-summary-panel-scroll {
   flex: 1 1 auto;
-  width: calc(100% - 16px);
-  max-width: none;
-  min-width: 0;
-  align-self: stretch;
-  margin: 8px;
-  height: calc(100% - 16px);
-  max-height: calc(100% - 16px);
-  z-index: 4;
-}
-
-/* ── 胶囊态：挂在对话列右上角，不参与布局 ─────────────── */
-/* absolute 相对 .react-chat-conversation-col：右栏仍开着其它 tab 时，
-   气泡贴对话区右缘，不会漂到侧栏里或盖住侧栏内容。
-   顶栏在 conversation-col 之外，top: 8px 即可。 */
-.chat-summary-panel.is-capsule {
-  position: absolute;
-  right: 16px;
-  top: 8px;
-  width: auto;
-  min-width: 180px;
-  max-width: min(320px, calc(100% - 1.5rem));
-  z-index: 40;
+  min-height: 0;
 }
 
 /* ── 头部操作区（tab 条 / ··· / 收起） ─────────────────────── */
@@ -593,7 +612,52 @@ html.dark .chat-summary-panel-scroll::-webkit-scrollbar-thumb:active {
   border-radius: 6px;
 }
 
-/* ── 胶囊态 ─────────────────────────────────────────── */
+/* ── 收起气泡 ───────────────────────────────────────── */
+.chat-summary-bubble {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--border-default, #e6e8ec);
+  border-radius: 999px;
+  background: var(--bg-elevated, #ffffff);
+  box-shadow:
+    0 1px 2px rgba(15, 23, 42, 0.04),
+    0 8px 20px rgba(15, 23, 42, 0.1);
+  color: var(--ef-color-success, #26875a);
+  cursor: pointer;
+  transition:
+    transform 180ms ease,
+    background-color 150ms ease,
+    box-shadow 180ms ease;
+}
+
+.chat-summary-bubble[data-state='running'] {
+  color: var(--accent, #635bff);
+}
+
+.chat-summary-bubble[data-state='failed'] {
+  color: var(--ef-color-danger, #d14343);
+}
+
+.chat-summary-bubble svg {
+  width: 16px;
+  height: 16px;
+}
+
+.chat-summary-bubble:hover {
+  background: var(--bg-hover, #dde3ea);
+  transform: scale(1.06);
+}
+
+.chat-summary-bubble:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--border-focus, rgba(99, 91, 255, 0.2));
+}
+
+/* 旧胶囊条样式保留选择器，避免外部残留引用失去命中 */
 .chat-summary-capsule-hit {
   display: flex;
   align-items: center;
@@ -710,18 +774,18 @@ html.dark .chat-summary-panel-scroll::-webkit-scrollbar-thumb:active {
   color: var(--accent, #635bff);
 }
 
-/* 窄屏不再把面板改成 absolute 浮层：侧栏槽位本身已负责占宽，
-   absolute + 旧定宽会在标签正文里再次裁切。 */
 @media (max-width: 720px) {
-  .chat-summary-panel.is-panel {
-    margin: 6px;
-    width: calc(100% - 12px);
-    height: calc(100% - 12px);
-    max-height: calc(100% - 12px);
+  .chat-summary-float {
+    --chat-summary-card-width: 300px;
+    --chat-summary-region-collapsed: 44px;
+    padding: 8px 16px 0 0;
   }
+}
 
-  .chat-summary-panel.is-capsule {
-    right: 8px;
-    top: 8px;
+@media (prefers-reduced-motion: reduce) {
+  .chat-summary-float,
+  .chat-summary-float .chat-summary-panel,
+  .chat-summary-bubble {
+    transition: none;
   }
 }

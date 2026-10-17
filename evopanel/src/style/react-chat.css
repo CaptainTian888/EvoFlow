@@ -3178,10 +3178,37 @@ html[data-theme='dark'] .react-chat-history-item.active {
   min-width: 0;
 }
 
-.react-chat-main-body:not(.is-layout-custom-width):not(.is-info-rail-open):not(.is-right-stage-open):not(.is-right-panel-open) .react-chat-conversation-col {
+.react-chat-main-body:not(.is-layout-custom-width):not(.is-info-rail-open):not(.is-right-stage-open):not(.is-right-panel-open):not(.is-chat-summary-split) .react-chat-conversation-col {
   flex: 1 1 100% !important;
   max-width: 100% !important;
   width: 100%;
+}
+
+/* 对话区 | 状态卡占位：同底色铺满，无中缝/异色侧栏 */
+.react-chat-main-body.is-chat-summary-split {
+  flex-direction: row;
+  align-items: stretch;
+  background: var(--bg-surface, #ffffff);
+}
+
+html[data-theme='dark'] .react-chat-main-body.is-chat-summary-split,
+html.dark .react-chat-main-body.is-chat-summary-split {
+  background: var(--bg-surface, #2a2a2a);
+}
+
+.react-chat-main-body.is-chat-summary-split .react-chat-conversation-col {
+  flex: 1 1 0 !important;
+  max-width: none !important;
+  width: auto !important;
+  min-width: 0;
+  /* 底色改由 main-body 统一承接，避免两栏接缝露异色 */
+  background: transparent;
+}
+
+.react-chat-main-body.is-chat-summary-split .chat-summary-float {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
 }
 
 /* 信息栏打开时分栏：对话列吃掉剩余宽度，避免右侧 info-rail 外再留空带 */
@@ -5758,6 +5785,7 @@ html.dark .react-chat-context-ring.is-clickable:hover .react-chat-context-ring-p
 }
 
 .react-chat-messages-body {
+  position: relative;
   flex: 1;
   min-height: 0;
   display: flex;
@@ -32592,51 +32620,35 @@ html[data-theme='dark'] .react-chat-browser-panel .browser-panel-nav-error {
   border-left: 1px solid var(--border, #e5e7eb);
 }
 
-/* 顶部悬停热区：平时只留 ~10px 细带；展开时正文同步下推，避免遮挡 */
+/* 顶部标签条：常显，不再悬停才弹出 */
 .react-chat-stage-chrome {
   position: absolute;
   top: 0;
   left: 0;
   right: 0;
   z-index: 30;
-  height: 10px;
+  height: 48px;
   overflow: visible;
   pointer-events: auto;
-  transition: height 0.14s ease;
-}
-.react-chat-stage-chrome:hover,
-.react-chat-stage-chrome.is-open,
-.react-chat-stage-chrome:focus-within {
-  height: 48px;
 }
 .react-chat-stage-chrome .react-chat-stage-tabs {
   position: absolute;
   top: 0;
   left: 0;
   right: 0;
-  opacity: 0;
-  transform: translateY(-6px);
-  pointer-events: none;
-  background: var(--bg-primary, var(--background, #fff));
-  border-bottom: 1px solid color-mix(in srgb, var(--border, #e5e7eb) 50%, transparent);
-  transition: opacity 0.14s ease, transform 0.14s ease;
-}
-.react-chat-stage-chrome:hover .react-chat-stage-tabs,
-.react-chat-stage-chrome.is-open .react-chat-stage-tabs,
-.react-chat-stage-chrome:focus-within .react-chat-stage-tabs {
   opacity: 1;
   transform: none;
   pointer-events: auto;
+  background: var(--bg-primary, var(--background, #fff));
+  border-bottom: 1px solid color-mix(in srgb, var(--border, #e5e7eb) 50%, transparent);
 }
 html[data-theme='dark'] .react-chat-stage-chrome .react-chat-stage-tabs,
 html.dark .react-chat-stage-chrome .react-chat-stage-tabs {
   background: var(--bg-primary, #0b1220);
 }
 
-/* 标签条展开时正文让出等高空间（悬停 / 菜单打开 / 焦点均同步） */
-.react-chat-right-stage-shell:has(.react-chat-stage-chrome:hover) .react-chat-right-stage-bodies,
-.react-chat-right-stage-shell:has(.react-chat-stage-chrome.is-open) .react-chat-right-stage-bodies,
-.react-chat-right-stage-shell:has(.react-chat-stage-chrome:focus-within) .react-chat-right-stage-bodies {
+/* 正文让出标签条高度 */
+.react-chat-right-stage-shell .react-chat-right-stage-bodies {
   padding-top: 48px;
 }
 
@@ -32738,7 +32750,6 @@ html.dark .react-chat-stage-popover {
   flex: 1 1 auto;
   min-height: 0;
   min-width: 0;
-  transition: padding-top 0.14s ease;
 }
 .react-chat-right-stage-body {
   height: 100%;
@@ -32758,15 +32769,6 @@ html.dark .react-chat-stage-popover {
   min-height: 0;
 }
 
-/* 摘要卡片贴合标签槽：跟侧栏同宽（扣掉 margin），拖宽右栏时一起变宽 */
-.react-chat-right-stage-body > .chat-summary-panel.is-panel {
-  flex: 1 1 auto;
-  width: calc(100% - 16px);
-  max-width: none;
-  min-width: 0;
-  height: calc(100% - 16px);
-  max-height: calc(100% - 16px);
-}
 
 /* 嵌进右栏标签后不再套半宽灰底和左边线（外壳已有分隔） */
 .react-chat-right-stage-body > .react-chat-collab-exec-panel,

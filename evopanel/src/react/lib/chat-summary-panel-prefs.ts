@@ -2,8 +2,8 @@
  * 状态面板（ChatSummaryPanel）本地偏好。
  *
  * 两类持久化：
- * - displayMode：三态胶囊/面板/隐藏（ZCode 的 data-display-mode）
- * - expandPolicy：面板态下「有运行中进程是否自动展开面板」
+ * - displayMode：三态气泡/悬浮卡片/隐藏
+ * - expandPolicy：有运行中进程时是否自动展开悬浮卡片
  *
  * 控制台调试：localStorage.setItem('EVOFLOW_CHAT_PANEL_DEBUG', '1')
  */
@@ -14,10 +14,10 @@ const SECTIONS_KEY = 'evopanel_chat_summary_sections_v1'
 const SECTIONS_LAYOUT_KEY = 'evopanel_chat_summary_sections_layout_v2'
 const DEBUG_KEY = 'EVOFLOW_CHAT_PANEL_DEBUG'
 
-/** 面板三态：胶囊（浮层小条）/ 面板（右栏）/ 隐藏（完全不占位） */
+/** 面板三态：气泡（正文右上角）/ 悬浮卡片 / 隐藏（完全不占位） */
 export type ChatSummaryDisplayMode = 'capsule' | 'panel' | 'hidden'
 
-/** 展开策略：运行中是否自动把胶囊撑成面板 */
+/** 展开策略：运行中是否自动把气泡撑成悬浮卡片 */
 export type ChatSummaryExpandPolicy = 'auto-expand' | 'sticky' | 'sticky-collapsed'
 
 export type ChatSummarySectionId = 'process' | 'agent' | 'more'
