@@ -323,17 +323,15 @@ def _row_doc(row: Any) -> dict[str, Any]:
 def _document_counts_by_kb(rows: list[Any]) -> dict[str, int]:
     """Count active documents per KB by opening each KB's own index DB.
 
-    Falls back to the central DB for KBs that have not been migrated yet, so the
-    count stays correct during a rolling migration.
+    ``db_for_kb`` resolves the default location when ``storage_dir`` is empty —
+    a KB created without one (e.g. the builtin user guide) still owns a per-KB
+    index DB after the split. Falls back to the central DB only when the
+    per-KB query fails, so the count stays correct during a rolling migration.
     """
     counts: dict[str, int] = {}
     pending: list[str] = []
     for r in rows:
         kid = str(r["id"] if isinstance(r, sqlite3.Row) else r[0])
-        sd = str((r["storage_dir"] if isinstance(r, sqlite3.Row) else "") or "").strip()
-        if not sd:
-            pending.append(kid)
-            continue
         try:
             with db_for_kb(kid) as conn:
                 counts[kid] = int(
