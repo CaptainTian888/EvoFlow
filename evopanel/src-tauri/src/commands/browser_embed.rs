@@ -15,8 +15,6 @@ use std::time::Duration;
 use serde::Serialize;
 use serde_json::Value;
 use tauri::{Emitter, Manager, State, WebviewWindow};
-#[cfg(target_os = "windows")]
-
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
@@ -28,6 +26,17 @@ use tauri::WebviewUrl;
 use super::browser_cdp;
 #[cfg(target_os = "windows")]
 pub use super::browser_cdp::CdpBrokerState;
+#[cfg(target_os = "windows")]
+use super::browser_cdp_server;
+
+/// Non-Windows: keep `browser_cdp_server::log_line` resolving so the shared
+/// WebSocket broker and geometry helpers compile on macOS/Linux CI.
+#[cfg(not(target_os = "windows"))]
+mod browser_cdp_server {
+    pub fn log_line(s: &str) {
+        eprintln!("{s}");
+    }
+}
 
 /// 每个 embed 窗口最后已知的客户端相对边界 (x, y, w, h)（逻辑 px）。
 /// 主窗口拖动/缩放时据此重新定位 —— 原生覆盖窗口不会自动跟随主窗口移动。
@@ -376,8 +385,6 @@ fn embed_watchdog_tick(app: &tauri::AppHandle) {
         }
     }
 }
-#[cfg(target_os = "windows")]
-use super::browser_cdp_server;
 
 /// Non-Windows builds: the inline `mod browser_cdp` below defines the broker
 /// state in this file. Re-export it so the rest of `browser_embed` (and
@@ -1041,6 +1048,11 @@ fn embed_is_ws_child(embed: &WebviewWindow) -> bool {
     unsafe { (GetWindowLongW(hwnd, GWL_STYLE) as u32) & WS_CHILD.0 != 0 }
 }
 
+#[cfg(not(target_os = "windows"))]
+fn embed_is_ws_child(_embed: &WebviewWindow) -> bool {
+    false
+}
+
 /// Slot vs HWND geometry — one line you can grep: `[browser-embed] REGION`.
 /// Answers: where is the slot, where is the native window, inside or outside.
 #[cfg(target_os = "windows")]
@@ -1113,11 +1125,26 @@ fn log_region_diag(
     );
 }
 
+#[cfg(not(target_os = "windows"))]
+fn log_region_diag(
+    _phase: &str,
+    _label: &str,
+    _main: &WebviewWindow,
+    _embed: &WebviewWindow,
+    _slot_client: (f64, f64, f64, f64),
+) {
+}
+
 /// Turn the embed into a real child of the main frame.
 ///
 /// `WebviewWindowBuilder::parent` on Windows only sets an owner, so the browser
 /// stays a `WS_POPUP` with a caption and floats above the slot. `WS_CHILD` is
 /// clipped to the main client area and moves with it.
+#[cfg(not(target_os = "windows"))]
+fn nest_embed_into_main(_embed: &WebviewWindow, _main: &WebviewWindow) -> Result<(), String> {
+    Ok(())
+}
+
 #[cfg(target_os = "windows")]
 fn nest_embed_into_main(embed: &WebviewWindow, main: &WebviewWindow) -> Result<(), String> {
     use windows::Win32::UI::WindowsAndMessaging::{
@@ -1206,6 +1233,18 @@ fn to_client_px(
 /// `x`/`y`/`w`/`h` are main-client px (already scaled). WS_CHILD uses those as
 /// parent-relative; if nesting failed and the HWND is still a popup, convert to screen.
 /// Raw SetWindowPos: tauri `set_size` adds a decoration offset and can miss the slot.
+#[cfg(not(target_os = "windows"))]
+fn place_embed_client(
+    _window: &WebviewWindow,
+    _main: &WebviewWindow,
+    _x: f64,
+    _y: f64,
+    _w: f64,
+    _h: f64,
+) -> Result<(), String> {
+    Ok(())
+}
+
 #[cfg(target_os = "windows")]
 fn place_embed_client(
     window: &WebviewWindow,
@@ -1216,7 +1255,7 @@ fn place_embed_client(
     h: f64,
 ) -> Result<(), String> {
     use windows::Win32::UI::WindowsAndMessaging::{
-        SetWindowPos, HWND_TOP, SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW,
+        SetWindowPos, HWND_TOP, SWP_NOACTIVATE, SWP_SHOWWINDOW,
     };
     let (iw, ih) = main
         .inner_size()
@@ -1239,32 +1278,19 @@ fn place_embed_client(
         (ox + x as i32, oy + y as i32)
     };
     // 必须 SHOW：子 WebView2 一直 hidden 时 guest poll / CDP 会卡死。
-    // 已是子窗口时不改 Z 序：每次 HWND_TOP 会把它抬过同级窗口。
-    // 全局弹窗靠前端 overlay 计数去 park（SW_HIDE），不靠 CSS z-index。
-    let child = embed_is_ws_child(window);
+    // 贴位时要 HWND_TOP：否则 park 后再 show 会落在主 WebView2 下面，右侧槽位空白。
+    // 全局弹窗仍靠前端 overlay 计数 park（SW_HIDE），不靠 CSS 压原生窗。
     let place_started = now_ms();
     unsafe {
-        if child {
-            SetWindowPos(
-                hwnd,
-                None,
-                px,
-                py,
-                w as i32,
-                h as i32,
-                SWP_NOACTIVATE | SWP_NOZORDER | SWP_SHOWWINDOW,
-            )
-        } else {
-            SetWindowPos(
-                hwnd,
-                Some(HWND_TOP),
-                px,
-                py,
-                w as i32,
-                h as i32,
-                SWP_NOACTIVATE | SWP_SHOWWINDOW,
-            )
-        }
+        SetWindowPos(
+            hwnd,
+            Some(HWND_TOP),
+            px,
+            py,
+            w as i32,
+            h as i32,
+            SWP_NOACTIVATE | SWP_SHOWWINDOW,
+        )
         .map_err(|e| format!("SetWindowPos embed failed: {e}"))?;
     }
     let place_ms = now_ms().saturating_sub(place_started);
@@ -1966,7 +1992,7 @@ pub async fn browser_embed_set_bounds(
     viewport_width: Option<f64>,
     viewport_height: Option<f64>,
     present: Option<bool>,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     #[cfg(not(target_os = "windows"))]
     {
         let _ = (app, thread_id, x, y, width, height, viewport_width, viewport_height, present);
@@ -1984,15 +2010,15 @@ pub async fn browser_embed_set_bounds(
                 "[browser-embed] set_bounds skip label={label} present=false parked={}",
                 is_parked(&label)
             ));
-            return Ok(());
+            return Ok(false);
         }
         let show_gen = SHOW_GEN.load(Ordering::Acquire);
         let Some(window) = app.get_webview_window(&label) else {
-            // Bounds tracking fires on every panel move. A missing window here means
-            // the embed was closed underneath us — swallowing that as success is
-            // what let a dead window look like a healthy one.
-            browser_cdp_server::log_line(&format!("[browser-embed] set_bounds SKIPPED: window {label} not found"));
-            return Ok(());
+            // 窗口没了：返回 false，前端会 ensure 重建。以前吞掉成功导致槽位空白。
+            browser_cdp_server::log_line(&format!(
+                "[browser-embed] set_bounds MISSING window {label} — caller should recreate"
+            ));
+            return Ok(false);
         };
         let Some(main) = app.get_webview_window("main") else {
             return Err("main window not found".into());
@@ -2010,7 +2036,7 @@ pub async fn browser_embed_set_bounds(
             browser_cdp_server::log_line(&format!(
                 "[browser-embed] set_bounds aborted label={label} (hidden while measuring)"
             ));
-            return Ok(());
+            return Ok(false);
         }
         mark_parked(&label, false);
         let _ = window.show();
@@ -2023,7 +2049,7 @@ pub async fn browser_embed_set_bounds(
             browser_cdp_server::log_line(&format!(
                 "[browser-embed] set_bounds re-hid label={label} (park won the race)"
             ));
-            return Ok(());
+            return Ok(false);
         }
         log_region_diag(
             "set-bounds",
@@ -2071,7 +2097,7 @@ pub async fn browser_embed_set_bounds(
                 ));
             }
         }
-        Ok(())
+        Ok(true)
     } // cfg(target_os = "windows") for browser_embed_set_bounds body
 }
 
@@ -2122,7 +2148,6 @@ fn log_window_state(win: &WebviewWindow, phase: &str) {
 /// content box. `WebviewWindow::position` interprets its arguments in screen
 /// coordinates, so passing the former straight through drops the embedded window
 /// at the top-left of the desktop — visible as a stray unstyled white panel.
-#[cfg(target_os = "windows")]
 /// 主窗口客户区原点（屏幕物理 px）。前端上报的槽位矩形是
 /// getBoundingClientRect × devicePixelRatio = 客户区物理坐标；
 /// 屏幕物理 = 客户区原点物理 + 客户区坐标。全程物理像素，不碰 scale_factor
@@ -2161,8 +2186,9 @@ pub async fn browser_embed_park(app: tauri::AppHandle, thread_id: String) -> Res
             "[browser-embed] park ENTER label={label} child={}",
             embed_is_ws_child(&window)
         ));
+        // 只用 ShowWindow(SW_HIDE)。Tauri hide() 在子 WebView2 上偶发把窗口从
+        // 管理表里摘掉，之后 set_bounds 找不到窗、右侧空白。
         hide_embed_hwnd(&window)?;
-        let _ = window.hide();
         browser_cdp_server::log_line(&format!("[browser-embed] park HIDDEN label={label}"));
         Ok(())
     }

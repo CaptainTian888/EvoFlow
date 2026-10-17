@@ -181,6 +181,133 @@ const __evoflowBridgeSymbol = Symbol.for("zcode.node-repl.browser-control-bridge
       if (globalThis.__evoflowBrowserLog.length > 50) globalThis.__evoflowBrowserLog.shift();
     } catch {}
   };
+    // ── playwright 命令面（browser-use 插件 Tab API 的核心操作面）──
+    // 插件运行时把所有 Tab 操作发成 { method:"playwright", action:{name,...} }，
+    // 读取类结果放在 .value（runValue），动作类只看 ok（runAction）。
+    const __pwHandle = async (cmd) => {
+      const act0 = cmd.action || {};
+      // 定位器操作形状：{ name:"locator", selector, operation, ...fields } —— 
+      // 运行时把 locator 链的每个动作都发成 name:"locator"+operation。
+      // 这里改写成 leaf 操作（fill/click/...）+ selector 再进入下方各分支。
+      if (act0.name === "locator") {
+        const op = String(act0.operation || "");
+        return __pwHandle({ method: "playwright", action: { ...act0, name: op, selector: act0.selector } });
+      }
+      const act = act0;
+      const an = act.name || "";
+      const engine = (command) => __gwFetch("/api/browser/execute", { method: "POST", body: JSON.stringify({ command }) });
+      const cssSel = () => {
+        const s = act.locator?.selector || act.selector || "";
+        return s && !s.startsWith("internal:") ? s : "";
+      };
+      if (an === "domSnapshot") {
+        // 引擎 snapshot 返回结构化 {url,title,elements[]}；运行时契约要字符串。
+        // 序列化成 "[e12] button \"搜索\" x=..y=.." 的文本树，坐标供 x/y 点击。
+        const r = await engine({ method: "snapshot", maxElements: 400 });
+        const snap = r.snapshot || {};
+        const els = Array.isArray(snap.elements) ? snap.elements : [];
+        const lines = els.map((el) => {
+          const ref = el.ref ? `[${el.ref}]` : "";
+          const geo = el.x != null ? ` x=${Math.round(el.x)},y=${Math.round(el.y)}` : "";
+          return `${ref} ${el.role || el.tag || "node"} "${String(el.name || "").slice(0, 80)}"${geo}`.trim();
+        });
+        return { ok: true, value: `page: ${snap.url || ""} | ${snap.title || ""}
+${lines.join(String.fromCharCode(10))}` };
+      }
+      if (an === "waitForLoadState") {
+        // 引擎 navigate 已等待 document.readyState=complete；这里直接确认。
+        return { ok: true, value: true };
+      }
+      if (an === "waitForURL") {
+        const want = String(act.url || "");
+        for (let i = 0; i < 10; i++) {
+          const st = await engine({ method: "getState" });
+          if (st.state?.url && st.state.url.startsWith(want)) break;
+          await new Promise((r) => setTimeout(r, 300));
+        }
+        return { ok: true, value: true };
+      }
+      if (an === "evaluate") {
+        const r = await engine({ method: "evaluate", expression: String(act.expression ?? act.pageFunction ?? "") });
+        return { ok: true, value: r.value ?? null };
+      }
+      if (an === "elementInfo") {
+        return await engine({ method: "elementInfo", ...(act.options || {}) });
+      }
+      if (an === "waitForTimeout") {
+        await new Promise((r) => setTimeout(r, Math.min(Number(act.timeoutMs) || 0, 3000)));
+        return { ok: true, value: true };
+      }
+      const sel = cssSel();
+      if (!sel) {
+        return { ok: false, error: { code: "unsupported", message: `EvoFlow v1 暂不支持 Playwright role/text 定位器（${an}）。请先用 playwright domSnapshot 获取页面结构与坐标/ref，再用 CSS selector 定位。action=${JSON.stringify(act).slice(0, 200)}` } };
+      }
+      if (an === "click" || an === "dblclick") {
+        const r = await engine({
+          method: "evaluate",
+          expression: `(function(){const el=document.querySelector(${JSON.stringify(sel)});if(!el)return JSON.stringify(null);el.scrollIntoView({block:'center'});const rc=el.getBoundingClientRect();return JSON.stringify({x:rc.left+rc.width/2,y:rc.top+rc.height/2});})()`,
+        });
+        const pt = r.value && typeof r.value === "string" ? JSON.parse(r.value) : null;
+        if (!pt) return { ok: false, error: { code: "execution_error", message: `element not found: ${sel}` } };
+        const out = { ok: true, value: true };
+        await engine({ method: an === "dblclick" ? "dblclick" : "click", x: pt.x, y: pt.y });
+        return out;
+      }
+      if (an === "fill" || an === "type") {
+        const text = String(act.text ?? act.value ?? "");
+        const r = await engine({
+          method: "evaluate",
+          expression: `(function(){const el=document.querySelector(${JSON.stringify(sel)});if(!el)throw new Error('element not found');el.focus();const d=Object.getOwnPropertyDescriptor((el.__proto__||Object.getPrototypeOf(el)),'value');if(d&&d.set)d.set.call(el,${JSON.stringify(text)});else el.value=${JSON.stringify(text)};el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));return true;})()`,
+        });
+        return { ok: true, value: r.value ?? true };
+      }
+      if (an === "press") {
+        return await engine({ method: "press", key: String(act.key || "Enter") });
+      }
+      if (an === "selectOption") {
+        const r = await engine({
+          method: "evaluate",
+          expression: `(function(){const el=document.querySelector(${JSON.stringify(sel)});if(!el)throw new Error('element not found');el.value=${JSON.stringify(String(act.value ?? ""))};el.dispatchEvent(new Event('change',{bubbles:true}));return true;})()`,
+        });
+        return { ok: true, value: r.value ?? true };
+      }
+      if (an === "textContent" || an === "innerText" || an === "allTextContents") {
+        const prop = an === "innerText" ? "innerText" : "textContent";
+        const r = await engine({
+          method: "evaluate",
+          expression: `(function(){const els=[...document.querySelectorAll(${JSON.stringify(sel)})];return JSON.stringify(${an === "allTextContents" ? "els.map(e=>e." + prop + ")" : "els.length?els[0]." + prop + ":null"});})()`,
+        });
+        let v = r.value;
+        try { v = JSON.parse(v); } catch {}
+        return { ok: true, value: v };
+      }
+      if (an === "getAttribute") {
+        const r = await engine({
+          method: "evaluate",
+          expression: `(function(){const el=document.querySelector(${JSON.stringify(sel)});return el?el.getAttribute(${JSON.stringify(String(act.name || ""))}):null;})()`,
+        });
+        return { ok: true, value: r.value ?? null };
+      }
+      if (an === "isVisible" || an === "isEnabled") {
+        const r = await engine({
+          method: "evaluate",
+          expression: `(function(){const el=document.querySelector(${JSON.stringify(sel)});if(!el)return false;${an === "isEnabled" ? "return !el.disabled;" : "const s=getComputedStyle(el);return s.display!=='none'&&s.visibility!=='hidden'&&el.getBoundingClientRect().width>0;"})()`,
+        });
+        return { ok: true, value: !!r.value };
+      }
+      if (an === "count") {
+        const r = await engine({
+          method: "evaluate",
+          expression: `(function(){return document.querySelectorAll(${JSON.stringify(sel)}).length;})()`,
+        });
+        return { ok: true, value: Number(r.value) || 0 };
+      }
+      if (an === "waitFor") {
+        return { ok: true, value: true };
+      }
+      return { ok: false, error: { code: "unsupported", message: `EvoFlow v1 暂不支持 playwright.${an}；可用：domSnapshot/click/dblclick/fill/type/press/selectOption/textContent/innerText/getAttribute/isVisible/isEnabled/count/evaluate/waitForLoadState/waitForURL/waitForTimeout。action=${JSON.stringify(act).slice(0, 160)}` } };
+    };
+
   globalThis[__evoflowBridgeSymbol] = {
     documentationRoot: __docsRoot,
     assertAvailable: __assert,
@@ -210,6 +337,8 @@ const __evoflowBridgeSymbol = Symbol.for("zcode.node-repl.browser-control-bridge
         let result;
         if (__local[name]) {
           result = __local[name](cmd);
+        } else if (name === "playwright") {
+          result = await __pwHandle(cmd);
         } else if (__direct.has(name)) {
           result = await __gwFetch("/api/browser/execute", { method: "POST", body: JSON.stringify({ command: cmd }) });
         } else if (__map[name]) {

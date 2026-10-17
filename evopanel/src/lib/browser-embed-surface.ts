@@ -129,15 +129,26 @@ export function endGlobalOverlay(reason = 'overlay') {
 
 /**
  * 槽位布局变了。只有这个 stageId 正是前台浏览器页且无全局遮罩时才贴位。
+ * 窗口若已销毁（park/崩溃后），改走 ensure 重建，避免右侧空白。
  */
-export function reportEmbedSlot(stageId: string, slot: EmbedSlot) {
+export function reportEmbedSlot(stageId: string, slot: EmbedSlot, opts?: { url?: string }) {
   const id = String(stageId || '').trim()
   if (!id || id !== visibleStageId || overlayDepth > 0) return
-  void browserEmbedSetBounds({
-    threadId: NATIVE_EMBED_THREAD_ID,
-    ...slot,
-    present: true,
-  })
+  void (async () => {
+    const applied = await browserEmbedSetBounds({
+      threadId: NATIVE_EMBED_THREAD_ID,
+      ...slot,
+      present: true,
+    })
+    if (applied) return
+    blog('warn', `[browser-embed-surface] set-bounds missed stage=${id} — recreating`)
+    await ensureNativeEmbed({
+      url: opts?.url,
+      slot,
+      stageId: id,
+      reason: 'recreate-missing',
+    })
+  })()
 }
 
 /** 右栏还没量到槽位时的占位矩形。只用于把窗口建出来，不会在非浏览器页上显示。 */

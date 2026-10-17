@@ -712,7 +712,7 @@ function BrowserEmbedHost({
     const bounds = readEmbedBounds(slotRef.current)
     if (!bounds) return
     const started = performance.now()
-    reportEmbedSlot(stageIdRef.current, bounds)
+    reportEmbedSlot(stageIdRef.current, bounds, { url: pageUrlRef.current })
     const elapsed = Math.round(performance.now() - started)
     if (elapsed >= 200) {
       console.warn(
