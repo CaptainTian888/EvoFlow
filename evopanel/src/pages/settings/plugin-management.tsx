@@ -10,7 +10,6 @@
  *   /api/plugins/*（Python 端口自 ZCode CLI 插件适配器，存储布局与
  *   ZCode 逐字节兼容：known_marketplaces.json / installed_plugins.json /
  *   marketplaces/<id>/marketplace.json / cache/<marketplace>/<name>/<version>）
- *   mcpSyncService          = 共享工厂（evoflow-bridge-services.ts）
  *
  * 挂载约定（与 hub.js ensurePanelMounted 对齐）：
  *   export function mountPluginManagementInto(container)
@@ -24,7 +23,6 @@ import { PlatformProvider } from "@/hooks/usePlatform.js";
 import { ServiceProvider } from "@/hooks/useServices.js";
 import { ZCodeIntlProvider } from "@/i18n/IntlProvider.js";
 import { TooltipProvider } from "@/components/ui/tooltip.js";
-import { useMcpStore, setMcpStoreDirectoryService } from "@/store/mcpStore.js";
 import { usePluginManagementStore } from "@/store/pluginManagementStore.js";
 import { PluginsSection } from "@/settings/PluginsSection.js";
 import { PluginStorePage } from "@/settings/PluginStorePage.js";
@@ -32,7 +30,6 @@ import "@/styles-bridge.css";
 import type { IServiceAccessor } from "@zcode/services";
 import { EvoflowPluginManagementClient } from "../../zcode-services/plugins/pluginManagement.client.js";
 import {
-  createEvoflowMcpSyncService,
   createEvoflowSettingsSyncService,
   evoflowStubPlatform,
 } from "./evoflow-bridge-services.js";
@@ -45,19 +42,17 @@ const BRIDGE_WORKSPACE_PATH = "evoflow://plugins";
 // ---------------------------------------------------------------------------
 
 const pluginClient = new EvoflowPluginManagementClient();
-const mcpSyncService = createEvoflowMcpSyncService();
 
 function createEvoflowServiceAccessor(): IServiceAccessor {
   return {
     pluginManagementService: pluginClient,
-    mcpSyncService,
     settingsSyncService: createEvoflowSettingsSyncService(),
     // PluginStorePage / PluginsSection 会从 accessor 取这些服务；
     // 当前组件树未实际调用其方法，提供空实现防止 undefined 解引用。
     clientConfigService: {
       getSnapshot: async () => ({ pluginStoreOrder: null }),
     },
-    // Skills tab（PluginsSection 内嵌）只读列表；EvoFlow 技能管理在原生页提供。
+    // 商店安装后会刷新技能目录；MCP/技能管理页暂未迁入本壳，给空实现即可。
     skillsService: {
       list: async () => ({ skills: [], capability: null, diagnostics: [] }),
       setEnabled: async () => ({}),
@@ -76,22 +71,12 @@ function EvoflowPluginApp(): ReactElement {
   const [storeOpen, setStoreOpen] = useState(false);
 
   useEffect(() => {
-    // MCP tab（PluginsSection 内嵌）需要 mcpStore 预载，与 MCP 桥接页一致。
-    setMcpStoreDirectoryService(mcpSyncService as never);
-    void useMcpStore
-      .getState()
-      .loadMcpFromUserDirectory(mcpSyncService as never, undefined);
-
     void usePluginManagementStore.getState().initialize({
       workspacePath: BRIDGE_WORKSPACE_PATH,
       workspaceIdentity: undefined,
       configScope: "user",
       pluginService: pluginClient as never,
     });
-
-    return () => {
-      setMcpStoreDirectoryService(null);
-    };
   }, [services]);
 
   const content = storeOpen
@@ -129,10 +114,7 @@ function EvoflowPluginApp(): ReactElement {
 
 const _roots = new Map<HTMLElement, Root>();
 
-export function mountPluginManagementInto(
-  container: HTMLElement,
-  _opts: { initialTab?: "plugins" | "mcps" | "skills" } = {},
-): void {
+export function mountPluginManagementInto(container: HTMLElement): void {
   cleanup();
   container.innerHTML = "";
 

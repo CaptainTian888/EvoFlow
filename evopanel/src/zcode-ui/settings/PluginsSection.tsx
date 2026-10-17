@@ -1,4 +1,4 @@
-/* eslint-disable max-lines -- 共享能力外壳聚合 Scope，并承载 Plugin tabs 与独立 Commands 入口。 */
+/* eslint-disable max-lines -- 共享能力外壳聚合 Scope，并承载插件列表与独立 MCP/技能/命令入口。 */
 import { PluginAddMenu } from "@/settings/PluginAddMenu.js";
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import {
@@ -1158,14 +1158,7 @@ export function PluginsSection({
           onSectionSelect={openPluginStoreForSelectedScope}
         />
       ) : null}
-      <Tabs
-        value={selectedTab}
-        onValueChange={(value) => {
-          if (mode === "plugin") {
-            setInteractiveTab(normalizePluginTab(value as PluginTabTarget));
-          }
-        }}
-      >
+      <Tabs value={selectedTab}>
         {!mcpEditorOpen && !pluginDetailOpen && !commandEditorOpen ? (
           <div className="flex min-w-0 flex-wrap items-center gap-3">
             <div className="flex min-w-0 flex-wrap items-center gap-3">
@@ -1316,7 +1309,7 @@ export function PluginsSection({
                   selectedScope.kind === "user" ? openPluginStoreForSelectedScope : undefined
                 }
                 showMarketplaceBreadcrumb={showMarketplaceBreadcrumb}
-                reportDetailBreadcrumb={mode === "plugin"}
+                reportDetailBreadcrumb={false}
                 onVisibleCountChange={updateSkillCount}
               />
             ) : (
