@@ -98,10 +98,23 @@ def _display_marker(payload: dict[str, Any]) -> str:
     return _DISPLAY_MARKER_PREFIX + json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "}"
 
 
+def _mcp_log(message: str) -> None:
+    """MCP 工具调用日志 → 插件控制日志（与浏览器/电脑控制三端同文件）。"""
+    try:
+        from evoflow.tools.builtins.browser_debug_log import browser_debug_log
+
+        browser_debug_log("py", f"[mcp:node_repl] {message}")
+    except Exception:
+        pass
+
+
 def _run(code: str, timeout_ms: int | None = None, title: str = "", runtime: ToolRuntime[Any, Any] | None = None) -> str:
     # `title` 仅用于面板显示，不转发给 node-repl-host。
+    import time as _time
+
     from evoflow.plugins.node_repl import call_node_repl_js_structured
 
+    started = _time.monotonic()
     kwargs: dict[str, Any] = {"code": code}
     if timeout_ms:
         kwargs["timeout_ms"] = timeout_ms
@@ -109,7 +122,16 @@ def _run(code: str, timeout_ms: int | None = None, title: str = "", runtime: Too
     # 真实会话 id → 宿主 broker 按会话隔离状态并仲裁桌面控制器租约
     # （两个对话同时开电脑控制时，后到的拿到 CONTROLLER_BUSY 而不是互相打断）。
     kwargs["session_id"] = f"evoflow-thread:{thread_id}"
-    result = call_node_repl_js_structured(**kwargs)
+    # MCP 调用日志：完整输入（代码全文截断 3000 字符）+ 标题 + 会话。
+    _mcp_log(
+        f"CALL start title={title!r} thread={thread_id} code({len(code)} chars)="
+        + code.replace("\n", "\\n")[:3000]
+    )
+    try:
+        result = call_node_repl_js_structured(**kwargs)
+    except Exception as exc:
+        _mcp_log(f"CALL raised dur={_time.monotonic() - started:.1f}s error={str(exc)[:600]}")
+        raise
     text = str(result.get("text") or "")
     if result.get("is_error"):
         # 报错也走同一通道：把已有文本 + 标记交给上层（Projector 仍可渲染失败态），
@@ -160,6 +182,15 @@ def _run(code: str, timeout_ms: int | None = None, title: str = "", runtime: Too
                 }
     if app_identity:
         display["target_app"] = app_identity
+
+    # MCP 调用日志：完整输出（正文截断 800 字符）+ 状态 + 耗时 + 附带信息。
+    _mcp_log(
+        f"CALL done status={'error' if result.get('is_error') else 'ok'} "
+        f"dur={_time.monotonic() - started:.1f}s text({len(text)} chars)="
+        + text.replace("\n", "\\n")[:800]
+        + (f" images={len(image_entries)}" if image_entries else "")
+        + (f" target_app={app_identity.get('app_key')}" if app_identity else "")
+    )
 
     return f"{text}\n\n{_display_marker(display)}"
 

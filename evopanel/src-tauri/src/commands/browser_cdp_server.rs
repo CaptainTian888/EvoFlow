@@ -56,7 +56,7 @@ pub(crate) fn log_line(s: &str) {
     if let Some(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(evoflow_dir().join("browser-debug.log"))
+        .open(evoflow_dir().join("插件控制日志.log"))
         .ok()
     {
         let now = std::time::SystemTime::now()

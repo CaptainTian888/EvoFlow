@@ -90,7 +90,12 @@ async def execute(payload: CuaExecuteRequest) -> dict[str, Any]:
 
     method = payload.method
     started = asyncio.get_event_loop().time()
-    browser_debug_log("py", f"[cua] execute start method={method} input_keys={sorted(dict(payload.input or {}).keys())}")
+    # 电脑控制 MCP 全量日志：完整输入进插件控制日志（[mcp:cua] 与内核工具同前缀族）。
+    browser_debug_log(
+        "py",
+        f"[mcp:cua] CALL start method={method} input="
+        + json.dumps(payload.input or {}, ensure_ascii=False)[:1000],
+    )
     action_map = {
         # wire method → ps1 Action
         "get_app_state": "get_app_state",
@@ -110,15 +115,17 @@ async def execute(payload: CuaExecuteRequest) -> dict[str, Any]:
         logger.warning("CUA execute %s failed: %s", method, exc)
         browser_debug_log(
             "py",
-            f"[cua] execute FAILED method={method} after {asyncio.get_event_loop().time() - started:.1f}s: {exc}",
+            f"[mcp:cua] CALL FAILED method={method} after {asyncio.get_event_loop().time() - started:.1f}s: {exc}",
         )
         return {
             "content": [{"type": "text", "text": json.dumps({"kind": "cua_error", "message": str(exc)[:300]})}],
             "isError": True,
         }
+    result_head = json.dumps(raw, ensure_ascii=False)[:600] if isinstance(raw, dict) else str(raw)[:600]
     browser_debug_log(
         "py",
-        f"[cua] execute done method={method} ok={bool(raw.get('ok'))} after {asyncio.get_event_loop().time() - started:.1f}s",
+        f"[mcp:cua] CALL done method={method} ok={bool(raw.get('ok')) if isinstance(raw, dict) else '?'} "
+        f"after {asyncio.get_event_loop().time() - started:.1f}s result={result_head}",
     )
     return _to_call_tool_result(method, raw)
 

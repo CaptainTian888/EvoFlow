@@ -4,7 +4,7 @@
 Rust stderr、Python logging、前端 console 三处，时间线对不上。本模块把
 所有浏览器相关日志追加到同一个文件：
 
-    {evoflow_dir}/browser-debug.log
+    {evoflow_dir}/插件控制日志.log
 
 写入方：
 - Rust:  ``browser_cdp_server::log_line``（窗口生命周期/CDP 分发，前缀 ``[rust]``）
@@ -24,12 +24,12 @@ import threading
 from datetime import datetime
 from pathlib import Path
 
-_FILE_NAME = "browser-debug.log"
+_FILE_NAME = "插件控制日志.log"
 _WRITE_LOCK = threading.Lock()
 
 
 def unified_log_path() -> Path:
-    """与 Rust ``evoflow_dir()`` 相同的目录下的 browser-debug.log。"""
+    """与 Rust ``evoflow_dir()`` 相同的目录下的 插件控制日志.log。"""
     env = os.environ.get("EVOFLOW_CONFIG_DIR")
     if env:
         base = Path(env)
