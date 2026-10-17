@@ -150,6 +150,10 @@ async function runLoadInto(
       diagnostics,
       loading: false,
     });
+    // 设置页安装/启停后把 overview 灌进「+」面板共用缓存，避免下次点开再打接口。
+    void import("../../lib/plugin-catalog.js")
+      .then((m) => m.seedPluginCatalogFromOverview(overviewResult.installedPlugins))
+      .catch(() => {});
   } catch (error) {
     logger.error("[plugins] overview/list failed", {
       workspacePath: params.workspacePath,

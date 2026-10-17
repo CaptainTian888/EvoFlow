@@ -381,3 +381,34 @@ class TestBrowserToolScreenshotFormat:
         assert "not included in your context" in old["summary"]
         assert "you will see the pixels" in new["summary"]
         assert new["staged_for_model"] is True and old["staged_for_model"] is False
+
+
+class TestCompactBrowserDocsDump:
+    def test_passthrough_small_or_non_docs(self):
+        from evoflow.plugins.node_repl_tool import _maybe_compact_browser_docs_dump
+
+        assert _maybe_compact_browser_docs_dump("hi") == "hi"
+        big = "x" * 8000
+        assert _maybe_compact_browser_docs_dump(big) == big
+
+    def test_replaces_zcode_full_dump_keeps_tail(self):
+        from evoflow.plugins.node_repl_tool import (
+            _EVOFLOW_COMPACT_BROWSER_DOCS,
+            _maybe_compact_browser_docs_dump,
+        )
+
+        fake = (
+            "# Selected Browser\n"
+            + ("x" * 7000)
+            + "\n# Built-in Browser Automation API\n"
+            + ("y" * 1000)
+        )
+        out = _maybe_compact_browser_docs_dump(fake)
+        assert out == _EVOFLOW_COMPACT_BROWSER_DOCS
+        assert "EvoFlow compact API guide" in out
+        assert len(out) < len(fake)
+
+        with_tail = fake + '\n==> {"ok": true, "title": "Shanghai"}'
+        out2 = _maybe_compact_browser_docs_dump(with_tail)
+        assert out2.startswith(_EVOFLOW_COMPACT_BROWSER_DOCS)
+        assert '==> {"ok": true' in out2

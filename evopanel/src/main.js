@@ -1085,6 +1085,7 @@ async function checkWebuiRemoteAuth() {
 
     if (backendOk || isTauri) {
       import('./lib/skill-catalog.js').then((m) => m.prefetchSkillCatalog()).catch(() => {})
+      import('./lib/plugin-catalog.js').then((m) => m.prefetchPluginCatalog()).catch(() => {})
       const warmSettings = () => {
         import('./components/settings-modal.js')
           .then((m) => m.prefetchSettingsModal?.())

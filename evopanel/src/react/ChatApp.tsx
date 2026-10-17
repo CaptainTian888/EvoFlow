@@ -4899,11 +4899,23 @@ useEffect(() => {
     [persistSelectedPlugins, selectedSessionKey],
   )
 
-  const loadPluginCatalog = useCallback(async () => {
+  const refreshPluginCatalog = useCallback(async (force = false) => {
     setPluginListLoading(true)
     try {
-      const { fetchEnabledPlugins } = await import('./components/PluginPickerModal.js')
-      setPluginList(await fetchEnabledPlugins())
+      const { loadPluginCatalog } = await import('../lib/plugin-catalog.js')
+      const rows = await loadPluginCatalog({ enabledOnly: true, force })
+      setPluginList(
+        rows.map((p) => ({
+          id: p.id,
+          name: p.name,
+          label: p.label,
+          description: p.description || '',
+          version: p.version,
+          marketplace: p.marketplace,
+          componentTypes: p.componentTypes,
+          iconUrl: p.iconUrl,
+        })),
+      )
     } catch {
       setPluginList([])
     } finally {
@@ -7053,18 +7065,59 @@ useEffect(() => {
     })
   }, [pluginList])
 
-  /** 刷新后粘性恢复的 selectedPlugins 只有 id 没有 iconUrl，而 pluginList
-   * 仅在打开插件面板时才拉取——不自动补齐，pill 图标会一直退到 🧩 兜底。 */
+  /** 进入对话即订阅/预加载插件目录（与技能目录同模式；点「+」不再现拉）。 */
+  useEffect(() => {
+    let cancelled = false
+    queueMicrotask(() => setPluginListLoading(true))
+    let unsub = () => {}
+    type PluginCatalogRow = {
+      id: string
+      name: string
+      label: string
+      description: string
+      version?: string
+      marketplace: string
+      componentTypes?: string[]
+      iconUrl?: string
+      enabled: boolean
+    }
+    const toPickerItems = (rows: PluginCatalogRow[]) =>
+      rows
+        .filter((p) => p.enabled !== false)
+        .map((p) => ({
+          id: p.id,
+          name: p.name,
+          label: p.label,
+          description: p.description || '',
+          version: p.version,
+          marketplace: p.marketplace,
+          componentTypes: p.componentTypes,
+          iconUrl: p.iconUrl,
+        }))
+    void import('../lib/plugin-catalog.js').then((mod) => {
+      if (cancelled) return
+      unsub = mod.subscribePluginCatalog((rows: PluginCatalogRow[]) => {
+        if (cancelled) return
+        setPluginList(toPickerItems(rows))
+        setPluginListLoading(false)
+      })
+      void mod.loadPluginCatalog({ enabledOnly: true }).catch(() => {
+        if (cancelled) return
+        setPluginList([])
+        setPluginListLoading(false)
+      })
+    })
+    return () => {
+      cancelled = true
+      unsub()
+    }
+  }, [])
+
+  /** 粘性 selectedPlugins 只有 id 时，目录尚未到达则强制拉一次补齐 iconUrl。 */
   useEffect(() => {
     if (selectedPlugins.length === 0 || pluginList.length > 0 || pluginListLoading) return
-    void loadPluginCatalog()
-  }, [selectedPlugins.length, pluginList.length, pluginListLoading, loadPluginCatalog])
-
-  useEffect(() => {
-    if (!bottomPluginPanelOpen) return
-    // 打开插件快捷面板时刷新目录（覆盖刚安装/停用的插件）
-    void loadPluginCatalog()
-  }, [bottomPluginPanelOpen, loadPluginCatalog])
+    void refreshPluginCatalog()
+  }, [selectedPlugins.length, pluginList.length, pluginListLoading, refreshPluginCatalog])
 
   const onGoalClosureReport = useCallback((p: { sessionKey: string; outcome: string; body: string; ts?: number }) => {
     const sk = String(p.sessionKey || '').trim()

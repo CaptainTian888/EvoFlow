@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import '@/styles-bridge.css'
-import { gatewayProxy } from '../../lib/tauri-api.js'
+import { loadPluginCatalog } from '../../lib/plugin-catalog.js'
 import { resolvePluginIconSource } from '@/lib/pluginIconSource.js'
 
 export type PluginPickerItem = {
@@ -28,25 +28,19 @@ export type PluginCatalogItem = {
   listing?: { displayName?: string; icon?: string } | null
 }
 
-/** 拉取已安装且启用的插件（供聊天「+」插件选择器使用）。 */
+/** 拉取已安装且启用的插件（全局缓存；供聊天/工作台「+」选择器使用）。 */
 export async function fetchEnabledPlugins(): Promise<PluginPickerItem[]> {
-  // 桌面端必须走 gatewayProxy，裸 fetch 相对 /api 会拿到 SPA HTML。
-  const body = (await gatewayProxy('GET', '/api/plugins/overview')) as {
-    installedPlugins?: PluginCatalogItem[]
-  }
-  const rows = body.installedPlugins ?? []
-  return rows
-    .filter((row) => row.enabled !== false)
-    .map((row) => ({
-      id: row.id,
-      name: row.name,
-      label: row.listing?.displayName || row.name,
-      description: row.description || '',
-      version: row.version,
-      marketplace: row.marketplace,
-      componentTypes: row.componentTypes,
-      iconUrl: row.listing?.icon || undefined,
-    }))
+  const rows = await loadPluginCatalog({ enabledOnly: true })
+  return rows.map((row) => ({
+    id: row.id,
+    name: row.name,
+    label: row.label,
+    description: row.description || '',
+    version: row.version,
+    marketplace: row.marketplace,
+    componentTypes: row.componentTypes,
+    iconUrl: row.iconUrl,
+  }))
 }
 
 const COMPONENT_BADGES: Record<string, string> = {

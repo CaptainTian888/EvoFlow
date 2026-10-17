@@ -71,8 +71,9 @@ import { AgentPickerModal } from './AgentPickerModal.js'
 import { ChartSizeGate } from './ChartSizeGate.js'
 import { ModelCatalogMenu } from './ModelCatalogMenu.js'
 import { PluginQuickPanel } from './PluginQuickPanel.js'
-import { fetchEnabledPlugins, type PluginPickerItem, type PluginSelection } from './PluginPickerModal.js'
+import { type PluginPickerItem, type PluginSelection } from './PluginPickerModal.js'
 import { SkillPickerModal, type SkillPickerItem, type SkillSelection } from './SkillPickerModal.js'
+import { loadPluginCatalog, subscribePluginCatalog } from '../../lib/plugin-catalog.js'
 import { resolvePluginIconSource } from '../../zcode-ui/lib/pluginIconSource.js'
 import { PluginPillIcon } from './PluginPillIcon.js'
 
@@ -438,25 +439,45 @@ export function EvoFlowHomeDashboard({ onPrompt, workspaceLabel = '', workspaceP
     return () => window.removeEventListener('evopanel:goal-ui', onGoalUi as EventListener)
   }, [])
 
-  // 「+」面板打开时加载插件目录（与主对话 loadPluginCatalog 同源）
+  // 首页就绪即预加载插件目录（与技能目录同模式；点「+」不再现拉）
   useEffect(() => {
-    if (!pluginPanelOpen) return
-    let cancelled = false
     setPluginListLoading(true)
-    void (async () => {
-      try {
-        const list = await fetchEnabledPlugins()
-        if (!cancelled) setPluginList(Array.isArray(list) ? list : [])
-      } catch {
-        if (!cancelled) setPluginList([])
-      } finally {
-        if (!cancelled) setPluginListLoading(false)
-      }
-    })()
-    return () => {
-      cancelled = true
+    type PluginCatalogRow = {
+      id: string
+      name: string
+      label: string
+      description: string
+      version?: string
+      marketplace: string
+      componentTypes?: string[]
+      iconUrl?: string
+      enabled: boolean
     }
-  }, [pluginPanelOpen])
+    const toPickerItems = (rows: PluginCatalogRow[]): PluginPickerItem[] =>
+      rows
+        .filter((p) => p.enabled !== false)
+        .map((p) => ({
+          id: p.id,
+          name: p.name,
+          label: p.label,
+          description: p.description || '',
+          version: p.version,
+          marketplace: p.marketplace,
+          componentTypes: p.componentTypes,
+          iconUrl: p.iconUrl,
+        }))
+    const unsub = subscribePluginCatalog((rows: PluginCatalogRow[]) => {
+      setPluginList(toPickerItems(rows))
+      setPluginListLoading(false)
+    })
+    void loadPluginCatalog({ enabledOnly: true }).catch(() => {
+      setPluginList([])
+      setPluginListLoading(false)
+    })
+    return () => {
+      unsub()
+    }
+  }, [])
 
   // 「+」面板定位：优先锚定按钮下方展开（首页输入框在页面中部，下方空间更充裕）；
   // 下方放不下时回落到主对话同款「按钮上方」定位。
