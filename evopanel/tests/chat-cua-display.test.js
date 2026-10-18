@@ -161,6 +161,24 @@ describe('old-path tool result → CUA preview payload', () => {
     expect(parseEvoflowCuaDisplay(entries[0].output)).toBeNull()
   })
 
+  it('merges target_app from app: line when marker only has images', () => {
+    const text = [
+      'app: D:\\app\\Feishu\\Feishu.exe pid=42 "飞书"',
+      '',
+      '[Screenshot captured: /api/threads/t1/browser-snapshots/abc123def456 (12KB) — shown.]',
+      '',
+      buildMarker({
+        status: 'success',
+        images: [{ url: '/api/threads/t1/browser-snapshots/abc123def456', kb: 12 }],
+      }),
+    ].join('\n')
+    const resolved = resolveEvoflowCuaDisplay(text)
+    expect(resolved?.images?.[0]?.url).toContain('abc123def456')
+    expect(resolved?.target_app?.display_name).toBe('飞书')
+    expect(resolved?.target_app?.app_key).toContain('windows-exe:')
+    expect(resolved?.target_app?.app_key.toLowerCase()).toContain('feishu.exe')
+  })
+
   it('infers cua_display from Screenshot banner after marker was stripped', () => {
     const text = [
       'app: D:\\app\\Tencent\\WeChat\\Weixin.exe pid=13620 "微信"',

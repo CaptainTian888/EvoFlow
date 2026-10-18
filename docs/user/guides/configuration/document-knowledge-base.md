@@ -1,41 +1,22 @@
-# 上传文档（RAG）— 已下线
+# 上传文档（旧 RAG 入口）
 
-> **本能力已下线。** 请改用侧栏 **[知识库（Obsidian Vault）](knowledge-vault.md)** [[guides/configuration/knowledge-vault|知识库]]（`#/knowledge/vaults`）。
+> **先分清智能体和员工**
 >
-> 旧路由 `#/knowledge` / `#/knowledge/:id` 会自动跳转到知识库页。Agent 请使用 `knowledge(action=…)`，不再提供 `search_knowledge_base`。
+> 1. **区别**：智能体管「会什么」（人设、模型、工具、技能、连接器 MCP）。员工管「何时主动干」（岗位、职责、部门与上级、上班时间、转交审批、工作空间、绑定知识库、预算）。聊天里 @ 智能体不会自动值班。
+> 2. **员工能配什么**：加人时填岗位名称、职责、部门、上级、知识库；更多设置里有能力来源、工作空间、关注子路径、工作模型、转交审批（全自动 / 平衡型 / 谨慎型）、自动上班。编辑岗位还可配工作方式、模型思考、系统提示词注入、知识库检索和预算。工具、技能、连接器到「智能体」页改。
+> 3. **怎么操作**：侧栏「员工」→「加人」→ 填岗位和至少一条职责 →「确认加人」→ 打开自动上班，或点「现在开始工作」，急活用小V 派活。交工后到任务中心确认或打回。字段见 [智能体员工](smart-employees.md)。
 
-零散 PDF/Word 可先放入 Obsidian / Markdown 目录，再连接为知识库；会话级附件仍走聊天 Composer（见 [文件上传](../chat/file-upload.md) [[guides/chat/file-upload|文件上传]]）。
+单独的「上传文档 RAG」页面已并入侧栏 **知识库**。请按 [知识库](knowledge-base.md) 新建库并上传 PDF、Office 或 Markdown。
 
-| 能力 | 入口 | Agent 工具 |
-|------|------|------------|
-| **知识库**（Vault） | `#/knowledge/vaults` | `knowledge(action=…)` |
-| **资产中心**（偏好/经验/反思） | `#/assets` | 对话自动整理 / `assets` 工具 |
-| **会话文件上传** | 聊天 Composer | 单次会话解析 |
-
-详见 [知识库](knowledge-vault.md) [[guides/configuration/knowledge-vault|知识库]]、[资产中心](asset-center.md) [[guides/configuration/asset-center|资产中心]]。
+`#/knowledge` 打开的就是这个知识库首页，不再跳到已删除的 Vault 页。会话里拖文件仍然只属于当前对话，见 [文件上传](../chat/file-upload.md)。
 
 ---
 
-## 开发者备注：gateway 里有两套 knowledge API，不互通
+## 开发者备注：两套 knowledge API 不互通
 
-排查「知识库怎么是空的 / AI 读不到」时，先分清你在跟哪套 API 对话：
+| API | 体系 | 谁在用 |
+|-----|------|--------|
+| `/api/knowledge`（dataset） | 旧上传文档残留 | 旧脚本。新实例列表为空是正常的 |
+| `/api/knowledge/owned` | **现在的知识库** | 面板知识库页，以及员工 / 智能体检索 |
 
-| API | 体系 | 数据来源 | 谁在用 |
-|-----|------|---------|--------|
-| `/api/knowledge`（dataset） | 旧「上传文档 RAG」残留（已下线） | `POST /{dataset_id}/sync-local` 等只服务 dataset 本身；新装实例 dataset 为空（`{"items": []}` 属正常） | 旧集成脚本 |
-| `/api/knowledge/owned` | **owned Vault 知识库**（现役） | 面板「知识库」页连接的 Obsidian/Markdown 目录，由后端服务管理索引 | 面板知识库页 + AI 的 `knowledge(action=…)` 工具 |
-
-要点：
-
-- **AI 侧 `knowledge` 工具只走 owned Vault**，与 dataset 体系不互通——给 dataset sync 文件对 AI 检索无效。
-- 让 AI 检索你的资料：把目录接入面板「知识库」页（owned Vault），或参考 [Obsidian Vault 集成](../integrations/obsidian-knowledge-vault.md)。
-- 自动化写入资料也走 owned Vault API（`/api/knowledge/owned/...`），不要往 `/api/knowledge` 塞。
-
----
-
-## 相关阅读
-
-- [[guides/configuration/knowledge-vault|知识库（Obsidian Vault）]] — 连接本机笔记库的全新方案
-- [[guides/configuration/asset-center|资产中心]] — 偏好、经验与反思
-- [[guides/integrations/obsidian-knowledge-vault|Obsidian Vault 集成]] — 底层架构与 MCP 细节
-- [[guides/chat/file-upload|文件上传]] — 会话级附件解析
+AI 检索只读 owned 知识库。给旧 dataset 同步文件，面板里的「问 AI」和员工绑定库都不会看到。

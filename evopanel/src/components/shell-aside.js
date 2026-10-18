@@ -500,9 +500,9 @@ export function initShellAside(el) {
             <span class="react-chat-aside-nav-ic" aria-hidden>${_lucide('bookOpen')}</span>
             <span class="react-chat-aside-nav-label">资产中心</span>
           </button>
-          <button type="button" class="react-chat-aside-nav-item" data-shell-nav="/extensions" title="扩展应用">
+          <button type="button" class="react-chat-aside-nav-item" data-shell-nav="/extensions" title="Agent应用">
             <span class="react-chat-aside-nav-ic" aria-hidden>${_lucide('blocks')}</span>
-            <span class="react-chat-aside-nav-label">扩展应用</span>
+            <span class="react-chat-aside-nav-label">Agent应用</span>
           </button>
 
         </div>

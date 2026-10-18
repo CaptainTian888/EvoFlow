@@ -331,8 +331,11 @@ class ProactiveRepository:
                 logger.debug("proactive.role.delete cascade skip %s: %s", table, e)
 
         # 4. Clean chat session data under ``proactive:{code}`` (+ duty/task/chat children).
+        # 批量路径：一次事务清所有会话表 + 一次 LG bulk prune；替代旧版
+        # N×delete_session_full（每 session 全表 load_session_map + 自环 HTTP，曾把
+        # 事件循环饿死十几秒，表现为删除后所有页面刷新都卡）。
         try:
-            from evoflow.persistence import session_repositories as sess_repo
+            from evoflow.persistence.chat_session_service import delete_sessions_bulk
             from evoflow.proactive.chat_session import (
                 list_employee_conversation_sessions,
                 proactive_session_key,
@@ -350,30 +353,22 @@ class ProactiveRepository:
             if wipe_keys:
                 import asyncio
 
-                from evoflow.persistence import chat_message_repositories as msg_repo
-                from evoflow.persistence.chat_session_service import delete_session_full
-
-                async def _wipe_sessions() -> None:
-                    for sk in wipe_keys:
-                        try:
-                            await delete_session_full(sk)
-                        except Exception:
-                            try:
-                                msg_repo.delete_messages_for_session(sk)
-                                sess_repo.mark_session_deleted(sk)
-                            except Exception:
-                                logger.debug(
-                                    "proactive.role.delete session wipe fallback failed sk=%s",
-                                    sk,
-                                    exc_info=True,
-                                )
+                async def _wipe_sessions_bulk() -> None:
+                    try:
+                        await delete_sessions_bulk(wipe_keys)
+                    except Exception:
+                        logger.exception(
+                            "proactive.role.delete bulk session wipe failed code=%s (sessions=%d)",
+                            code,
+                            len(wipe_keys),
+                        )
 
                 try:
                     asyncio.get_running_loop()
-                    asyncio.ensure_future(_wipe_sessions())
+                    asyncio.ensure_future(_wipe_sessions_bulk())
                 except RuntimeError:
                     try:
-                        asyncio.run(_wipe_sessions())
+                        asyncio.run(_wipe_sessions_bulk())
                     except Exception:
                         logger.debug(
                             "proactive.role.delete session wipe sync failed",

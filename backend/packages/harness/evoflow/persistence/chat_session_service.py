@@ -11,7 +11,8 @@ import httpx
 
 from evoflow.persistence import chat_message_repositories as msg_repo
 from evoflow.persistence import session_repositories as sess_repo
-from evoflow.persistence.db import get_db, run_db_with_retry
+from evoflow.persistence.db import get_db, run_db_transaction, run_db_with_retry
+from evoflow.persistence.session_repositories import MAIN_SESSION_KEY
 from evoflow.persistence.session_context_fields import resolve_primary_model_name
 from evoflow.persistence.timestamps import coerce_to_epoch_ms, now_iso_z
 
@@ -198,6 +199,38 @@ async def delete_langgraph_thread(thread_id: str) -> bool:
     if resp is None:
         return False
     return resp.status_code in (200, 204, 404)
+
+
+async def delete_langgraph_threads_bulk(thread_ids: list[str]) -> int:
+    """Bulk-delete LangGraph threads via ``POST /threads/prune`` (one HTTP round-trip).
+
+    Falls back to per-thread DELETE on any failure so callers always get a
+    best-effort count. Avoids N sequential self-loop HTTP requests when wiping
+    an employee role's sessions (30-200 threads used to take 10s+ of loop time).
+    """
+    tids = [str(t or "").strip() for t in (thread_ids or []) if str(t or "").strip()]
+    if not tids:
+        return 0
+    try:
+        resp = await _langgraph_request(
+            "POST",
+            "threads/prune",
+            json_body={"thread_ids": tids, "strategy": "delete"},
+        )
+        if resp is not None and resp.status_code < 400:
+            try:
+                data = resp.json()
+                return int(data.get("pruned_count") or 0)
+            except Exception:
+                return len(tids)
+    except Exception:
+        logger.debug("bulk prune failed, falling back to per-thread delete", exc_info=True)
+    # Fallback: per-thread delete (also covers 404-per-thread semantics)
+    ok = 0
+    for tid in tids:
+        if await delete_langgraph_thread(tid):
+            ok += 1
+    return ok
 
 
 def delete_local_thread_data(thread_id: str) -> None:
@@ -772,6 +805,111 @@ async def delete_session_full(session_key: str) -> dict[str, Any]:
         sess_repo.delete_sessions_by_thread_id(tid)
 
     return {"ok": True, "sessionKey": sk, "threadId": tid or None, "langgraph_deleted": lg_ok}
+
+
+def _collect_thread_dirs_for_delete(thread_id: str) -> None:
+    """Local-thread cleanup shared by single/bulk delete (files + thread-scoped rows)."""
+    tid = str(thread_id or "").strip()
+    if not tid:
+        return
+    delete_local_thread_data(tid)
+    delete_thread_collab_sqlite(tid)
+    delete_thread_tool_approval_sqlite(tid)
+
+
+async def delete_sessions_bulk(session_keys: list[str]) -> dict[str, Any]:
+    """Bulk-delete many sessions in a handful of SQL transactions + one LG prune call.
+
+    Replacement for the N×``delete_session_full`` loop in role deletion, which
+    (a) re-ran the full ``load_session_map()`` table scan (7k+ rows) per session,
+    (b) issued one self-loop HTTP DELETE per thread, and (c) ran all of it on
+    the event loop thread — starving concurrent API routes for tens of seconds.
+
+    Semantics preserved per session: transcript + session row + business tables
+    + workspace history + tool bindings/approvals deleted; thread checkpoints
+    pruned via the bulk endpoint; tombstone keeps the key hidden.
+    """
+    keys: list[str] = []
+    seen: set[str] = set()
+    for raw in session_keys or []:
+        k = str(raw or "").strip()
+        if k and k != MAIN_SESSION_KEY and k not in seen:
+            seen.add(k)
+            keys.append(k)
+    if not keys:
+        return {"ok": True, "deleted": 0, "threads": 0, "langgraph_pruned": 0}
+
+    from evoflow.persistence import workspace_repositories as ws_repo
+
+    # threadId 一次性取出（单列索引查询），替代逐 session 的全表 load_session_map()
+    tids: list[str] = []
+    for sk in keys:
+        try:
+            row = sess_repo.get_session_row_for_ui(sk) or {}
+        except Exception:
+            row = {}
+        tid = str(row.get("threadId") or "").strip()
+        if tid:
+            tids.append(tid)
+
+    def _wipe_all(db: Any) -> None:
+        for sk in keys:
+            db.execute("DELETE FROM evoflow_chat_messages WHERE session_key = ?", (sk,))
+            db.execute("DELETE FROM evoflow_session_workspace_history WHERE session_key = ?", (sk,))
+            db.execute("DELETE FROM evoflow_todos WHERE session_key = ?", (sk,))
+            db.execute("DELETE FROM evoflow_artifacts WHERE session_key = ?", (sk,))
+            db.execute("DELETE FROM evoflow_tool_approvals WHERE session_key = ?", (sk,))
+            db.execute("DELETE FROM evoflow_tool_approval_grants WHERE session_key = ?", (sk,))
+            db.execute("DELETE FROM evoflow_session_scenario_trajectory WHERE session_key = ?", (sk,))
+        # mark_session_deleted 是 upsert+delete 复合（tombstone），留在同一事务里逐个执行
+        now = utc_now_iso_z()
+        for sk in keys:
+            db.execute(
+                """
+                INSERT INTO evoflow_chat_sessions (
+                    session_key, thread_id, title, created_at, updated_at,
+                    message_count, context_json, is_deleted
+                ) VALUES (?, '', '', '', ?, 0, '{}', 1)
+                ON CONFLICT(session_key) DO UPDATE SET
+                    is_deleted = 1,
+                    updated_at = excluded.updated_at,
+                    message_count = 0
+                """,
+                (sk, now),
+            )
+
+    try:
+        run_db_transaction(_wipe_all)
+    except Exception:
+        logger.warning("bulk session wipe failed, falling back per-session", exc_info=True)
+        for sk in keys:
+            try:
+                msg_repo.delete_messages_for_session(sk)
+                ws_repo.clear_session_workspace_history(sk)
+                sess_repo.mark_session_deleted(sk)
+            except Exception:
+                logger.debug("bulk fallback wipe failed sk=%s", sk, exc_info=True)
+
+    # 业务表删除封装有自己的提交路径；失败容忍（与单删路径一致）
+    for sk in keys:
+        try:
+            _delete_session_business_data(sk)
+        except Exception:
+            logger.debug("bulk delete business data skipped sk=%s", sk, exc_info=True)
+
+    # 按 thread 清理本地目录 + 线程级行（collab/approvals/sqlite）
+    pruned = 0
+    if tids:
+        pruned = await delete_langgraph_threads_bulk(tids)
+        for tid in tids:
+            try:
+                _collect_thread_dirs_for_delete(tid)
+                sess_repo.delete_sessions_by_thread_id(tid)
+            except Exception:
+                logger.debug("bulk thread cleanup skipped tid=%s", tid, exc_info=True)
+
+    logger.info("bulk session delete: sessions=%d threads=%d langgraph_pruned=%d", len(keys), len(tids), pruned)
+    return {"ok": True, "deleted": len(keys), "threads": len(tids), "langgraph_pruned": pruned}
 
 
 async def fork_session_full(

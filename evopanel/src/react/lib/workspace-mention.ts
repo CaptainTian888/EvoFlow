@@ -1,11 +1,18 @@
-/** Parse `#file` / `@employee` / `/skill-or-plugin` mention at cursor.
+/** Parse `#file` / `@employee` / `/` mention at cursor.
  *
  * Trigger chars:
  * - `#` -> file mention (workspace file autocomplete)
  * - `@` -> employee mention (dispatch task to an Agent Workforce role)
- * - `/` -> capability mention (skill or plugin search, EvoFlow custom)
+ * - `/` -> slash panel (commands, skills, plugins), same trigger as z-code
  */
 export type MentionType = 'file' | 'employee' | 'skill' | 'plugin'
+
+/** Product chat slash commands. Selecting one inserts `/name ` for the send path. */
+export const COMPOSER_SLASH_COMMANDS: Array<{ name: string; description: string }> = [
+  { name: 'goal', description: '用后面的文字启动当前会话目标' },
+  { name: 'claude', description: '切换为代码助手模式' },
+  { name: 'lead', description: '切换回 EvoFlow' },
+]
 
 export type MentionRange = {
   type: MentionType
@@ -27,12 +34,14 @@ function matchTrigger(text: string, cursor: number, trigger: string): MentionRan
   const match = before.match(re)
   if (!match) return null
   const query = match[1] ?? ''
-  const start = before.length - match[0].length
+  const matched = match[0]
+  const triggerAt = matched.lastIndexOf(trigger)
+  const start = before.length - matched.length + (triggerAt >= 0 ? triggerAt : 0)
   const end = cursor
   const typeMap: Record<string, MentionType> = {
     '#': 'file',
     '@': 'employee',
-    '/': 'skill-or-plugin' as MentionType,
+    '/': 'skill',
   }
   return { type: typeMap[trigger] ?? trigger as MentionType, query, start, end }
 }

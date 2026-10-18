@@ -719,6 +719,7 @@ export function MessageRow({
   sessionKey,
   liveActivityDockLabel,
   liveTurnElapsedSec,
+  isLatestTurn = false,
   onCopy,
   onRetry,
   onEdit,
@@ -752,6 +753,8 @@ export function MessageRow({
   liveActivityDockLabel?: string
   /** 本轮原始耗时（秒）；优先于从 dockLabel 反解析 */
   liveTurnElapsedSec?: number
+  /** 整段对话的最后一条助手回合：带工具过程结束后不默认折叠 */
+  isLatestTurn?: boolean
   onOpenFile?: (rawUrl: string, name?: string) => void
   onOpenKnowledgeMap?: () => void
   onToolApproval?: (
@@ -986,6 +989,7 @@ export function MessageRow({
             sessionKey={sessionKey}
             liveActivityDockLabel={liveActivityDockLabel}
             liveTurnElapsedSec={liveTurnElapsedSec}
+            isLatestTurn={isLatestTurn}
           />
           <MessageMedia
             images={displayRow.images}
@@ -1121,6 +1125,7 @@ function AssistantBody({
   sessionKey,
   liveActivityDockLabel,
   liveTurnElapsedSec,
+  isLatestTurn = false,
 }: {
   row: DisplayRow
   isStreaming?: boolean
@@ -1140,6 +1145,8 @@ function AssistantBody({
   liveActivityDockLabel?: string
   /** 本轮原始耗时（秒）；优先于从 dockLabel 反解析 */
   liveTurnElapsedSec?: number
+  /** 整段对话的最后一条助手回合 */
+  isLatestTurn?: boolean
   onOpenFile?: (rawUrl: string, name?: string) => void
   onOpenKnowledgeMap?: () => void
   onToolApproval?: (
@@ -1295,6 +1302,7 @@ function AssistantBody({
       plan,
       isStreaming: !!isStreaming,
       threadBusy: !!threadBusy,
+      isLatestTurn,
       workedLabel: workedLabelOut
         ? isStreaming
           ? `工作中 ${workedLabelOut}`
@@ -1388,6 +1396,7 @@ function AssistantBody({
       threadBusy={!!threadBusy}
       liveActivityLabel={liveActivityDockLabel}
       lastStepLabel={lastStepForHead}
+      isLatestTurn={isLatestTurn}
     />
   )
 }

@@ -1126,6 +1126,8 @@ async def delete_agent(request: Request, name: str):
     Raises:
         HTTPException: 404 if agent not found.
     """
+    import asyncio
+
     from evoflow.authz.http_guard import require_agent_visible
 
     _validate_agent_name(name)
@@ -1138,7 +1140,9 @@ async def delete_agent(request: Request, name: str):
     try:
         from evoflow.admin.agents import delete_agent as admin_delete_agent
 
-        admin_delete_agent(name, confirm_cascade=True)
+        # 级联删除含 shutil.rmtree / SQLite 写 / LG 会话清理列举，全部是阻塞调用；
+        # 放 to_thread 避免事件循环被卡住拖慢同进程其它请求（删除后列表刷新）。
+        await asyncio.to_thread(admin_delete_agent, name, confirm_cascade=True)
         logger.info("Deleted agent '%s' from SQLite", name)
     except Exception as e:
         logger.error(f"Failed to delete agent '{name}': {e}", exc_info=True)

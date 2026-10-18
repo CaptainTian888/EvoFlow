@@ -49,6 +49,9 @@ _cycle: ContextVar[dict[str, Any] | None] = ContextVar("evoflow_run_latency_cycl
 # does not propagate — keep a thread-keyed mirror so pre_model_breakdown is not lost.
 _cycle_by_thread: dict[str, dict[str, Any]] = {}
 _cycle_by_thread_lock = threading.Lock()
+# Wall-clock end of the previous model cycle per thread — used for「本轮」interval.
+_last_cycle_end_wall_ms_by_thread: dict[str, int] = {}
+_last_cycle_end_lock = threading.Lock()
 _model_call_seq: ContextVar[int | None] = ContextVar("evoflow_model_call_seq", default=None)
 _seq_lock = threading.Lock()
 _seq_by_thread_run: dict[str, tuple[str, int]] = {}
@@ -130,6 +133,43 @@ def _get_cycle(*, thread_id: str | None = None) -> dict[str, Any] | None:
     with _cycle_by_thread_lock:
         hit = _cycle_by_thread.get(tid)
     return hit if isinstance(hit, dict) else None
+
+
+def _note_cycle_end(thread_id: str | None, wall_ms: int | None = None) -> None:
+    tid = str(thread_id or "").strip()
+    if not tid:
+        return
+    with _last_cycle_end_lock:
+        _last_cycle_end_wall_ms_by_thread[tid] = int(wall_ms if wall_ms is not None else _now_wall_ms())
+
+
+def _round_baseline_ms(
+    thread_id: str,
+    *,
+    user_input_ts_ms: int | None,
+    model_call_seq: int | None,
+) -> int | None:
+    """Baseline for current-round elapsed: previous cycle end, else user input (seq=1)."""
+    tid = str(thread_id or "").strip()
+    try:
+        seq = int(model_call_seq) if model_call_seq is not None else 0
+    except (TypeError, ValueError):
+        seq = 0
+    if seq <= 1:
+        with _last_cycle_end_lock:
+            _last_cycle_end_wall_ms_by_thread.pop(tid, None)
+        return int(user_input_ts_ms) if user_input_ts_ms is not None else None
+    with _last_cycle_end_lock:
+        last = _last_cycle_end_wall_ms_by_thread.get(tid)
+    if last is not None:
+        return int(last)
+    return int(user_input_ts_ms) if user_input_ts_ms is not None else None
+
+
+def _format_elapsed_s(from_ms: int | float | None, to_ms: int | float) -> str:
+    if from_ms is None:
+        return "-"
+    return f"{max(0.0, float(to_ms) - float(from_ms)) / 1000.0:.3f}秒"
 
 
 def _clear_cycle_store(thread_id: str | None = None) -> None:
@@ -375,9 +415,21 @@ def _zh_run_latency_message(row: dict[str, Any]) -> tuple[str, tuple[Any, ...]] 
             (step_label, zh_label or "LangGraph 已响应", thread_id, trace_id, row.get("upstream_status") or "-", row.get("attempt") or "-", _ms_to_s(row.get("gateway_upstream_ready_ms"), user_input_ts_ms)),
         )
     if event == "run_cycle_start":
+        round_s = row.get("round_elapsed_s")
+        if round_s is None and row.get("round_elapsed_ms") is not None:
+            round_s = _ms_to_s(row.get("round_elapsed_ms"), None)
         return (
-            "【流式链路】%s %s thread=%s trace=%s 消息数=%s 第%s次模型调用 累计=%ss",
-            (step_label, _ZH_EVENT_LABELS.get(event, "开始组装大模型请求"), thread_id, trace_id, row.get("message_count") or "-", row.get("model_call_seq") or "-", elapsed_from_user),
+            "【流式链路】%s %s thread=%s trace=%s 消息数=%s 第%s次模型调用 会话累计=%ss 本轮=%ss",
+            (
+                step_label,
+                _ZH_EVENT_LABELS.get(event, "开始组装大模型请求"),
+                thread_id,
+                trace_id,
+                row.get("message_count") or "-",
+                row.get("model_call_seq") or "-",
+                elapsed_from_user,
+                round_s if round_s is not None else elapsed_from_user,
+            ),
         )
     if event == "pre_model_breakdown":
         phases = row.get("phases_ms") if isinstance(row.get("phases_ms"), dict) else {}
@@ -566,11 +618,22 @@ def begin_model_cycle(
     _store_cycle(cycle)
     set_live_progress(thread_id, "准备中…")
 
-    # Wall-clock total from user request to before_model
-    total_from_user_ms = max(0, now_wall - float(user_input_ts_ms)) if user_input_ts_ms else None
-    total_from_user_s = f"{total_from_user_ms / 1000.0:.3f}秒" if total_from_user_ms is not None else "-"
+    # 会话累计：用户发请求 → 本次 before_model（含此前所有工具/模型轮次）
+    # 本轮：上一轮模型周期结束 → 本次装配（seq=1 时等同会话累计）
+    session_s = _format_elapsed_s(user_input_ts_ms, now_wall)
+    round_baseline = _round_baseline_ms(
+        thread_id,
+        user_input_ts_ms=user_input_ts_ms,
+        model_call_seq=model_call_seq,
+    )
+    round_ms = max(0.0, now_wall - float(round_baseline)) if round_baseline is not None else None
+    round_s = f"{round_ms / 1000.0:.3f}秒" if round_ms is not None else "-"
 
-    print(f"[AGENT-TIMING] → begin_model_cycle seq={model_call_seq} msg_count={message_count} 请求到模型装配={total_from_user_s}", flush=True)
+    print(
+        f"[AGENT-TIMING] → begin_model_cycle seq={model_call_seq} msg_count={message_count} "
+        f"会话累计={session_s} 本轮={round_s}",
+        flush=True,
+    )
 
     write_run_latency_event(
         thread_id,
@@ -580,6 +643,11 @@ def begin_model_cycle(
             "model_call_seq": model_call_seq,
             "message_count": message_count,
             "cycle_start_wall_ms": cycle["cycle_start_wall_ms"],
+            "session_elapsed_ms": (
+                round(max(0.0, now_wall - float(user_input_ts_ms)), 2) if user_input_ts_ms else None
+            ),
+            "round_elapsed_ms": round(round_ms, 2) if round_ms is not None else None,
+            "round_elapsed_s": round_s if round_s != "-" else None,
         },
         trace_id=trace_id,
     )
@@ -652,13 +720,15 @@ def mark_wrap_model_enter(*, model_call_seq: int | None = None) -> None:
     top_phases = sorted(phases.items(), key=lambda x: float(x[1] or 0), reverse=True)[:3]
     phases_summary = ", ".join(f"{k}={v:.0f}ms" for k, v in top_phases) if top_phases else "-"
 
-    # Total wall-clock time from user request to cloud API call
+    # Session cumulative (user request → cloud) vs this cycle's before_model work
     user_ts = cycle.get("user_input_ts_ms")
-    pre_model_total_ms = max(0.0, _now_wall_ms() - float(user_ts)) if user_ts else None
-    pre_model_total_str = f" pre_model_total={pre_model_total_ms:.0f}ms" if pre_model_total_ms is not None else ""
+    now_wall = _now_wall_ms()
+    pre_model_total_ms = max(0.0, now_wall - float(user_ts)) if user_ts else None
+    session_str = f" 会话累计={pre_model_total_ms:.0f}ms" if pre_model_total_ms is not None else ""
 
     print(
-        f"[AGENT-TIMING] → cloud_api_call seq={model_call_seq or cycle.get('model_call_seq')}{pre_model_total_str} after_before_model={after_before_model_ms:.0f}ms phases=[{phases_summary}]",
+        f"[AGENT-TIMING] → cloud_api_call seq={model_call_seq or cycle.get('model_call_seq')}"
+        f"{session_str} 本轮装配={after_before_model_ms:.0f}ms phases=[{phases_summary}]",
         flush=True,
     )
     write_run_latency_event(
@@ -678,11 +748,16 @@ def mark_wrap_model_enter(*, model_call_seq: int | None = None) -> None:
 def clear_model_cycle() -> None:
     cycle = _get_cycle()
     if cycle:
-        clear_live_progress(str(cycle.get("thread_id") or ""))
-        _clear_cycle_store(str(cycle.get("thread_id") or ""))
+        tid = str(cycle.get("thread_id") or "")
+        clear_live_progress(tid)
+        _note_cycle_end(tid)
+        _clear_cycle_store(tid)
     else:
         tid, _, _ = read_configurable_trace_fields()
         if tid:
+            # ContextVar lost but thread mirror may still hold the cycle.
+            if _get_cycle(thread_id=tid):
+                _note_cycle_end(tid)
             clear_live_progress(tid)
             _clear_cycle_store(tid)
         else:

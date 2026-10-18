@@ -523,9 +523,9 @@ html[data-theme='dark'] .react-chat-aside-brand-logo {
   background: var(--shell-border, #e9ebf2);
 }
 
-/* 当「更多」组展开时，「扩展应用」会成为一级导航的最后一项，
-   它底下的 .shell-aside-nav-divider 看起来像「扩展应用」自己带了一条线。
-   这种情况下把分隔线藏掉，让扩展应用与「最近」直接相邻，视觉上更干净。 */
+/* 当「更多」组展开时，「Agent应用」会成为一级导航的最后一项，
+   它底下的 .shell-aside-nav-divider 看起来像「Agent应用」自己带了一条线。
+   这种情况下把分隔线藏掉，让Agent应用与「最近」直接相邻，视觉上更干净。 */
 .shell-aside-nav-more.is-expanded ~ .shell-aside-nav-divider {
   display: none;
 }
@@ -616,7 +616,7 @@ html[data-theme='dark'] .react-chat-aside-brand-logo {
   color: var(--text-secondary, #4a4f5a);
 }
 
-/* 「更多」折叠组：默认收起自动化 / 知识库 / 扩展应用 */
+/* 「更多」折叠组：默认收起自动化 / 知识库 / Agent应用 */
 /* 改造成一个紧凑的小箭头按钮（不要左右两条线），点击展开/收起。
    整体高度小，让「员工」与第一个子项之间尽量紧凑。 */
 .shell-aside-nav-more {
@@ -10497,7 +10497,7 @@ html.evopanel-tauri .react-chat-main-col .msg-ai-ask-inline-md {
   border: 1px solid var(--input-border, rgba(148, 163, 184, 0.28));
   background: var(--input-bg, rgba(248, 250, 252, 0.85));
   box-sizing: border-box;
-  /* 显示完整候选词菜单，但不允许超出底部区 */
+  overflow: visible;
   max-height: 100%;
   transition:
     border-color 160ms ease,
@@ -12289,8 +12289,8 @@ html[data-theme='dark'] .react-chat-bottom-permission-pill--readonly:hover:not(:
   position: absolute;
   left: 0;
   bottom: calc(100% + 8px);
-  min-width: 260px;
-  max-width: 320px;
+  min-width: 280px;
+  max-width: 340px;
   z-index: 1100;
   background: var(--bg-primary, #fff);
   border: 1px solid var(--border-subtle, #e9ebf2);
@@ -12363,9 +12363,86 @@ html[data-theme='dark'] .react-chat-bottom-permission-pill--readonly:hover:not(:
   line-height: 22px;
   color: #2563eb;
 }
+.react-chat-permission-menu-global {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 4px 8px 2px;
+  padding: 10px 10px 8px;
+  border-top: 1px solid var(--border-subtle, #e9ebf2);
+}
+.react-chat-permission-menu-global-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.react-chat-permission-menu-global-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary, #111827);
+  line-height: 1.35;
+}
+.react-chat-permission-menu-global-desc {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-tertiary, #9aa1b1);
+}
+.react-chat-permission-menu-switch {
+  position: relative;
+  display: inline-block;
+  width: 36px;
+  height: 20px;
+  flex-shrink: 0;
+}
+.react-chat-permission-menu-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+.react-chat-permission-menu-switch-slider {
+  position: absolute;
+  cursor: pointer;
+  inset: 0;
+  background: var(--text-tertiary, #94a3b8);
+  border-radius: 20px;
+  transition: background 0.2s ease;
+}
+.react-chat-permission-menu-switch-slider::before {
+  content: '';
+  position: absolute;
+  height: 14px;
+  width: 14px;
+  left: 3px;
+  bottom: 3px;
+  background: #fff;
+  border-radius: 50%;
+  transition: transform 0.2s ease;
+}
+.react-chat-permission-menu-switch input:checked + .react-chat-permission-menu-switch-slider {
+  background: var(--accent, #2563eb);
+}
+.react-chat-permission-menu-switch input:checked + .react-chat-permission-menu-switch-slider::before {
+  transform: translateX(16px);
+}
+.react-chat-permission-menu-switch input:focus-visible + .react-chat-permission-menu-switch-slider {
+  outline: 2px solid rgba(37, 99, 235, 0.45);
+  outline-offset: 2px;
+}
 html[data-theme='dark'] .react-chat-permission-menu {
   background: var(--bg-secondary, #1f2937);
   border-color: rgba(255, 255, 255, 0.08);
+}
+html[data-theme='dark'] .react-chat-permission-menu-global {
+  border-top-color: rgba(255, 255, 255, 0.08);
+}
+html[data-theme='dark'] .react-chat-permission-menu-global-title {
+  color: var(--text-primary, #f1f5f9);
+}
+html[data-theme='dark'] .react-chat-permission-menu-global-desc {
+  color: var(--text-tertiary, #94a3b8);
 }
 html[data-theme='dark'] .react-chat-permission-menu-item:hover {
   background: rgba(255, 255, 255, 0.05);
@@ -23812,14 +23889,14 @@ html.dark .react-chat-workspace-preview-zoom-bar {
   overflow: hidden;
 }
 
-/* 输入框 @ 工作区文件补全 */
+/* 输入框 @ / # 上拉补全。默认 absolute；portal 版 fixed 到 body，盖住消息区。 */
 .react-chat-mention-menu {
   position: absolute;
   left: 0;
   right: 0;
   bottom: calc(100% + 6px);
   z-index: 40;
-  max-height: min(280px, 40vh);
+  max-height: min(360px, 46vh);
   display: flex;
   flex-direction: column;
   border: 1px solid var(--border, #e5e7eb);
@@ -23829,12 +23906,37 @@ html.dark .react-chat-workspace-preview-zoom-bar {
   overflow: hidden;
 }
 
+.react-chat-mention-menu--portal {
+  position: fixed;
+  right: auto;
+  z-index: 12050;
+  /* left / width / bottom 由 JS 按 composer-shell 定位 */
+}
+
 .react-chat-mention-menu-head {
   padding: 6px 10px;
   font-size: 11px;
   color: var(--text-secondary, #6b7280);
   border-bottom: 1px solid var(--border, #e5e7eb);
   flex-shrink: 0;
+}
+
+.react-chat-mention-menu-section {
+  list-style: none;
+}
+
+.react-chat-mention-menu-section-title {
+  padding: 8px 8px 2px;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  color: var(--text-tertiary, #9ca3af);
+}
+
+.react-chat-mention-menu-section-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
 }
 
 .react-chat-mention-menu-empty {

@@ -297,8 +297,6 @@ export function buildStreamDisplayRow(
     return cached.row
   }
 
-  const _diagT0 = performance.now()
-  const _diagPath = cached ? 'path2/3' : 'no-cache'
 
   const activityLabel = String(s.turn.systemActivity || '').trim() || null
   const aguiProj = s.aguiTurn ? projectAgUiToStreamTurnFields(s.aguiTurn) : null
@@ -356,12 +354,7 @@ export function buildStreamDisplayRow(
     // 正文只在 structural 事件时才一次性刷新 → 用户看到"积累一大段才显示"。
     // 渲染频率由上游 Rust 50ms 合并窗口（≤20Hz）+ MarkdownHtml rAF(16ms)
     // paint 节流兜底，不会造成 per-token 渲染风暴。
-    const _tA = performance.now()
     const p = isolateStreamProjection(turnStateForStreamDisplay(s), priorTurnStrip)
-    const _tB = performance.now()
-    if (_tB - _tA > 30) {
-      console.warn(`[buildRow-diag] ${_diagPath} incremental turnState+isolate=${(_tB-_tA).toFixed(1)}ms total=${(performance.now()-_diagT0).toFixed(1)}ms textLen=${textLen} compacted=${s.compactedParts?.length ?? 0} aguiMsgs=${s.aguiTurn?.messages?.size ?? 0} aguiOrder=${s.aguiTurn?.order?.length ?? 0} aguiCompatSegs=${s.aguiTurn?.compatSegments?.length ?? 0} tools=${s.turn?.tools?.length ?? 0}`)
-    }
     const cleaned = sanitizeLiveStreamDisplayFields(
       {
         text: p.text,
@@ -408,15 +401,8 @@ export function buildStreamDisplayRow(
     return row
   }
 
-  const _tC = performance.now()
   const p = isolateStreamProjection(turnStateForStreamDisplay(s), priorTurnStrip)
-  const _tD = performance.now()
   const row = finalizeStreamRow(s, p, priorTurnStrip, liveTurnTokenStr, suppressStreamFiles, isSending)
-  const _tE = performance.now()
-  if (_tE - _tC > 30) {
-    const agui = s.aguiTurn
-    console.warn(`[buildRow-diag] ${_diagPath} FULL turnState+isolate=${(_tD-_tC).toFixed(1)}ms finalize=${(_tE-_tD).toFixed(1)}ms total=${(_tE-_diagT0).toFixed(1)}ms textLen=${textLen} compacted=${s.compactedParts?.length ?? 0} aguiOrder=${agui?.order?.length ?? 0} aguiMsgs=${agui?.messages?.size ?? 0} aguiCompatSegs=${agui?.compatSegments?.length ?? 0} tools=${s.turn?.tools?.length ?? 0}`)
-  }
   if (sessionKey && row?.role === '_stream') {
     logStreamCompareAgUiInternals({
       sessionKey,

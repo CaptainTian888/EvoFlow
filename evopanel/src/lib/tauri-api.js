@@ -793,6 +793,52 @@ function appendFrontendLog(level, message) {
     .catch(() => {})
 }
 
+// === 运行期 latch 重扣/释放的用户可见提示 ===
+// 冷启动期由 boot banner 负责；这里只覆盖「已跑了一段时间后」的重扣（配置 reload /
+// guardian 自愈 / ready 连续失败），否则用户点菜单只会看到无限转圈，不知道在等什么。
+const _RUNTIME_LATCH_COOLDOWN_MS = 8_000
+let _latchToastKey = null
+let _lastLatchToastAt = 0
+
+function _notifyLatchWarming(reason = '') {
+  try {
+    if (!window.document?.body) return
+    // boot 冷启动期不打扰（有 banner）；只提示运行期的重扣。
+    if (!window.__EVOFLOW_BOOT_DONE__) return
+    const now = Date.now()
+    if (now - _lastLatchToastAt < _RUNTIME_LATCH_COOLDOWN_MS) return
+    _lastLatchToastAt = now
+    _latchToastKey = 'evoflow-latch-warming'
+    const reasonZh = String(reason || '').includes('reload')
+      ? '网关正在重载'
+      : '网关正在重新就绪'
+    // 动态 import 打破 tauri-api ↔ toast 依赖环；toast 面板自身有去重能力。
+    void import('../components/toast.js')
+      .then((m) => {
+        m.toast?.(`${reasonZh}，页面加载可能需要数十秒…`, 'info', {
+          duration: 15_000,
+          key: 'evoflow-latch-warming',
+        })
+      })
+      .catch(() => {})
+  } catch {
+    /* ignore */
+  }
+}
+
+function _notifyLatchReleased() {
+  try {
+    if (!_latchToastKey) return
+    _latchToastKey = null
+    // 同 key 重发一条短 toast 会「顶掉」长提示并立刻自然消失（toast.js key 复用逻辑）。
+    void import('../components/toast.js')
+      .then((m) => m.toast?.('网关已就绪', 'success', { duration: 2_000, key: 'evoflow-latch-warming' }))
+      .catch(() => {})
+  } catch {
+    /* ignore */
+  }
+}
+
 // SkillHub 技能市场（桌面端无 dev-api invoke：直接调 Convex + Gateway 安装）
 const SKILLHUB_CONVEX_QUERY = 'https://wry-manatee-359.convex.cloud/api/query'
 
@@ -1155,8 +1201,10 @@ export function noteGatewayLiveness(ok) {
   const action = noteLiveness(_warmLatch, !!ok)
   if (action === 'reset') {
     appendFrontendLog('warn', `[boot:${_bootId}] warm latch reset (ready_fail_streak)`)
+    _notifyLatchWarming('ready_fail_streak')
   } else if (action === 'released' && ok) {
     appendFrontendLog('info', `[boot:${_bootId}] warm latch released (/health/ready ok)`)
+    _notifyLatchReleased()
   }
 }
 
@@ -1172,6 +1220,7 @@ export function resetGatewayWarmLatch(reason = 'manual') {
   _extendedReady = null
   clearGatewayBaseUrlCache()
   appendFrontendLog('warn', `[boot:${_bootId}] warm latch reset (${reason})`)
+  _notifyLatchWarming(reason)
 }
 
 /** 网关是否处于预热期（当前 latch 未放行，含 reload 后再次 warming）。 */

@@ -33,9 +33,9 @@ import {
   hideVoiceInputOverlay,
   showVoiceInputOverlay,
 } from '../../lib/background-voice.js'
-import { getMentionAtCursor } from '../lib/workspace-mention.js'
+import { COMPOSER_SLASH_COMMANDS, getMentionAtCursor } from '../lib/workspace-mention.js'
 import { measureTextareaCaret } from '../lib/textarea-caret.js'
-import { WorkspaceMentionMenu, type MentionFileOption, type MentionEmployeeOption, type MentionOption, type MentionSkillOption, type MentionPluginOption, isEmployeeOption, isSkillOption, isPluginOption } from './WorkspaceMentionMenu.js'
+import { WorkspaceMentionMenu, type MentionFileOption, type MentionEmployeeOption, type MentionOption, type MentionSkillOption, type MentionPluginOption, type MentionCommandOption, isEmployeeOption, isSkillOption, isPluginOption, isCommandOption } from './WorkspaceMentionMenu.js'
 import {
   appendUrlsToDraft,
   createComposeAttachHandlers,
@@ -227,6 +227,8 @@ export const ChatComposer = memo(function ChatComposer({
   permissionMenuOpen,
   permissionOptions,
   onPickPermission,
+  newChatGrantAllDefault,
+  onToggleNewChatGrantAllDefault,
   workspaceMention,
   attachedContextFileCount = 0,
   onAttachContextFiles,
@@ -306,6 +308,9 @@ export const ChatComposer = memo(function ChatComposer({
   }>
   /** 选择一个档位 */
   onPickPermission?: (id: string) => void
+  /** 安全中心「新对话默认完全访问」全局策略（与设置页同一开关） */
+  newChatGrantAllDefault?: boolean
+  onToggleNewChatGrantAllDefault?: (next: boolean) => void
   workspaceMention?: WorkspaceMentionConfig
   /** 输入框上方 @ 附加的工作区文件数量（允许仅附加文件时发送） */
   attachedContextFileCount?: number
@@ -339,6 +344,7 @@ export const ChatComposer = memo(function ChatComposer({
   const fileRef = useRef<HTMLInputElement | null>(null)
   const docFileRef = useRef<HTMLInputElement | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
+  const composerShellRef = useRef<HTMLDivElement | null>(null)
   const mentionSearchRef = useRef(0)
   const voiceStartSourceRef = useRef<'mic' | 'keyboard' | null>(null)
   const voiceStartingRef = useRef(false)
@@ -415,16 +421,13 @@ export const ChatComposer = memo(function ChatComposer({
     if (range.type === 'employee' && !(workspaceMention.roles && workspaceMention.roles.length)) {
       return null
     }
-    // Skill/plugin menu (`/` trigger) requires at least one of skills or plugins.
+    // `/` always opens the slash panel (commands stay available even when
+    // skill / plugin catalogs are still empty).
     if (range.type === 'skill' || range.type === 'plugin') {
-      const hasSkills = Array.isArray(workspaceMention.skills) && workspaceMention.skills.length > 0
-      const hasPlugins = Array.isArray(workspaceMention.plugins) && workspaceMention.plugins.length > 0
-      if (!hasSkills && !hasPlugins) return null
-      // Normalise to 'skill' for the combined menu type.
       return { ...range, type: 'skill' as const }
     }
     return range
-  }, [workspaceMention?.enabled, workspaceMention?.roles, workspaceMention?.skills, workspaceMention?.plugins, text, cursor])
+  }, [workspaceMention?.enabled, workspaceMention?.roles, text, cursor])
 
   const mentionOpen = !!mentionRange
 
@@ -538,6 +541,22 @@ export const ChatComposer = memo(function ChatComposer({
       // Skill / plugin picks: call the dedicated callbacks and remove the
       // `/query` token from the text (the selection shows up as a pill above the
       // composer rather than as in-line text, mirroring the "+"-panel UX).
+      if (isCommandOption(item)) {
+        const token = `/${item.name} `
+        const next = text.slice(0, mentionRange.start) + token + text.slice(mentionRange.end)
+        setTextAndNotify(next)
+        const pos = mentionRange.start + token.length
+        setCursor(pos)
+        requestAnimationFrame(() => {
+          const ta = textareaRef.current
+          if (ta) {
+            ta.focus()
+            ta.setSelectionRange(pos, pos)
+          }
+        })
+        closeMention()
+        return
+      }
       if (isSkillOption(item)) {
         const next = text.slice(0, mentionRange.start) + text.slice(mentionRange.end)
         setTextAndNotify(next)
@@ -601,10 +620,12 @@ export const ChatComposer = memo(function ChatComposer({
       setMentionActive(0)
       return
     }
-    // Skill/plugin mentions (`/` trigger): local filter from skills + plugins catalog.
-    // Empty query lists all items so the menu auto-shows on first `/`.
+    // `/` panel: commands, then skills, then plugins. Empty query lists everything.
     if (mType === 'skill') {
       const ql = q.toLowerCase()
+      const commandRows: MentionCommandOption[] = COMPOSER_SLASH_COMMANDS
+        .filter((c) => !ql || c.name.includes(ql) || c.description.toLowerCase().includes(ql))
+        .map((c) => ({ __kind: 'command', name: c.name, label: `/${c.name}`, description: c.description }))
       const skillRows: MentionSkillOption[] = (workspaceMention.skills || [])
         .filter((s) =>
           !ql ||
@@ -621,7 +642,7 @@ export const ChatComposer = memo(function ChatComposer({
           String(p.description || '').toLowerCase().includes(ql),
         )
         .map((p) => ({ __kind: 'plugin', id: p.id, label: p.label, iconUrl: p.iconUrl, description: p.description }))
-      setMentionItems([...skillRows, ...pluginRows])
+      setMentionItems([...commandRows, ...skillRows, ...pluginRows])
       setMentionLoading(false)
       setMentionActive(0)
       return
@@ -1359,18 +1380,19 @@ export const ChatComposer = memo(function ChatComposer({
           ))}
         </div>
       ) : null}
-      <div className="react-chat-composer-shell">
+      <div ref={composerShellRef} className="react-chat-composer-shell">
+        <WorkspaceMentionMenu
+          open={mentionOpen}
+          loading={mentionLoading}
+          query={mentionRange?.query ?? ''}
+          type={mentionRange?.type ?? null}
+          items={mentionItems}
+          activeIndex={mentionActive}
+          onPick={applyMentionPick}
+          onActiveIndexChange={setMentionActive}
+          anchorRef={composerShellRef}
+        />
         <div className="react-chat-input-wrap">
-          <WorkspaceMentionMenu
-            open={mentionOpen}
-            loading={mentionLoading}
-            query={mentionRange?.query ?? ''}
-            type={mentionRange?.type ?? null}
-            items={mentionItems}
-            activeIndex={mentionActive}
-            onPick={applyMentionPick}
-            onActiveIndexChange={setMentionActive}
-          />
           <textarea
             ref={textareaRef}
             className={`react-chat-input${voiceRecording ? ' react-chat-input--dictating' : ''}`}
@@ -1615,6 +1637,40 @@ export const ChatComposer = memo(function ChatComposer({
                     <span className="react-chat-permission-menu-check" aria-hidden="true">{opt.active ? '✓' : ''}</span>
                   </button>
                 ))}
+                {onToggleNewChatGrantAllDefault ? (
+                  <div
+                    className="react-chat-permission-menu-global"
+                    role="none"
+                    onMouseDown={(e) => e.preventDefault()}
+                  >
+                    <div className="react-chat-permission-menu-global-info">
+                      <span className="react-chat-permission-menu-global-title">
+                        新对话默认完全访问
+                      </span>
+                      <span className="react-chat-permission-menu-global-desc">
+                        开启后新对话自动完全访问；关闭则为「帮我批准」
+                      </span>
+                    </div>
+                    <label
+                      className="react-chat-permission-menu-switch"
+                      title={
+                        newChatGrantAllDefault
+                          ? '关闭：新对话默认「帮我批准」'
+                          : '开启：新对话默认「完全访问」'
+                      }
+                    >
+                      <input
+                        type="checkbox"
+                        role="switch"
+                        aria-checked={!!newChatGrantAllDefault}
+                        aria-label="新对话默认完全访问"
+                        checked={!!newChatGrantAllDefault}
+                        onChange={(e) => onToggleNewChatGrantAllDefault(e.target.checked)}
+                      />
+                      <span className="react-chat-permission-menu-switch-slider" aria-hidden="true" />
+                    </label>
+                  </div>
+                ) : null}
               </div>
             ) : null}
           </div>

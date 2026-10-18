@@ -9,7 +9,7 @@
 >
 > 每个自定义角色有独立的记忆，互不污染。请到侧栏「资产中心」查看与校对；概念见 [资产中心](asset-center.md) [[explanation/asset-center|资产中心]]。
 >
-> 记忆存的是"用户偏好和事实"，跟[知识库](../guides/configuration/document-knowledge-base.md) [[guides/configuration/document-knowledge-base|知识库]]（存文档内容）和[知识库 Vault](../guides/configuration/knowledge-vault.md) [[guides/configuration/knowledge-vault|知识库 Vault]]（存笔记）是不同的。
+> 记忆存的是「用户偏好和事实」，跟[知识库](../guides/configuration/knowledge-base.md)（你上传的文档）不是一回事。
 >
 > **功能关系**：记忆系统是 [Agent 系统](agent-system.md) [[explanation/agent-system|Agent 系统]] 中间件链的一部分——`MemoryMiddleware` 在每次对话完成后触发记忆更新。记忆通过 `<memory>` 标签注入到系统提示中，与[技能系统](skill-system.md) [[explanation/skill-system|技能系统]] 的 SKILL.md 内容、子 Agent 指令共同构成系统提示。与[思维导图系统](mind-map-system.md) [[explanation/mind-map-system|思维导图系统]] 互补：记忆解决"跨会话连续性"（记住你是谁、你喜欢什么），思维导图解决"单会话可追溯性"（记住这次排查查了什么）。
 

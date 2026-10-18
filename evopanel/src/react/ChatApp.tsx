@@ -145,9 +145,12 @@ import {
 import {
   fetchGlobalToolApprovalPolicy,
   fetchSessionToolApprovalPolicy,
+  getCachedGlobalToolApprovalPolicy,
   isEffectiveToolApprovalGrantAll,
   // @ts-ignore
   isEffectiveToolApprovalSession,
+  isToolApprovalDisabled,
+  patchGlobalToolApprovalPolicy,
   TOOL_APPROVAL_POLICY_CHANGED,
   TOOL_APPROVAL_SESSION_POLICY_CHANGED,
   // @ts-ignore
@@ -548,7 +551,10 @@ import {
   sfSummarizeSegments,
   sfSummarizeRowsTail,
 } from './lib/stream-final-debug.js'
-import { shouldManualRefreshResumeStream } from './lib/stream-resume-gate.js'
+import {
+  shouldManualRefreshResumeStream,
+  shouldSuppressAutoReattach,
+} from './lib/stream-resume-gate.js'
 import {
   clearStreamReattachCooldown,
   isSessionRecoveryCooldownActive,
@@ -2867,11 +2873,11 @@ export default function ChatApp() {
           const row =
             rowRaw && typeof rowRaw === 'object' ? (rowRaw as Record<string, unknown>) : null
           if (!row) {
-            toast('扩展未安装', 'error')
+            toast('Agent应用未安装', 'error')
             return
           }
           if (row.enabled === false) {
-            toast('扩展已禁用，请先在扩展应用中心启用', 'warning')
+            toast('Agent应用已禁用，请先在Agent应用中心启用', 'warning')
             return
           }
           const manifest =
@@ -2895,7 +2901,7 @@ export default function ChatApp() {
           }
           if (ready?.entry) entry = String(ready.entry).trim() || entry
           if (!entry) {
-            toast('扩展缺少入口地址（ui.entry）', 'error')
+            toast('Agent应用缺少入口地址（ui.entry）', 'error')
             return
           }
           const sandbox = Array.isArray(ui.sandbox)
@@ -3063,7 +3069,7 @@ export default function ChatApp() {
   const userExtensionPanelOpen =
     rightStageOpen && isUserStageExtensionKind(rightStageSurface?.kind)
 
-  /** 子任务工作流 / 思维导图 / 扩展场景展开 → 收起左侧菜单 */
+  /** 子任务工作流 / 思维导图 / Agent应用场景展开 → 收起左侧菜单 */
   useEffect(() => {
     if (
       collabExecPanelOpen ||
@@ -6398,12 +6404,18 @@ useEffect(() => {
 
         const rowBefore = sessionsRef.current.find((s) => String(s.sessionKey || '') === sk)
         const rtBefore = getSessionRuntime(sk)
-        const shouldResumeBefore = shouldManualRefreshResumeStream({
+        const suppressLivePost = shouldSuppressAutoReattach({
           sessionKey: sk,
-          runStatus: rowBefore?.runStatus,
-          executingSessionKeys: executingSessionKeysRef.current,
           runtime: rtBefore,
         })
+        const shouldResumeBefore =
+          !suppressLivePost &&
+          shouldManualRefreshResumeStream({
+            sessionKey: sk,
+            runStatus: rowBefore?.runStatus,
+            executingSessionKeys: executingSessionKeysRef.current,
+            runtime: rtBefore,
+          })
         if (shouldResumeBefore) {
           const runId = String(rtBefore.activeChatRunId || rowBefore?.currentRunId || '').trim()
           if (runId) wsClient.abortStreamWire(sk, runId)
@@ -9131,11 +9143,16 @@ useEffect(() => {
   ) => {
     const sk = String(sessionKey || '').trim()
     if (!sk) return
+    const rt = getSessionRuntime(sk)
+    // Never abortStreamWire a live POST /runs/stream — that is the send itself.
+    if (shouldSuppressAutoReattach({ sessionKey: sk, runtime: rt })) {
+      srLog('stream resume skipped — live POST stream', { sessionKey: sk })
+      return
+    }
     delete refreshAttachAttemptedRef.current[sk]
     reattachRetryCountRef.current = 0
     srLog('stream resume requested (user refresh)', { sessionKey: sk })
     manualReattachSessionKeyRef.current = sk
-    const rt = getSessionRuntime(sk)
     const row = sessionsRef.current.find((s) => String(s.sessionKey || '') === sk)
     const runId = String(rt.activeChatRunId || row?.currentRunId || '').trim()
     if (runId) wsClient.abortStreamWire(sk, runId)
@@ -9191,8 +9208,10 @@ useEffect(() => {
     const tryReattach = () => {
       const sk = String(sessionRef.current || '').trim()
       if (!sk) return
-      // 尊重 stream-resume 门控，避免在 live POST stream 进行中触发重复 reattach
-      if (shouldManualRefreshResumeStream({ sessionKey: sk }) === false) return
+      // Live POST /runs/stream: never reattach (would abortStreamWire the send).
+      if (shouldSuppressAutoReattach({ sessionKey: sk })) return
+      // Only resume when the session still looks like it needs a wire.
+      if (!shouldManualRefreshResumeStream({ sessionKey: sk })) return
       if (isSessionRecoveryCooldownActive(sk)) return
       void (async () => {
         try {
@@ -10621,13 +10640,6 @@ useEffect(() => {
           )
             .trim()
             .toLowerCase()
-          // Diagnostic: surface every tool event so we can confirm browser tool
-          // events arrive at the React layer (the previous "no logs" symptom).
-          if (evToolName || aguiEvent.type === 'TOOL_CALL_START') {
-            dbgLog(
-              `[chat-app] tool ${aguiEvent.type} name=${evToolName} toolCallId=${evToolCallId}`,
-            )
-          }
           // Bind the browser panel to the engine session the tool will drive.
           // node-repl / browser-use always hits ``/api/browser/execute`` with the
           // fixed bridge thread id — using the chat thread here mounts a second
@@ -13985,6 +13997,26 @@ useEffect(() => {
     await applyMoreMenuSessionApprovalPolicy(presetId)
   }
 
+  /** 与安全中心「新对话默认完全访问」同一全局策略 */
+  const newChatGrantAllDefault = useMemo(() => {
+    void toolApprovalPolicyTick
+    return isToolApprovalDisabled(getCachedGlobalToolApprovalPolicy())
+  }, [toolApprovalPolicyTick])
+
+  async function toggleNewChatGrantAllDefault(next: boolean): Promise<void> {
+    const policy = next ? TOOL_APPROVAL_POLICY_GRANT_ALL : TOOL_APPROVAL_POLICY_SESSION
+    try {
+      await patchGlobalToolApprovalPolicy(policy)
+      toast(
+        next ? '新对话默认：完全访问（不询问）' : '新对话默认：帮我批准（风险操作询问）',
+        'success',
+      )
+    } catch (err) {
+      toast(String((err as Error)?.message || err) || '保存失败', 'error')
+      void fetchGlobalToolApprovalPolicy().catch(() => {})
+    }
+  }
+
   async function handleSend(
     message: string,
     attachments?: ChatAttachment[],
@@ -16519,6 +16551,8 @@ useEffect(() => {
                 active: currentPermissionPresetId === p.id,
               }))}
               onPickPermission={(id) => void pickPermissionPreset(id)}
+              newChatGrantAllDefault={newChatGrantAllDefault}
+              onToggleNewChatGrantAllDefault={(next) => void toggleNewChatGrantAllDefault(next)}
               renderBottomControls={(ctrl) => {
                 if (!renderBottomControlsLoggedRef.current) {
                   console.log('[ChatApp] renderBottomControls called (first render)')

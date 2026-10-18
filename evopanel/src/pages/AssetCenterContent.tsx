@@ -29,6 +29,13 @@ import {
 import { api } from "../lib/tauri-api.js";
 import { toast } from "../components/toast.js";
 import { getCurrentRoute } from "../router.js";
+import {
+  clearAssetFileCache,
+  peekAssetFileCache,
+  putAssetFileCache,
+  warmAssetFile,
+  warmAssetFileBatch,
+} from "../lib/assets-file-prefetch.js";
 
 /* ── Types ───────────────────────────────────────────────────────── */
 
@@ -377,6 +384,8 @@ export default function AssetCenterContent() {
   const [selectedFile, setSelectedFile] = useState("");
   const [editorContent, setEditorContent] = useState("");
   const [fileDirty, setFileDirty] = useState(false);
+  const [fileLoading, setFileLoading] = useState(false);
+  const fileLoadSeq = useRef(0);
 
 
   const [applyTarget, setApplyTarget] = useState("");
@@ -435,21 +444,61 @@ export default function AssetCenterContent() {
     setProfileDirty(false);
   }, [currentEntity]);
 
+  const prefetchFile = useCallback(
+    (relPath: string) => {
+      const path = String(relPath || "").replace(/\\/g, "/");
+      if (!path) return;
+      void warmAssetFile(currentEntity, path);
+    },
+    [currentEntity],
+  );
+
   const loadFile = useCallback(
     async (relPath: string) => {
-      const data = await api.assetsReadFile({ ...currentEntity, path: relPath });
-      setSelectedFile(relPath);
-      setEditorContent(String(data?.content ?? ""));
+      const path = String(relPath || "").replace(/\\/g, "/");
+      if (!path) return;
+      const seq = ++fileLoadSeq.current;
+      setSelectedFile(path);
       setFileDirty(false);
+      const cached = peekAssetFileCache(currentEntity, path);
+      if (cached != null) {
+        // Hover / enter warm already finished — paint immediately, refresh in background.
+        setEditorContent(cached);
+        setFileLoading(false);
+        void warmAssetFile(currentEntity, path, { force: true }).then((fresh) => {
+          if (seq !== fileLoadSeq.current || fresh == null) return;
+          // Only refresh if editor still shows the cached snapshot (user hasn't typed).
+          setEditorContent((cur) => (cur === cached ? fresh : cur));
+        });
+        return;
+      }
+      setEditorContent("");
+      setFileLoading(true);
+      try {
+        const data = await api.assetsReadFile({ ...currentEntity, path });
+        if (seq !== fileLoadSeq.current) return;
+        const content = String(data?.content ?? "");
+        putAssetFileCache(currentEntity, path, content);
+        setEditorContent(content);
+        setFileDirty(false);
+      } catch (e: unknown) {
+        if (seq !== fileLoadSeq.current) return;
+        setEditorContent("");
+        toast.error(String((e as { message?: string })?.message || e));
+      } finally {
+        if (seq === fileLoadSeq.current) setFileLoading(false);
+      }
     },
     [currentEntity],
   );
 
   const applyMemoryKind = useCallback(
     async (kind: MemoryKind) => {
+      fileLoadSeq.current += 1;
       setSelectedFile("");
       setEditorContent("");
       setFileDirty(false);
+      setFileLoading(false);
       if (kind === "graph") {
         setTreeEntries([]);
         setTreePath("memory");
@@ -494,8 +543,10 @@ export default function AssetCenterContent() {
       try {
         if (tab === "profile") {
           await loadProfile();
+          fileLoadSeq.current += 1;
           setSelectedFile("");
           setEditorContent("");
+          setFileLoading(false);
         } else if (tab === "stats") {
           await loadUsageStats();
         } else if (tab === "memory") {
@@ -503,18 +554,26 @@ export default function AssetCenterContent() {
         } else if (tab === "experience") {
           const root = treeRootForTab(tab);
           if (root) {
+            const seqAtStart = fileLoadSeq.current;
             await loadTree(root);
+            if (fileLoadSeq.current !== seqAtStart) return;
+            fileLoadSeq.current += 1;
             setSelectedFile("");
             setEditorContent("");
             setFileDirty(false);
+            setFileLoading(false);
           }
         } else if (tab === "journal") {
           const root = treeRootForTab(tab);
           if (root) {
+            const seqAtStart = fileLoadSeq.current;
             await loadTree(root);
+            if (fileLoadSeq.current !== seqAtStart) return;
+            fileLoadSeq.current += 1;
             setSelectedFile("");
             setEditorContent("");
             setFileDirty(false);
+            setFileLoading(false);
           }
         }
         /* export tab 无数据预加载 */
@@ -634,7 +693,7 @@ export default function AssetCenterContent() {
     void loadTabData(activeTab);
   }, [entityType, entityId, activeTab, loadTabData, loading]);
 
-  // 目录树加载完成后，自动选中第一个文件
+  // 目录树加载完成后，自动选中第一个文件；并预取首屏若干文档（悬停点击可秒开）
   useEffect(() => {
     if (tabLoading || activeTab === "profile" || activeTab === "export" || activeTab === "stats") return;
     if (activeTab === "memory" && memoryKind === "graph") return;
@@ -642,12 +701,25 @@ export default function AssetCenterContent() {
     if (pending) {
       pendingOpenPath.current = "";
       void loadFile(pending);
-      return;
+    } else if (!selectedFile) {
+      const first = treeEntries.find((e) => e.kind !== "dir");
+      if (first) void loadFile(first.path);
     }
-    if (selectedFile) return;
-    const first = treeEntries.find((e) => e.kind !== "dir");
-    if (first) void loadFile(first.path);
-  }, [treeEntries, selectedFile, activeTab, tabLoading, loadFile, memoryKind]);
+    const filePaths = treeEntries
+      .filter((e) => e.kind !== "dir")
+      .map((e) => String(e.path || ""))
+      .filter(Boolean);
+    if (filePaths.length) {
+      void warmAssetFileBatch(currentEntity, filePaths, { limit: 8, concurrency: 2 });
+    }
+  }, [treeEntries, selectedFile, activeTab, tabLoading, loadFile, memoryKind, currentEntity]);
+
+  // 切换实体时清掉上一实体的文件缓存，避免串读
+  useEffect(() => {
+    return () => {
+      clearAssetFileCache(currentEntity);
+    };
+  }, [currentEntity]);
 
   const graphScope = useMemo(
     () => graphScopeForEntity(entityType, entityId),
@@ -1024,6 +1096,7 @@ export default function AssetCenterContent() {
                 selectedFile={selectedFile}
                 editorContent={editorContent}
                 fileDirty={fileDirty}
+                fileLoading={fileLoading}
                 lineCount={lineCount}
                 canGoUp={!!treePath && treePath !== treeRoot}
                 onUp={async () => {
@@ -1037,6 +1110,7 @@ export default function AssetCenterContent() {
                 onRefresh={() => void refreshTab()}
                 onOpenDir={(p) => void loadTree(p)}
                 onOpenFile={(p) => void loadFile(p)}
+                onPrefetchFile={prefetchFile}
                 onChangeContent={(v) => {
                   setEditorContent(v);
                   setFileDirty(true);
@@ -1049,6 +1123,7 @@ export default function AssetCenterContent() {
                       path: selectedFile,
                       content: editorContent,
                     });
+                    putAssetFileCache(currentEntity, selectedFile, editorContent);
                     toast.success("已保存");
                     setFileDirty(false);
                   } catch (e: unknown) {
@@ -1456,12 +1531,14 @@ function TreeWorkspace({
   selectedFile,
   editorContent,
   fileDirty,
+  fileLoading,
   lineCount,
   canGoUp,
   onUp,
   onRefresh,
   onOpenDir,
   onOpenFile,
+  onPrefetchFile,
   onChangeContent,
   onSave,
   onNewJournal,
@@ -1476,12 +1553,14 @@ function TreeWorkspace({
   selectedFile: string;
   editorContent: string;
   fileDirty: boolean;
+  fileLoading?: boolean;
   lineCount: number;
   canGoUp: boolean;
   onUp: () => void;
   onRefresh: () => void;
   onOpenDir: (path: string) => void;
   onOpenFile: (path: string) => void;
+  onPrefetchFile?: (path: string) => void;
   onChangeContent: (v: string) => void;
   onSave: () => void;
   onNewJournal?: () => void;
@@ -1499,6 +1578,7 @@ function TreeWorkspace({
           selectedId={selectedFile}
           onSelectFile={(id) => onOpenFile(id)}
           onSelectFolder={(id) => onOpenDir(id)}
+          onPrefetchFile={onPrefetchFile}
           onRefresh={onRefresh}
           onReveal={onReveal}
           headerExtra={
@@ -1533,11 +1613,11 @@ function TreeWorkspace({
           pathLabel={selectedFile || "选择文件编辑"}
           content={editorContent}
           readonly={!selectedFile}
+          loading={!!fileLoading}
           saved={!fileDirty}
           lineCount={lineCount}
           onChange={onChangeContent}
           onSave={onSave}
-
         />
       }
     />
@@ -1553,6 +1633,7 @@ function FileSidebar({
   selectedId,
   onSelectFile,
   onSelectFolder,
+  onPrefetchFile,
   onRefresh,
   onReveal,
   headerExtra,
@@ -1566,6 +1647,7 @@ function FileSidebar({
   selectedId: string;
   onSelectFile: (id: string) => void;
   onSelectFolder: (id: string) => void;
+  onPrefetchFile?: (id: string) => void;
   onRefresh: () => void;
   onReveal?: (id: string) => void;
   headerExtra?: React.ReactNode;
@@ -1608,6 +1690,12 @@ function FileSidebar({
               <div
                 key={file.id}
                 className={["ac-tree-row", active ? "is-active" : ""].join(" ")}
+                onMouseEnter={() => {
+                  if (file.type === "file") onPrefetchFile?.(file.id);
+                }}
+                onFocusCapture={() => {
+                  if (file.type === "file") onPrefetchFile?.(file.id);
+                }}
               >
                 <button
                   type="button"
@@ -1655,10 +1743,14 @@ function FileSidebar({
   );
 }
 
+const EDITOR_LINE_PX = 23.8;
+const EDITOR_PAD_PX = 12;
+
 function EditorPanel({
   pathLabel,
   content,
   readonly,
+  loading,
   saved,
   lineCount,
   onChange,
@@ -1668,16 +1760,40 @@ function EditorPanel({
   pathLabel: string;
   content: string;
   readonly?: boolean;
+  loading?: boolean;
   saved: boolean;
   lineCount: number;
   onChange: (v: string) => void;
   onSave: () => void;
   extraActions?: React.ReactNode;
 }) {
-  const disabled = readonly && !content;
+  const disabled = (readonly && !content) || !!loading;
   const parts = String(pathLabel || "").split("/");
   const fileName = parts[parts.length - 1] || pathLabel || "未选择";
   const dirPath = parts.length > 1 ? `${parts.slice(0, -1).join("/")}/` : "";
+  const scrollerRef = useRef<HTMLTextAreaElement>(null);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportH, setViewportH] = useState(480);
+
+  useEffect(() => {
+    setScrollTop(0);
+    if (scrollerRef.current) scrollerRef.current.scrollTop = 0;
+  }, [pathLabel]);
+
+  useEffect(() => {
+    const el = scrollerRef.current;
+    if (!el) return;
+    const measure = () => setViewportH(el.clientHeight || 480);
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [pathLabel]);
+
+  const start = Math.max(0, Math.floor(Math.max(0, scrollTop - EDITOR_PAD_PX) / EDITOR_LINE_PX) - 4);
+  const visible = Math.ceil(viewportH / EDITOR_LINE_PX) + 10;
+  const end = Math.min(Math.max(lineCount, 1), start + visible);
+  const gutterOffset = EDITOR_PAD_PX + start * EDITOR_LINE_PX - scrollTop;
 
   return (
     <section className="ac-main">
@@ -1702,7 +1818,7 @@ function EditorPanel({
               ].join(" ")}
             />
             <span className="text-[12px] text-[var(--ac-text-muted)]">
-              {saved ? "已保存" : "未保存"}
+              {loading ? "读取中…" : saved ? "已保存" : "未保存"}
             </span>
           </div>
           {!saved && (
@@ -1724,16 +1840,21 @@ function EditorPanel({
       <div className="ac-editor-body">
         <div className="absolute inset-0 flex overflow-hidden">
           <div className="ac-gutter">
-            {Array.from({ length: lineCount }).map((_, i) => (
-              <div key={i} className="pr-2.5">
-                {i + 1}
-              </div>
-            ))}
+            <div style={{ marginTop: gutterOffset }}>
+              {Array.from({ length: Math.max(0, end - start) }, (_, i) => (
+                <div key={start + i} className="pr-2.5">
+                  {start + i + 1}
+                </div>
+              ))}
+            </div>
           </div>
           <textarea
+            ref={scrollerRef}
             value={content}
             spellCheck={false}
             disabled={disabled}
+            placeholder={loading ? "读取中…" : undefined}
+            onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
             onChange={(e) => onChange(e.target.value)}
             className="ac-editor-textarea disabled:opacity-50"
           />

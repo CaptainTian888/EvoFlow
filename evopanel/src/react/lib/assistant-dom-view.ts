@@ -13,6 +13,8 @@ import type { DisplayRow, MessageSegment } from '../chat-types.js'
 import type { AssistantBubbleDisplayPlan, AssistantBubbleSlot } from './message-row-display-plan.js'
 import type { SegmentDisplayChunk, ActivityPiece } from './exploring-activity-group.js'
 import type { UiDomChunk, UiDomPiece } from './stream-compare-file-log.js'
+import { isToolRunning } from '../../lib/chat-normalize.js'
+import { shouldDefaultOpenTurnHistory } from './turn-history-fold-policy.js'
 
 export function buildAssistantDomView(opts: {
   row: DisplayRow
@@ -29,6 +31,8 @@ export function buildAssistantDomView(opts: {
    *   内容（含 final-reply、tools、reasoning）全藏起来，看不到最新。
    */
   threadBusy?: boolean
+  /** 整段对话的最后一条助手回合 */
+  isLatestTurn?: boolean
   /** 已工作的回合默认折叠（已工作 / 已停止）；工作中（isStreaming）默认展开 */
   /** 收集触发本回合的 file changes（DOM 上显示在气泡底部） */
   fileChanges?: string[]
@@ -52,7 +56,15 @@ export function buildAssistantDomView(opts: {
   //   「封存后整段折叠，看不到最新文字」= 之前 foldOpen 只看 isStreaming）。
   const turnAlive = !!opts.threadBusy
   const gear = turnAlive ? 'spinner' : 'off'
-  const foldOpen = turnAlive
+  const foldOpen = shouldDefaultOpenTurnHistory({
+    isStreaming: !!opts.isStreaming,
+    threadBusy: turnAlive,
+    interactiveToolApproval: false,
+    approvalLatch: false,
+    isLatestTurn: !!opts.isLatestTurn,
+    toolsRunning: tools.some((tool) => isToolRunning(tool)),
+    slots: opts.plan.slots,
+  })
   if (turnAlive) {
     chunks.push({ kind: 'spinner', label: '生成中' })
   }

@@ -101,6 +101,8 @@ type SharedHistoryProps = {
 }
 
 type HistoryMessageRowProps = Omit<SharedHistoryProps, 'isSending' | 'streamContinuedRowIndex'> & {
+  /** 流式气泡单独钉在列表外时，历史里的最后一条助手不再算「最后一轮」 */
+  liveTurnSeparate?: boolean
   item: HistoryItem
   /** 续流合并后的 row；仅传给续流目标行，避免击穿其余行 memo */
   continuedRow?: DisplayRow | null
@@ -139,6 +141,8 @@ const HistoryMessageRow = memo(function HistoryMessageRow({
   onFork,
   assistantAgentLabel,
   assistantAgent,
+  lastAssistantRowIndex,
+  liveTurnSeparate = false,
   className,
   style,
   measureRef,
@@ -179,6 +183,11 @@ const HistoryMessageRow = memo(function HistoryMessageRow({
         sessionKey={sk}
         liveActivityDockLabel={isContinuedStream ? liveActivityDockLabel : undefined}
         liveTurnElapsedSec={isContinuedStream ? liveTurnElapsedSec : undefined}
+        isLatestTurn={
+          !liveTurnSeparate &&
+          (effectiveItem.row.role === 'assistant' || effectiveItem.row.role === '_stream') &&
+          effectiveItem.i === lastAssistantRowIndex
+        }
         onCopy={onCopy}
         onRetry={onRetry}
         onEdit={onEdit}
@@ -229,6 +238,7 @@ const FlatHistoryBody = memo(function FlatHistoryBody(
             }
             {...rowProps}
             isContinuedStream={isContinuedStream}
+            liveTurnSeparate={isSending && streamContinuedRowIndex < 0}
             // 仅流式续写行接收 dock 计时，避免每秒计时击穿其余行 memo
             liveActivityDockLabel={isContinuedStream ? liveActivityDockLabel : undefined}
             liveTurnElapsedSec={isContinuedStream ? liveTurnElapsedSec : undefined}
@@ -409,6 +419,7 @@ const VirtualHistoryBody = memo(function VirtualHistoryBody(
             streamToolApprovalHost={rowProps.streamToolApprovalHost}
             isContinuedStream={isContinuedStream}
             lastAssistantRowIndex={rowProps.lastAssistantRowIndex}
+            liveTurnSeparate={rowProps.isSending && rowProps.streamContinuedRowIndex < 0}
             liveTurnAssistantRunId={rowProps.liveTurnAssistantRunId}
             liveTurnTimingActive={rowProps.liveTurnTimingActive}
             executionToolTiming={rowProps.executionToolTiming}
@@ -2354,6 +2365,7 @@ export const MessageVirtualList = memo(function MessageVirtualList({
               row={streamRow}
               isStreaming
               threadBusy={streamActive}
+              isLatestTurn
               liveActivityDockLabel={liveActivityDockLabel}
               liveTurnElapsedSec={liveTurnElapsedSec}
               showToolTiming

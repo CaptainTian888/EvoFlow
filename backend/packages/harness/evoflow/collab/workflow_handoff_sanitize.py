@@ -67,6 +67,12 @@ def sanitize_output_value_field(value: str) -> str:
     s = str(value or "").strip()
     if not s:
         return ""
+    # Agent typos: `` `C:/path/file.md `` / `"path"` / wrapping fences.
+    while len(s) >= 2 and s[0] in "`'\"" and s[-1] == s[0]:
+        s = s[1:-1].strip()
+    s = s.lstrip("`'\"").rstrip("`'\",.;:，。；：")
+    if not s:
+        return ""
     if s.lower().startswith("data:image") or "base64," in s.lower() and len(s) > 500:
         return _OMITTED_BINARY
     s = strip_binary_payloads_from_text(s)

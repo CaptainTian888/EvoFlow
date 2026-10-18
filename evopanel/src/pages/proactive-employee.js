@@ -4337,11 +4337,12 @@ function renderWorkItemOutcomeCards(task, statusGroup, role = null) {
     cards.push(`
       <section class="td-card">
         <h2 class="td-card-title">本岗交付物</h2>
+        <p class="td-card-sub">优先看带「最终交付」标记的文件；过程产物默认收起，可按节点来源核对。</p>
         ${renderOutputItemCardsHtml(primary, esc, { enablePreview: true })}
         ${
           process.length
             ? `<details class="td-process-fold">
-                <summary class="td-process-summary">过程产物（${process.length}）</summary>
+                <summary class="td-process-summary">过程产物（${process.length}）· 中间节点产出</summary>
                 ${renderOutputItemCardsHtml(process, esc, { enablePreview: true })}
               </details>`
             : ''

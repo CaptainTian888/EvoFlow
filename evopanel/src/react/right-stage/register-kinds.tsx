@@ -65,7 +65,7 @@ export function ensureRightStageKindsRegistered() {
       const url = String(data.url || data.href || data.link || '').trim()
       const extensionId = String(data.extensionId || data.extension_id || '').trim()
       // 老 web-embed 浏览器已退役：非扩展（无 extensionId）一律路由到新 BrowserPanel。
-      // web-embed kind 仅保留给已安装的 UI 扩展应用（extensionId 存在）。
+      // web-embed kind 仅保留给已安装的 UI Agent应用（extensionId 存在）。
       // 不要在外面再套一层 ``react-chat-right-stage-panel`` aside —— BrowserPanel
       // 自带 ``react-chat-browser-panel`` 壳，重复壳会叠出双背景 + 双边框 + 50% 宽度。
       if (!extensionId) {

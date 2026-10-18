@@ -901,6 +901,42 @@ def run_app(
 # ────────────────────────────────── Run Management ──────────────────────────────────────
 
 
+def _run_parameter_fields(run: dict[str, Any]) -> list[dict[str, str]]:
+    """App parameter name/label pairs so the inspect overview can show 入参."""
+    app_id = str(run.get("app_id") or "").strip()
+    if not app_id:
+        return []
+    try:
+        app_row = app_repositories.load_app(app_id)
+    except Exception:
+        return []
+    if not isinstance(app_row, dict):
+        return []
+    pin = run.get("app_version")
+    if pin is not None:
+        try:
+            from evoflow.collab.app_openai_compat import load_app_for_run
+
+            pinned = load_app_for_run(app_id, pinned_version=int(pin))
+            if isinstance(pinned, dict):
+                app_row = pinned
+        except Exception:
+            pass
+    raw = app_row.get("parameters")
+    if not isinstance(raw, list):
+        return []
+    fields: list[dict[str, str]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        label = str(item.get("label") or name).strip() or name
+        fields.append({"name": name, "label": label})
+    return fields
+
+
 def get_run_status(run_id: str) -> dict[str, Any] | None:
     """Get current status of an application run."""
     run = app_repositories.load_run(run_id)
@@ -1092,6 +1128,8 @@ def get_run_status(run_id: str) -> dict[str, Any] | None:
         "outputs": main_outputs,
         "evidence_paths": main_evidence,
         "result_summary": result_summary,
+        "parameters": run.get("parameters") if isinstance(run.get("parameters"), dict) else {},
+        "parameter_fields": _run_parameter_fields(run),
         "error": run.get("error"),
         "created_at": run.get("created_at"),
         "started_at": run.get("started_at"),

@@ -22,6 +22,8 @@ import { ReasoningInlineBlock } from './ReasoningInlineBlock.js'
 import { StreamRunStatusLine } from './StreamRunStatusLine.js'
 import { ToolCallList } from './ToolCallList.js'
 import { TurnHistoryFold } from './TurnHistoryFold.js'
+import { shouldDefaultOpenTurnHistory } from '../lib/turn-history-fold-policy.js'
+import { isToolRunning } from '../../lib/chat-normalize.js'
 
 /** 按 display-plan slots 顺序渲染助手气泡内容（唯一 DOM 顺序出口） */
 function AssistantBubbleSlotViewInner({
@@ -53,6 +55,7 @@ function AssistantBubbleSlotViewInner({
   threadBusy = false,
   liveActivityLabel,
   lastStepLabel,
+  isLatestTurn = false,
 }: {
   plan: AssistantBubbleDisplayPlan
   displaySegments: MessageSegment[]
@@ -98,6 +101,11 @@ function AssistantBubbleSlotViewInner({
   liveActivityLabel?: string
   /** 封存后折叠头「已工作 X · 最后一步」的最后一步文案（流式期间记忆） */
   lastStepLabel?: string
+  /**
+   * 整段对话的最后一条助手回合。结束后：纯正文 / 一段思考+正文 才默认折叠；
+   * 带工具过程保持展开。更早的回合不传，结束后默认折叠。
+   */
+  isLatestTurn?: boolean
 }) {
   // ZCode 式扁平内联：plan.flatTimeline 为权威（MessageRow 默认 true，工作轨迹显式传 false）
   const flatTimeline = plan.flatTimeline !== false && !suppressExploringFold
@@ -444,15 +452,18 @@ function AssistantBubbleSlotViewInner({
           key="turn-history-status"
           label={workedLabel}
           messageId={messageId}
-          // v5.10：折叠展开跟随齿轮同源条件（isStreaming || threadBusy）——
-          // sealing 窗口（RUN_FINISHED 后 final 落库前）isStreaming 已翻 false，
-          // threadBusy 仍亮，保持展开与齿轮直到线程真正空闲。
-          // 授权暂停时 interactiveToolApproval=true（本行是审批宿主），同样保持
-          // 展开，否则自动折叠会把审批面板藏进 history piece。
-          // approvalLatch：授权间隙（已批准→等待续流）不收起，避免折叠/展开闪烁。
-          defaultOpen={
-            isStreaming || threadBusy || interactiveToolApproval || approvalLatch
-          }
+          // 工作中 / 等待授权：展开。
+          // 整段对话的最后一轮：还在调工具，或不是「单一正文 / 一段思考+正文」，保持展开。
+          // 更早的回合结束后默认折叠。
+          defaultOpen={shouldDefaultOpenTurnHistory({
+            isStreaming,
+            threadBusy,
+            interactiveToolApproval,
+            approvalLatch,
+            isLatestTurn,
+            toolsRunning: tools.some((tool) => isToolRunning(tool)),
+            slots: plan.slots,
+          })}
           // v5.3：已工作默认折叠时，最新一轮 piece 仍要外露。
           // body 永远渲染，由 children 自身用 CSS 决定哪些 piece 可见。
           bodyAlwaysRendered={!isStreaming && !threadBusy}

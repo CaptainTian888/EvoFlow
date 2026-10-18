@@ -136,4 +136,23 @@ describe('stream-resume-gate', () => {
       }),
     ).toBe(false)
   })
+
+  it('shouldSuppressAutoReattach still blocks live POST even with manualForce', () => {
+    const sk = 'agent:main:suppress-manual-force'
+    markSessionStreamWireSource(sk, 'run')
+    expect(
+      shouldSuppressAutoReattach({
+        sessionKey: sk,
+        manualForce: true,
+      }),
+    ).toBe(true)
+    markSessionStreamWireSource(sk, 'stream-resume')
+    expect(
+      shouldSuppressAutoReattach({
+        sessionKey: sk,
+        manualForce: true,
+      }),
+    ).toBe(false)
+    markSessionStreamWireSource(sk, null)
+  })
 })

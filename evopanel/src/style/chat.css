@@ -2107,7 +2107,8 @@ button.msg-file-card.msg-file-card--button:focus-visible {
 }
 .msg-tool-screenshot-btn {
   display: block;
-  width: 100%;
+  width: fit-content;
+  max-width: min(280px, 100%);
   margin: 0;
   padding: 0;
   border: none;
@@ -2119,12 +2120,21 @@ button.msg-file-card.msg-file-card--button:focus-visible {
 }
 .msg-tool-screenshot-img {
   display: block;
-  width: 100%;
-  max-height: min(420px, 55vh);
+  width: auto;
+  max-width: min(280px, 100%);
+  max-height: min(180px, 32vh);
   object-fit: contain;
   border-radius: 6px;
   border: 1px solid var(--border-primary, var(--border));
   background: var(--bg-secondary, #f8f9fa);
+}
+/* 电脑控制预览：缩略图，点击再放大 */
+.msg-tool-cua .msg-tool-screenshot-btn {
+  max-width: min(240px, 100%);
+}
+.msg-tool-cua .msg-tool-screenshot-img {
+  max-width: min(240px, 100%);
+  max-height: min(160px, 28vh);
 }
 .msg-tool-screenshot-hint {
   position: absolute;

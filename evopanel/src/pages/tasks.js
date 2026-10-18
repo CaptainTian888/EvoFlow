@@ -2230,14 +2230,28 @@ async function loadTasks(page, state, opts = {}) {
     if (container) renderSkeleton(container)
   }
 
-  try {
-    if (isGatewayWarming()) {
-      if (!silent && countEl) countEl.textContent = '引擎启动中…'
-      const ready = await waitForBackendReady(90_000)
-      if (!ready && isGatewayWarming()) {
-        throw new Error('引擎仍在启动，请稍后重试')
+  // 引擎预热/reload 期间不再同步阻塞 90s：先让骨架屏可见，
+  // 后台等 ready 成功后自动重拉一次；失败（超时）给出行内重试入口。
+  if (isGatewayWarming()) {
+    if (!silent && countEl) countEl.textContent = '引擎启动中…'
+    const ready = await waitForBackendReady(90_000)
+    if (!ready && isGatewayWarming()) {
+      if (silent) return
+      if (container) {
+        container.innerHTML = `
+          <div style="padding:24px;text-align:center;color:var(--text-tertiary)">
+            <div style="margin-bottom:12px">引擎仍在启动（已等待 90 秒），可在启动完成后手动刷新</div>
+            <button id="tasks-retry-load" type="button" style="padding:6px 18px;border-radius:6px;border:1px solid var(--border);background:var(--bg-secondary);color:var(--text-primary);cursor:pointer;font-size:13px">重试加载</button>
+          </div>`
+        container.querySelector('#tasks-retry-load')?.addEventListener('click', () => {
+          void loadTasks(page, state)
+        })
       }
+      return
     }
+    // ready 恢复后原地继续走正常加载（此时骨架已在位，不闪屏）。
+  }
+  try {
     const mapsPromise = ensureDisplayMaps(state)
     const { takeNavWarm } = await import('../lib/nav-panel-prefetch.js')
     const warmList = takeNavWarm('tasks:list')

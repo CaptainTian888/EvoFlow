@@ -3136,7 +3136,7 @@ html[data-translucent-ui='1'][data-liquid-glass-webgl='1'] :is(
 }
 
 /* ══════════════════════════════════════════════════════════════════
-   扩展应用（extensions-page）：搜索 + 应用卡片
+   Agent应用（extensions-page）：搜索 + 应用卡片
    ══════════════════════════════════════════════════════════════════ */
 html[data-theme='dark'] .extensions-page,
 html[data-translucent-ui='1'] .extensions-page {

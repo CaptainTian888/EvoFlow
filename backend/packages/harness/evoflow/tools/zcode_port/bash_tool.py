@@ -537,9 +537,12 @@ def _maybe_stage_agent_browser_screenshot(
         )
         if not staged:
             return result
+        # 不把磁盘 path 写进工具结果，避免模型抄成「截图文件：@@…png@@」→ [Image blocked]。
         result = (
-            f"{result}\n\n[agent-browser screenshot saved: {path} — staged for your next "
-            f"context; you will see the pixels.]"
+            f"{result}\n\n[agent-browser screenshot captured — already shown on the tool card "
+            f"and staged for your next context; you will see the pixels. "
+            f"Do not mention the file path, filename, or @@...png@@ in your reply. "
+            f"Do NOT call view_image.]"
         )
         return command_with_staged_images(result, tool_call_id, {staged["path"]: staged})
     return result

@@ -8,6 +8,7 @@ import { api } from './tauri-api.js'
 import { mountAppStepTranscript } from '../components/app-step-transcript.js'
 import { resolveAssignedAgentDisplayName } from './tool-display.js'
 import {
+  filterDeliverableOutputs,
   renderOutputItemCardsHtml,
   taskOutputsOf,
 } from './task-summary.js'
@@ -68,6 +69,40 @@ export function formatDurationMs(ms) {
   const m = Math.floor(sec / 60)
   const s = Math.round(sec % 60)
   return s ? `${m}m ${s}s` : `${m}m`
+}
+
+export function formatRunParameters(raw, fields) {
+  const params = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}
+  const labels = new Map()
+  const ordered = []
+  const seen = new Set()
+  for (const field of Array.isArray(fields) ? fields : []) {
+    const name = String(field?.name || '').trim()
+    if (!name || seen.has(name)) continue
+    labels.set(name, String(field?.label || name).trim() || name)
+    if (Object.prototype.hasOwnProperty.call(params, name)) {
+      seen.add(name)
+      ordered.push(name)
+    }
+  }
+  for (const key of Object.keys(params)) {
+    if (!key || key.startsWith('_') || seen.has(key)) continue
+    seen.add(key)
+    ordered.push(key)
+  }
+  if (!ordered.length) return ''
+  return ordered
+    .map((key) => {
+      const value = params[key]
+      const shown =
+        value == null || value === ''
+          ? '（空）'
+          : typeof value === 'object'
+            ? JSON.stringify(value)
+            : String(value)
+      return `${labels.get(key) || key}：${shown}`
+    })
+    .join('\n')
 }
 
 export function stepDurationLabel(detail) {
@@ -171,10 +206,18 @@ export function createAppRunInspectController(opts) {
   }
 
   function normalizeStepOutputs(detail) {
-    return taskOutputsOf({
-      outputs: detail?.outputs,
-      evidence_paths: detail?.evidence_paths,
-    })
+    const source =
+      detail?.is_rollup_step || String(detail?.ref || '').trim() === '__rollup__'
+        ? '结果汇总'
+        : String(detail?.title || detail?.name || detail?.ref || '').trim()
+    return filterDeliverableOutputs(
+      taskOutputsOf({
+        outputs: detail?.outputs,
+        evidence_paths: detail?.evidence_paths,
+      }).map((item) =>
+        source && !item.source_label ? { ...item, source_label: source } : item,
+      ),
+    )
   }
 
   function collectRunDeliverables(status) {
@@ -436,7 +479,9 @@ export function createAppRunInspectController(opts) {
         return `${name}：${sm.label}${outs.length ? ` · ${outs.length} 项产出` : ''}`
       })
 
+      const paramText = formatRunParameters(runStatus.parameters, runStatus.parameter_fields)
       const cells = [
+        ['入参', paramText || '（无入参）'],
         ['运行 ID', runId],
         ['进度', `${Math.min(100, Math.max(0, Number(runStatus.progress) || 0))}%`],
         nodeBits.length ? ['节点', nodeBits.join('\n')] : null,
@@ -445,7 +490,7 @@ export function createAppRunInspectController(opts) {
 
       rowsEl.innerHTML = cells
         .map(([label, value]) => {
-          const wide = label === '运行摘要' || label === '节点'
+          const wide = label === '运行摘要' || label === '节点' || label === '入参'
           return `
             <div class="wf-debug-row wf-debug-row--${wide ? 'block' : 'half'}" style="${wide ? 'grid-column:1/-1' : ''}">
               <div class="wf-debug-row-label">${escHtml(label)}</div>
@@ -463,6 +508,7 @@ export function createAppRunInspectController(opts) {
           runOutEl.innerHTML = `
             <div class="apps-history-outputs-block">
               <div class="apps-history-outputs-title">综合产物（最终交付）</div>
+              <p class="td-card-sub" style="margin:0 0 8px">优先看带「最终交付」标记的文件；每条会标注来自哪个节点。</p>
               ${renderOutputItemCardsHtml(runItems, escHtml, { enablePreview: true })}
             </div>`
           bindPreview(runOutEl, { assigned_agent: '' })

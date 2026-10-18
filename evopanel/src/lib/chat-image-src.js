@@ -6,6 +6,25 @@
 import { apiUrl } from './api-client.js'
 import { getChatWorkspaceRoot } from './chat-workspace-context.js'
 
+/**
+ * 截图已在工具卡上。模型若把 browser_snapshots 落盘路径 / 文件名写进正文，
+ * Streamdown 会变成 [Image blocked]。渲染前剥掉这类引用。
+ */
+export function stripBrowserSnapshotFileMentions(text) {
+  return String(text || '')
+    .replace(/@@[^@\r\n]*browser_snapshots[^@\r\n]*@@/gi, '')
+    .replace(/!\[[^\]]*\]\([^)]*browser_snapshots[^)]*\)/gi, '')
+    // 模型偶发把 API 地址也 @@ 进正文
+    .replace(/@@[^@\r\n]*\/browser-snapshots\/[^@\r\n]*@@/gi, '')
+    .replace(/!\[[^\]]*\]\([^)]*\/browser-snapshots\/[^)]*\)/gi, '')
+    // 仅文件名：@@aaa35130e2da4b3f.png@@ / [Image blocked: aaa….png]
+    .replace(/@@\s*[0-9a-f]{12,32}\.png\s*@@/gi, '')
+    .replace(/截图文件：\s*(?:\[Image blocked:[^\]]*\]\s*)?/gi, '')
+    .replace(/\[Image blocked:\s*[0-9a-f]{12,32}\.png\s*\]/gi, '')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+}
+
 const IMAGE_EXT_RE = /\.(jpe?g|png|gif|webp|heic|svg|bmp)(\?|$)/i
 const OUTPUTS_MARKER = 'outputs'
 

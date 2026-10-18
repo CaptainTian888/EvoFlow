@@ -181,6 +181,29 @@ describe('filterDeliverableOutputs', () => {
     expect(items[0].value).toContain('a.md')
   })
 
+  it('dedupes abs / rel / backtick paths and prefers labeled absolute', () => {
+    const items = filterDeliverableOutputs([
+      {
+        type: 'file',
+        value: 'outputs/role-worldbuilding/08-整合成稿_雪絮与回声匣.md',
+      },
+      {
+        type: 'file',
+        value: '`C:/Users/admin/.evoflow-dev/outputs/role-worldbuilding/08-整合成稿_雪絮与回声匣.md',
+      },
+      {
+        type: 'file',
+        label: '★最终交付物：完整童话故事《雪絮与回声匣》',
+        value: 'C:/Users/admin/.evoflow-dev/outputs/role-worldbuilding/08-整合成稿_雪絮与回声匣.md',
+        _resolve_meta: { absolute: 'C:/Users/admin/.evoflow-dev/outputs/role-worldbuilding/08-整合成稿_雪絮与回声匣.md', found: true },
+      },
+    ])
+    expect(items).toHaveLength(1)
+    expect(items[0].label).toContain('最终交付物')
+    expect(items[0].value.startsWith('`')).toBe(false)
+    expect(items[0]._resolve_meta?.found).toBe(true)
+  })
+
   it('resolveTaskOutputItems ignores code in summary mentions', () => {
     const resolved = resolveTaskOutputItems({
       outputs: [{ type: 'file', value: 'docs/roles/x/a.md', label: '方案' }],

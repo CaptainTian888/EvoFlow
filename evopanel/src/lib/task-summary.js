@@ -126,40 +126,80 @@ function outputPathExt(value) {
   return dot >= 0 ? base.slice(dot).toLowerCase() : ''
 }
 
+/** Strip agent typos: backticks, quotes, trailing punctuation around paths. */
+export function sanitizeDeliverablePath(value) {
+  let s = String(value || '').trim()
+  if (!s) return ''
+  while (s.length >= 2 && ((s[0] === '`' && s.endsWith('`')) || (s[0] === '"' && s.endsWith('"')) || (s[0] === "'" && s.endsWith("'")))) {
+    s = s.slice(1, -1).trim()
+  }
+  s = s.replace(/^[`'"“”‘’]+/, '').replace(/[`'"“”‘’,.;:，。；：]+$/, '').trim()
+  return s
+}
+
+/** Basename key so abs/rel/`abs paths of the same file collapse. */
+function deliverableBasenameKey(value) {
+  const cleaned = sanitizeDeliverablePath(value).replace(/\\/g, '/').split('?')[0]
+  if (!cleaned) return ''
+  const base = cleaned.split('/').filter(Boolean).pop() || cleaned
+  return base.toLowerCase()
+}
+
 /** Normalize for dedupe: drop leading repo folder like ContentOS/. */
 function deliverableDedupeKey(value) {
-  let p = String(value || '')
-    .trim()
+  let p = sanitizeDeliverablePath(value)
     .replace(/\\/g, '/')
     .replace(/^\/+/, '')
   p = p.replace(/^(contentos|evoflow)\//i, '')
+  const base = deliverableBasenameKey(p)
+  // Prefer basename for files so abs/rel/dirty variants merge.
+  if (base && /\.[a-z0-9]{1,8}$/i.test(base)) return `base:${base}`
   return p.toLowerCase()
+}
+
+function deliverableQualityScore(item) {
+  if (!item || typeof item !== 'object') return 0
+  const value = sanitizeDeliverablePath(item.value)
+  const label = String(item.label || '').trim()
+  let score = 0
+  const meta = item._resolve_meta
+  if (meta && typeof meta === 'object') {
+    if (meta.found === true) score += 100
+    if (meta.absolute) score += 40
+  }
+  if (label) score += 35
+  if (/★|最终交付|汇总报告|验收/.test(label)) score += 50
+  if (/^[a-zA-Z]:[\\/]/.test(value) || value.startsWith('/')) score += 30
+  if (/\/outputs\//i.test(value) || /^outputs\//i.test(value)) score += 12
+  if (item.source_label) score += 8
+  score += Math.min(24, Math.floor(value.length / 16))
+  return score
 }
 
 /**
  * Keep docs/media/urls for 交付物 UI; drop source-code paths.
- * Also dedupe the same file listed with/without a repo prefix.
+ * Also dedupe the same file listed as abs / rel / backtick-prefixed.
  */
 export function filterDeliverableOutputs(items) {
   const list = Array.isArray(items) ? items : []
   const out = []
-  const seen = new Set()
+  const indexByKey = new Map()
   for (const item of list) {
     if (!item || typeof item !== 'object') continue
     const typ = String(item.type || 'file').trim().toLowerCase() || 'file'
-    const value = String(item.value || '').trim()
+    const value = sanitizeDeliverablePath(item.value)
     if (!value) continue
     if (typ === 'url' || /^https?:\/\//i.test(value)) {
       const key = `url:${value}`
-      if (seen.has(key)) continue
-      seen.add(key)
+      if (indexByKey.has(key)) continue
+      indexByKey.set(key, out.length)
       out.push({ ...item, type: 'url', value })
       continue
     }
     if (typ === 'text') {
       const key = `text:${value.slice(0, 120)}`
-      if (seen.has(key)) continue
-      seen.add(key)
+      if (indexByKey.has(key)) continue
+      indexByKey.set(key, out.length)
       out.push({ ...item, type: 'text', value })
       continue
     }
@@ -167,9 +207,27 @@ export function filterDeliverableOutputs(items) {
     const ext = outputPathExt(value)
     if (ext && !DELIVERABLE_FILE_EXTS.has(ext)) continue
     const key = deliverableDedupeKey(value)
-    if (seen.has(key)) continue
-    seen.add(key)
-    out.push({ ...item, type: typ === 'other' ? 'file' : typ, value })
+    const next = { ...item, type: typ === 'other' ? 'file' : typ, value }
+    if (indexByKey.has(key)) {
+      const idx = indexByKey.get(key)
+      const prev = out[idx]
+      if (deliverableQualityScore(next) > deliverableQualityScore(prev)) {
+        out[idx] = {
+          ...prev,
+          ...next,
+          label: next.label || prev.label,
+          source_label: next.source_label || prev.source_label,
+          _resolve_meta: next._resolve_meta || prev._resolve_meta,
+        }
+      } else if (!prev.label && next.label) {
+        out[idx] = { ...prev, label: next.label }
+      } else if (!prev.source_label && next.source_label) {
+        out[idx] = { ...prev, source_label: next.source_label }
+      }
+      continue
+    }
+    indexByKey.set(key, out.length)
+    out.push(next)
   }
   return out
 }
@@ -286,7 +344,7 @@ export function parseOutputKvBlob(text) {
 
 /** Return cleaned ``{ path, label, key }`` from a path or agent typo blob. */
 export function extractOutputPathFields(value) {
-  const s = stripWrappingBrackets(value)
+  const s = stripWrappingBrackets(sanitizeDeliverablePath(value))
   if (!s) return { path: '', label: '', key: '' }
 
   const kv = parseOutputKvBlob(s)
@@ -531,7 +589,9 @@ function normalizeOutputItem(item, index) {
   let key = String(item.key || item.name || `artifact_${index + 1}`).trim() || `artifact_${index + 1}`
   let label = String(item.label || item.title || '').trim()
   const extracted = extractOutputPathFields(value)
-  if (extracted.path) value = extracted.path
+  if (extracted.path) value = sanitizeDeliverablePath(extracted.path)
+  else value = sanitizeDeliverablePath(value)
+  if (!value) return null
   if (!label && extracted.label) label = extracted.label
   if (extracted.key && /^artifact[_-]?\d*$/i.test(key)) key = extracted.key
   const out = { type, key, value }
@@ -541,7 +601,53 @@ function normalizeOutputItem(item, index) {
   if (item && typeof item === 'object' && item._resolve_meta && typeof item._resolve_meta === 'object') {
     out._resolve_meta = item._resolve_meta
   }
+  if (item && typeof item === 'object' && item.source_label) {
+    out.source_label = String(item.source_label).trim()
+  }
   return out
+}
+
+function subtaskDisplayLabel(st) {
+  if (!st || typeof st !== 'object') return ''
+  if (isRollupSubtaskRow(st)) return '结果汇总'
+  const title =
+    String(st.title || st.name || st.goal || st.description || '').trim() ||
+    String(st.ref || st.semantic_ref || '').trim()
+  return title.length > 36 ? `${title.slice(0, 35)}…` : title
+}
+
+/** Attach which workflow node produced each file (best-effort by basename). */
+export function annotateDeliverableSources(task, items) {
+  const list = Array.isArray(items) ? items : []
+  const subs = Array.isArray(task?.subtasks) ? task.subtasks : []
+  if (!subs.length) return list
+  const byBase = new Map()
+  for (const st of subs) {
+    const source = subtaskDisplayLabel(st)
+    if (!source) continue
+    for (const o of taskOutputsOf(st)) {
+      const base = deliverableBasenameKey(o.value)
+      if (!base) continue
+      const prev = byBase.get(base)
+      // Prefer rollup / later nodes when the same basename appears multiple times.
+      if (!prev || isRollupSubtaskRow(st)) byBase.set(base, source)
+    }
+  }
+  return list.map((item) => {
+    if (!item || typeof item !== 'object') return item
+    if (item.source_label) return item
+    const base = deliverableBasenameKey(item.value)
+    const source = base ? byBase.get(base) : ''
+    return source ? { ...item, source_label: source } : item
+  })
+}
+
+export function isFeaturedDeliverable(item) {
+  const label = String(item?.label || '').trim()
+  const key = String(item?.key || '').trim().toLowerCase()
+  if (/★|最终交付|最终汇总|验收核对/.test(label)) return true
+  if (key.includes('final') || key.includes('deliver')) return true
+  return false
 }
 
 export function outputTypeLabel(type) {
@@ -725,14 +831,15 @@ export function resolveTaskOutputItems(task) {
   // Automation tasks: don't infer phantom paths from free-text summaries.
   if (!isAutomationCollabTask(view)) {
     for (const p of mentionedPaths) {
-      if (isCodeOutputPath(p)) continue
-      const key = deliverableDedupeKey(p)
+      const cleaned = sanitizeDeliverablePath(p)
+      if (!cleaned || isCodeOutputPath(cleaned)) continue
+      const key = deliverableDedupeKey(cleaned)
       if (!key || have.has(key)) continue
       have.add(key)
-      items.push({ type: 'file', key: `mentioned_${items.length + 1}`, value: p })
+      items.push({ type: 'file', key: `mentioned_${items.length + 1}`, value: cleaned })
     }
   }
-  return filterDeliverableOutputs(items)
+  return annotateDeliverableSources(task, filterDeliverableOutputs(items))
 }
 
 function answerRefOutputsOf(task) {
@@ -760,11 +867,20 @@ function answerRefOutputsOf(task) {
  */
 export function resolveTaskDeliverableLayers(task) {
   const all = resolveTaskOutputItems(task)
-  if (!isWorkflowAppTaskRow(task)) return { primary: all, process: [] }
+  if (!isWorkflowAppTaskRow(task)) {
+    const { primary, process } = splitDeliverableOutputs(all)
+    // Non-workflow: still surface ★/最终 as primary when mixed with noise.
+    if (primary.some(isFeaturedDeliverable) && process.length === 0) {
+      const featured = primary.filter(isFeaturedDeliverable)
+      const rest = primary.filter((i) => !isFeaturedDeliverable(i))
+      if (featured.length && rest.length) return { primary: featured, process: rest }
+    }
+    return { primary: primary.length ? primary : all, process }
+  }
 
   // Explicit answer sink: answer-step outputs are the headline; everything else
   // (upstream review/analysis reports) becomes process artifacts.
-  const fromAnswer = answerRefOutputsOf(task)
+  const fromAnswer = annotateDeliverableSources(task, answerRefOutputsOf(task))
   if (fromAnswer.length) {
     const have = new Set(fromAnswer.map((i) => deliverableDedupeKey(i.value)))
     const process = all.filter((i) => !have.has(deliverableDedupeKey(i.value)))
@@ -772,6 +888,12 @@ export function resolveTaskDeliverableLayers(task) {
   }
 
   const { primary, process } = splitDeliverableOutputs(all)
+  // Prefer ★ / 最终交付 as the visible primary block when present.
+  const featured = primary.filter(isFeaturedDeliverable)
+  if (featured.length && featured.length < primary.length) {
+    const rest = primary.filter((i) => !isFeaturedDeliverable(i))
+    return { primary: featured, process: [...rest, ...process] }
+  }
   return { primary, process }
 }
 
@@ -817,43 +939,63 @@ export function renderOutputItemCardsHtml(items, escapeHtml, opts = {}) {
   const esc = typeof escapeHtml === 'function' ? escapeHtml : (s) => String(s ?? '')
   const workHref = String(opts.workItemHref || '').trim()
   const canPreview = opts.enablePreview !== false
-  return `<ul class="td-output-list">${list
+  const sorted = [...list].sort(
+    (a, b) => Number(isFeaturedDeliverable(b)) - Number(isFeaturedDeliverable(a)),
+  )
+  return `<ul class="td-output-list">${sorted
     .map((item) => {
-      const value = String(item.value || '')
-      const title = esc(item.label || outputFileBasename(item))
-      const short = esc(shortenPath(value, 72))
+      const resolveMeta =
+        item._resolve_meta && typeof item._resolve_meta === 'object' ? item._resolve_meta : null
+      const rawValue = sanitizeDeliverablePath(item.value)
+      // Prefer resolved absolute path so preview / reveal actually open.
+      const value = sanitizeDeliverablePath(resolveMeta?.absolute || rawValue)
+      const title = esc(item.label || outputFileBasename({ ...item, value: rawValue }))
+      const short = esc(shortenPath(value || rawValue, 72))
       const isUrl = item.type === 'url' || /^https?:\/\//i.test(value)
       const isText = item.type === 'text'
-      const previewable = canPreview && isPreviewableOutput(item)
-      const existenceAttr = !isUrl && !isText && value
-        ? ` data-path-for-existence="${esc(value)}"`
-        : ''
-      // Pass through backend resolution metadata so the panel can open the
-      // right workspace root without re-probing the filesystem.
-      const resolveMeta = item._resolve_meta && typeof item._resolve_meta === 'object'
-        ? item._resolve_meta
-        : null
+      const featured = isFeaturedDeliverable(item)
+      const sourceLabel = String(item.source_label || '').trim()
+      const previewable = canPreview && isPreviewableOutput({ ...item, value })
+      const existenceAttr =
+        !isUrl && !isText && value ? ` data-path-for-existence="${esc(value)}"` : ''
       const resolveAttr = resolveMeta
         ? ` data-resolve-meta='${esc(JSON.stringify(resolveMeta))}'`
         : ''
-      const badge =
-        item.source === 'automation_expected'
-          ? '<span class="td-output-badge td-output-badge--pending" data-role="existence-badge">检测中…</span>'
-          : resolveMeta && resolveMeta.found === true
-            ? '<span class="td-output-badge td-output-badge--ready" data-role="existence-badge">已生成</span>'
-            : resolveMeta && resolveMeta.found === false
-              ? '<span class="td-output-badge td-output-badge--missing" data-role="existence-badge">未生成</span>'
-              : ''
+      const badges = []
+      if (featured) {
+        badges.push('<span class="td-output-badge td-output-badge--final">最终交付</span>')
+      }
+      if (item.source === 'automation_expected') {
+        badges.push(
+          '<span class="td-output-badge td-output-badge--pending" data-role="existence-badge">检测中…</span>',
+        )
+      } else if (resolveMeta && resolveMeta.found === true) {
+        badges.push(
+          '<span class="td-output-badge td-output-badge--ready" data-role="existence-badge">已生成</span>',
+        )
+      } else if (resolveMeta && resolveMeta.found === false) {
+        badges.push(
+          '<span class="td-output-badge td-output-badge--missing" data-role="existence-badge">未生成</span>',
+        )
+      }
       const cardAct =
         previewable && !isUrl
           ? ` data-act="preview-output" data-path="${esc(value)}" data-title="${title}" data-type="${esc(item.type)}"`
           : ''
-      const rowClass =
-        previewable && !isUrl ? 'td-output-row is-clickable' : 'td-output-row'
+      const rowClass = [
+        'td-output-row',
+        previewable && !isUrl ? 'is-clickable' : '',
+        featured ? 'is-featured' : '',
+        resolveMeta?.found === true ? 'is-ready' : '',
+        resolveMeta?.found === false ? 'is-missing' : '',
+      ]
+        .filter(Boolean)
+        .join(' ')
       let actions = ''
-      const revealBtn = !isUrl && !isText && value
-        ? `<button type="button" class="td-output-action td-output-action--muted" data-act="reveal-path" data-path="${esc(value)}" title="在本地文件管理器中显示">打开位置</button>`
-        : ''
+      const revealBtn =
+        !isUrl && !isText && value
+          ? `<button type="button" class="td-output-action td-output-action--muted" data-act="reveal-path" data-path="${esc(value)}" title="在本地文件管理器中显示">打开位置</button>`
+          : ''
       if (isUrl) {
         actions = `<a class="td-output-action" href="${esc(value)}" target="_blank" rel="noopener noreferrer">打开</a>`
       } else if (isText) {
@@ -869,10 +1011,16 @@ export function renderOutputItemCardsHtml(items, escapeHtml, opts = {}) {
       if (workHref) {
         actions += `<a class="td-output-action td-output-action--muted" href="${esc(workHref)}">工作项</a>`
       }
+      const metaBits = [
+        sourceLabel ? `<span class="td-output-source">来自节点 · ${esc(sourceLabel)}</span>` : '',
+        !isText && short
+          ? `<span class="td-output-path" title="${esc(value)}">${short}</span>`
+          : '',
+      ].filter(Boolean)
       return `<li class="${rowClass}" data-type="${esc(item.type)}"${cardAct}${existenceAttr}${resolveAttr} title="${previewable && !isUrl ? '点击预览' : esc(value)}">
         <div class="td-output-main">
-          <div class="td-output-name">${title}${badge}</div>
-          ${!isText && short ? `<div class="td-output-path" title="${esc(value)}">${short}</div>` : ''}
+          <div class="td-output-name">${title}${badges.join('')}</div>
+          ${metaBits.length ? `<div class="td-output-meta">${metaBits.join('')}</div>` : ''}
         </div>
         <div class="td-output-actions">${actions}</div>
       </li>`

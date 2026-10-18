@@ -367,8 +367,11 @@ def list_tree(entity: EntityRef, subpath: str = "") -> dict[str, Any]:
 
 
 def read_text_file(entity: EntityRef, rel_path: str) -> dict[str, Any]:
-    ensure_entity_tree(entity)
     target = resolve_entity_file(entity, rel_path)
+    # 已存在的文件不必每次点击都重建目录树 / 迁移 craft。
+    if not target.is_file():
+        ensure_entity_tree(entity)
+        target = resolve_entity_file(entity, rel_path)
     if not target.is_file():
         raise FileNotFoundError(rel_path)
     if target.suffix.lower() not in _TEXT_SUFFIXES:

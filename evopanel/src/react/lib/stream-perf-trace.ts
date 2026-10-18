@@ -35,11 +35,11 @@ function detectEnabled(): boolean {
     /* ignore */
   }
   try {
-    if (new URLSearchParams(window.location.search).get('streamperf') === '0') return false
+    if (new URLSearchParams(window.location.search).get('streamperf') === '1') return true
   } catch {
     /* ignore */
   }
-  return true
+  return false
 }
 
 let enabled = detectEnabled()

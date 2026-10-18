@@ -137,14 +137,25 @@ def format_screenshot_tool_result(
     w, h = int(meta.get("width") or 0), int(meta.get("height") or 0)
     dims = f"{w}x{h}px" if w and h else "unknown size"
     fp = "full page" if meta.get("full_page") else "viewport"
+    # 图已在 BrowserScreenshotPreview 工具卡上。勿把磁盘路径 / @@…png@@ 写进摘要，
+    # 否则模型会原样抄进回复，前端再拦成 [Image blocked]。
+    no_cite = (
+        " Already shown on the tool card — do not mention the file path, filename, "
+        "or @@...png@@ in your reply. Do NOT call view_image."
+    )
     if staged_for_model:
         summary = (
-            f"Screenshot captured ({dims}, ~{meta.get('size_kb', 0)}KB, {fp}). The capture is shown "
-            f"in the chat UI and staged for your next context — you will see the pixels, so verify "
-            f"the visual state from it (dialogs, layout, changes) before acting further."
+            f"Screenshot captured ({dims}, ~{meta.get('size_kb', 0)}KB, {fp}). The capture is "
+            f"shown in the chat UI and staged for your next context — you will see the pixels, "
+            f"so verify the visual state from it (dialogs, layout, changes) before acting further."
+            f"{no_cite}"
         )
     else:
-        summary = f"Screenshot captured ({dims}, ~{meta.get('size_kb', 0)}KB, {fp}). The image is shown to the user in the chat UI only and is not included in your context. Use browser_snapshot(mode='text') if you need readable page text."
+        summary = (
+            f"Screenshot captured ({dims}, ~{meta.get('size_kb', 0)}KB, {fp}). The image is "
+            f"shown to the user in the chat UI only and is not included in your context. "
+            f"Use browser_snapshot(mode='text') if you need readable page text.{no_cite}"
+        )
     page_url = str(meta.get("page_url") or "").strip()
     if page_url:
         summary += f" Page URL: {page_url}"

@@ -1,351 +1,190 @@
-# 工具与 MCP 配置指南
+# 工具与连接器（MCP）
 
-> **比如你想让 AI 能帮你在 GitHub 上操作**：
+> **先分清智能体和员工**
 >
-> 1. 在 MCP 市场一键安装 GitHub MCP
-> 2. 配置 GitHub Token
-> 3. 在聊天里说"帮我看看这个 repo 最近的 issue"——AI 直接调用 GitHub API 查询
->
-> 技能是"领域知识包"（告诉 AI 怎么做），工具是"内置能力"（read/write/terminal），MCP 是"外部服务"（GitHub API、Notion、PostgreSQL 等）。三者互补，可在一个角色上同时配置。
+> 1. **区别**：智能体管「会什么」（人设、模型、工具、技能、连接器 MCP）。员工管「何时主动干」（岗位、职责、部门与上级、上班时间、转交审批、工作空间、绑定知识库、预算）。聊天里 @ 智能体不会自动值班。
+> 2. **员工能配什么**：加人时填岗位名称、职责、部门、上级、知识库；更多设置里有能力来源、工作空间、关注子路径、工作模型、转交审批（全自动 / 平衡型 / 谨慎型）、自动上班。编辑岗位还可配工作方式、模型思考、系统提示词注入、知识库检索和预算。工具、技能、连接器到「智能体」页改。
+> 3. **怎么操作**：侧栏「员工」→「加人」→ 填岗位和至少一条职责 →「确认加人」→ 打开页头「自动上班」，或点「现在开始工作」，急活用小V 派活。交工后到任务中心确认完成或要求修改。
 
-EvoFlow 给 Agent 提供能力的方式分**三层**：内置工具、技能、MCP。本文统一介绍三者的分工，然后展开 MCP 的配置。
+> **比如你想让智能体能在 GitHub 上操作**：
+>
+> 1. 侧栏 **智能体** → 顶栏 **连接器**
+> 2. 在 **市场** 搜 `github`，点 **添加连接器**（或右上角手动添加）
+> 3. 到 **已安装** 确认状态是 **可用**，并保持右侧开关开启
+> 4. 打开目标智能体编辑页，在 **MCP 服务** 里勾选它
+> 5. 新开对话 `@` 它试一句。若已是员工，下一轮上班或「现在开始工作」才会用到新勾选
+
+面板把 MCP 服务器叫 **连接器**。技能是做法说明，内置工具是读文件、跑命令这类本机动作，连接器是接外部服务的插件。三者都挂在**智能体**上。员工页不能装连接器；员工用人时，用的是所绑智能体已经勾选的连接器。
 
 ---
 
-> **💡 5 分钟配好你的第一个 MCP**
->
-> 1. 侧栏「智能体」→ 顶栏 Tab **连接器**（或直达 `#/tools`）
-> 2. 切到「市场」Tab，搜索 `github`
-> 3. 点「安装」→ 自动写入配置
-> 4. 切回「已安装」Tab，打开启用开关
-> 5. 去「智能体」编辑当前角色，在「能力 → MCP 模块」勾选刚装的 MCP
-> 6. 回到聊天，让 AI「帮我看看 GitHub 上的 Issue」——搞定
->
-> 如果市场里没有你要的，往下看手动配置方式。
+## 5 分钟配好第一个连接器
+
+1. 侧栏 **智能体** → 顶栏 **连接器**（`#/tools`）。
+2. 打开 **市场**，搜索服务名，点 **添加连接器**；或点页头 **添加连接器** 走手动向导。
+3. 回到 **已安装**，确认状态是 **可用**，开关保持开启。
+4. 打开目标智能体 → 编辑 → **MCP 服务** → 勾选该连接器 → 保存。
+5. 新开对话 `@` 该智能体试一句。
+
+市场没有时，用手动向导填 stdio / sse / http。密钥用环境变量，不要写进对话。
 
 ---
 
-## 一、三者怎么选
+## 三者怎么选
 
-| 维度 | 内置工具（Tools） | 技能（Skills） | MCP |
-|------|------------------|---------------|-----|
-| **形态** | EvoFlow 代码内置函数 | 文件夹 + `SKILL.md` | 外部进程 / HTTP 服务 |
-| **来源** | 框架自带，无需配置 | `skills/public/` + `skills/custom/` | 用户自行配置 / 市场安装 |
-| **加载** | 启动时注册，按**场景**渐进暴露 | 进 Agent 时按 frontmatter 注入说明 | 配置启用后启动时连接 |
-| **触发** | 模型显式调用 | 模型读到说明后**自行决定**调用 | 模型显式调用 |
-| **典型例子** | `read`、`terminal`、`web_search`、`worker` | `deep-research`、`pdf`、`superpowers-*` | GitHub MCP、Notion MCP、Postgres MCP |
-| **更新方式** | 改代码需重启 | 改文件夹即生效 | 改配置后热重载 |
-| **谁来管理** | 框架开发者 | 你 + 社区 + 内置 | 你 + 社区 + 内置 |
+| 维度 | 内置工具 | 技能 | 连接器（MCP） |
+|------|----------|------|----------------|
+| **形态** | 框架内置函数 | 文件夹 + `SKILL.md` | 外部进程或 HTTP 服务 |
+| **在哪管** | 智能体编辑 → **工具** | **智能体** → **技能** Tab | **智能体** → **连接器** Tab（`#/tools`），再在智能体上勾选 |
+| **典型例子** | 读文件、跑命令、搜网页 | 写 PPT、深度调研 | GitHub、Notion、Postgres、飞书 |
+| **员工侧** | 跟绑定智能体走 | 跟绑定智能体走 | 跟绑定智能体走；岗位页装不了 |
 
-**选择建议**：
-
-- 想让 Agent 做**通用基础动作**（读文件、跑命令、搜网络）→ 用**内置工具**（已自带）
-- 想让 Agent 掌握一类**结构化能力**（写 PPT、生图、深度调研）→ 装**技能**
-- 想让 Agent 接**第三方服务**（GitHub、Notion、Slack、自家内部系统）→ 配 **MCP**
+- 通用本机动作 → 内置工具（随场景暴露，再在智能体上勾选）
+- 一类结构化做法 → 技能
+- 第三方或自建外部系统 → 连接器
 
 ---
 
-## 二、内置工具
+## 连接器页（面板）
 
-EvoFlow 内置一组工具，**按场景渐进暴露**给 Agent——避免一次性把上百个工具描述塞进上下文浪费 Token。面板里的「智能体 → 连接器」主要用于管理 MCP；内置工具本身不需要在 UI 开关，会随你在聊天里选的**场景**自动启用。
+入口：侧栏 **智能体** → 顶栏 **连接器**。两个子 Tab：**已安装**、**市场**。页头主按钮是 **添加连接器**。
 
-### 常用内置工具速览
+### 已安装
 
-| 类别 | 工具 | 一句话定位 |
-|------|------|-----------|
-| **文件读写** | `read` | 读单个文件（支持 offset/limit 分页） |
-| | `write` | 写文件（支持覆盖与新建） |
-| | `replace` | 精确替换文件中的字符串 |
-| | `delete` | 删除单文件（高风险） |
-| **检索** | `rg` | ripgrep 内容检索 |
-| | `find` | 按文件名 glob 查找 |
-| | `search_code_index` | 代码索引检索（符号、引用、类型） |
-| **命令** | `terminal` | 同步执行 shell 命令 |
-| | `process` | 启动 / 监控 / 终止后台进程 |
-| **联网** | `web_search` | 网页搜索（AI 日报 / 53AI / 通用搜索） |
-| | `fetch_url` | 抓单页转 Markdown |
-| **并行执行** | `worker` | 一次跑多个 search / write / replace / delete |
-| **图像** | `view_image` | 加载本地图片让模型看像素 |
-| **任务** | `todo` | 轻量待办，对话内可见 |
-| **协作** | `subagent` | 派发只读探索任务给子代理 |
-| | `supervisor` | 跨会话多任务调度（Plan 模式核心） |
-| | `plan` | 落库完整计划，配 supervisor 用 |
-| **场景与发现** | `scenario` | 激活 / 切换场景（工作区 / 媒体 / Plan…） |
-| | `tool_search` | 检索并启用尚未挂载的工具 |
-| **可观测性** | `mind_map` | 实时落知识图谱，便于排障与回放 |
-| **澄清** | `ask_clarification` | 结构化向用户提问 |
+工具栏：
 
-完整工具清单见面板「工具与 MCP」中的内置工具列表。
-
-### 场景与工具集
-
-每个场景对应一组工具白名单。常见映射：
-
-| 场景 | 解锁的核心工具 |
-|------|---------------|
-| **日常对话** | 仅 `scenario`、`tool_search`、`ask_clarification` 等编排工具 |
-| **workspace（工作空间）** | + `read`、`write`、`replace`、`delete`、`terminal`、`process`、`rg`、`find`、`search_code_index`、`worker`、`view_image`、`mind_map`、`web_search`、`fetch_url` |
-| **plan（Plan 模式）** | + `plan`、`supervisor`、`subagent` |
-| **创意媒体** | + 各厂商生图 / 生视频 / TTS 相关工具 |
-
-详细映射见 [工作空间](../chat/workspace.md) [[guides/chat/workspace|工作空间]] 与各场景文档。
-
-### 给 Agent 精细授权工具
-
-即使场景把工具暴露给主智能体，**每个 Agent 还可以**在「智能体 → 能力 → 工具」分区再做一道白名单：
-
-- 默认继承场景的工具集
-- 高风险工具（`terminal`、`delete`、`write`）可针对单个 Agent 单独取消
-- 内置 `project-*` 系列项目角色按职责精细授权（如 `project-software-tester` 不给 `delete`）
-
----
-
-## 三、什么是 MCP
-
-Model Context Protocol（MCP）是 Anthropic 提出的开放协议，让 AI 应用以**统一方式**接入外部工具与数据源。MCP 服务器暴露标准化的工具接口，EvoFlow 启用后自动注册为 Agent 可用的工具。
-
-EvoFlow 支持三种 MCP 传输类型：
-
-| 类型 | 形态 | 适合场景 |
-|------|------|---------|
-| **stdio** | 本地子进程（如 `npx`、`python`） | 文件系统、Git、本地数据库等本机能力 |
-| **SSE** | 远程 Server-Sent Events 流 | 跨机器订阅式服务 |
-| **streamable-http** | 远程 HTTP 流式服务 | 标准 REST 风格的远程 MCP |
-
-### 调用方式（原生工具）
-
-EvoFlow 把 MCP 工具**直接注册为 Agent 的 function 工具**，模型按名称调用，**不需要** `terminal`、`mcp-terminal` 或手写 JSON-RPC。
-
-| 概念 | 说明 |
+| 控件 | 作用 |
 |------|------|
-| **工具命名** | ``mcp__<服务器>__<工具>``，例如 ``mcp__github__list_issues`` |
-| **角色绑定** | 角色「能力 → MCP 模块」勾选的服务器才会挂载对应工具 |
-| **与 Skill 分离** | Skill 管流程/文档/脚本；MCP 管外部连接器，二者不要混用 |
-| **CLI 诊断** | ``evoflow mcp list`` / ``evoflow mcp test [服务器]`` / ``evoflow mcp login <服务器>``（OAuth） |
+| 搜索「搜索连接器」 | 按名称、描述、命令、URL 过滤 |
+| **状态** | 全部，或：可用 / 已停用 / 连接中 / 连接失败 / 需要认证 / 配置异常 |
+| **排序** | 名称 / 状态 / 工具数 |
 
-> 环境变量 ``EVOFLOW_MCP_TOOL_BINDING=skill`` 已废弃并被忽略；始终使用原生绑定。
+列表上方可能出现横幅：「正在后台连接连接器…」「配置已更新，正在重新加载…」，或初始化错误信息。
 
----
+每张卡片显示：状态点与文案、名称、`MCP ·` 类型、连接方式（**Stdio** / **SSE** / **HTTP**）、认证（**无** / **环境变量** / **Header** / **OAuth**）、工具数、最近检测时间。失败类状态会多一行「最近错误」。
 
-## 四、基础使用（GUI）
+行上按钮：
 
-### 页面入口
+| 操作 | 作用 |
+|------|------|
+| **测试连接** | 刷新状态；成功提示「可用」，仍在连则「仍在连接中」 |
+| **配置** | 弹窗「配置连接器 · 名称」，编辑整段 JSON |
+| **查看日志** | 抽屉里看最近错误 |
+| 开关 | 启用 / 停用。关掉后**所有**智能体都用不成，高于单个智能体的勾选 |
+| 删除 | 从本机配置移除（会二次确认） |
 
-侧栏 **智能体**（`#/expert`）→ 顶栏 Tab **连接器**（直达 `#/tools` 亦可）进入 MCP 服务器管理，含两个 Tab：「已安装」和「市场」。
+点卡片（非按钮区）打开详情抽屉：基本信息、描述、最近错误、已发现工具（最多列 20 个）。脚上可再测连接或进配置。
 
-### 管理已安装 MCP
+空列表文案：暂无连接器，点击右上角「添加连接器」开始。
 
-「已安装」Tab 列出所有已配置的 MCP 服务器：
+### 手动添加（向导）
 
-- 每张卡片展示：名称、类型（stdio / SSE / streamable-http）、功能描述、运行状态
-- **启用开关**：禁用后所有 Agent 都无法访问该 MCP，**优先级高于 Agent 白名单**
-- **删除按钮**（仅非系统内置）
-- 搜索框按名称 / 描述过滤
-- 状态下拉筛选：全部 / 已启用 / 已禁用
-- 「**导入配置**」按钮：通过 JSON 批量导入
+页头 **添加连接器** 打开分步抽屉，步骤是：
 
-### 安装新 MCP
+1. **基本信息** — 名称、描述、技术类型：`stdio（MCP Server）` / `sse` / `http`
+2. **连接配置** — stdio 填命令与参数（空格分隔）；sse / http 填 URL
+3. **身份认证** — 无 / 环境变量（稍后在配置中补充）/ OAuth
+4. **测试连接** — 点 **保存并测试**，写入配置并后台连接
+5. **使用范围** — 全局可用，或稍后分配给智能体
+6. **完成** — 可点 **分配给智能体**（会提示去智能体编辑页勾选）
 
-#### 方式一：从市场安装
+保存后列表状态会在 **连接中 / 可用 / 失败** 等之间变化。同名连接器不能重复添加。
 
-1. 切到「市场」Tab，自动加载 **Glama MCP 目录**（空关键词时同时展示 EvoFlow 精选）
-2. 搜索框输入关键词（如 `github`、`filesystem`、`postgres`）
-3. 卡片右下角「安装」→ Gateway 从 **官方 MCP Registry** 解析安装配置并写入本地
-4. 已安装的可在「已安装」Tab 启用并分配给 Agent
+### 市场
 
-> **市场来源**：搜索来自 [Glama](https://glama.ai/mcp/servers)；一键安装配置优先解析 [官方 MCP Registry](https://registry.modelcontextprotocol.io)。Glama 不可用时回退到 EvoFlow 精选列表。第三方 MCP 请自行评估安全性，**stdio 类会在本机起子进程**。
+说明文案：连接器来自公开目录（精选列表、MCP Registry、Glama），遵循各自上游许可证；一键安装不等于官方背书。
 
-#### 方式二：手动添加自定义 MCP
+- 空搜索会拉推荐；输入关键词搜索
+- 分区可能标 **精选连接器**、**官方 MCP Registry** 等；右上角会显示数据源（精选 / 官方 Registry / Glama）与条数
+- 卡片上点 **添加连接器**；已装过的显示 **已添加**
+- 添加时从官方 Registry 拉推荐配置写入本机；失败会提示「该连接器已存在」等
 
-1. 「已安装」Tab → 右上角「添加 MCP」
-2. 选类型并填配置：
-   - **stdio**：`command`（如 `npx`、`python`）+ `args` + `env`（可选）
-   - **SSE**：`url`（SSE 服务地址）
-   - **streamable-http**：`url` + 可选 `headers`
-3. 确认后 MCP 自动启用
+stdio 类会在本机起子进程，添加前先看清启动命令。
 
-#### 方式三：直接编辑 JSON
+### 勾给某个智能体
 
-适合批量管理、CI/CD 场景——见 [六、进阶配置（JSON）](#六进阶配置json)。
+添加成功只表示本机有这个 MCP。还要授权：
 
-### 给 Agent 配置 MCP 权限
+1. 打开 **智能体** Tab，编辑目标智能体
+2. 左侧切到 **MCP 服务**（可搜「搜索 MCP 服务器…」）
+3. 勾选要给它的连接器；可用 **全选** / **清空**
+4. 保存
 
-安装 ≠ 可用——还要在角色级别勾选：
+列表上常见摘要：**可使用全部已配置 MCP**、列出已选名称、或 **未连接 MCP**。一个都不勾等于这个智能体看不见这些外部工具。
 
-1. 「智能体」编辑目标 Agent
-2. 切到「能力 → MCP 模块」分区
-3. 勾选可调用的 MCP（或"全部可用"）
-4. 保存生效
+员工没有「安装 MCP」：编辑岗位只能改绑哪个智能体；连接器跟着那个智能体走。要给某岗加 GitHub，去它绑定的智能体上勾选，再让该员工开一轮。
 
-未勾选的 MCP **不会出现在该 Agent 的工具列表**——这是 EvoFlow 的最小权限原则。
-
----
-
-## 五、常用 MCP 速查
-
-| MCP | 类型 | 用途 | 启动命令 |
-|-----|------|------|---------|
-| **filesystem** | stdio | 受限目录的文件读写 | `npx -y @modelcontextprotocol/server-filesystem /path/to/dir` |
-| **github** | stdio | GitHub 仓库 / Issue / PR | `npx -y @modelcontextprotocol/server-github`，需 `GITHUB_TOKEN` |
-| **postgres** | stdio | PostgreSQL 查询 | `npx -y @modelcontextprotocol/server-postgres postgresql://...` |
-| **brave-search** | stdio | Brave 网页搜索 | `npx -y @modelcontextprotocol/server-brave-search`，需 `BRAVE_API_KEY` |
-| **slack** | stdio | Slack 收发消息 | `npx -y @modelcontextprotocol/server-slack`，需 `SLACK_BOT_TOKEN` |
-| **playwright** | stdio | 通用浏览器自动化：导航/ARIA 快照/点击/表单/多标签页/截图，默认持久登录态 | `npx -y @playwright/mcp@latest`（可选 `--user-data-dir` 固定 profile） |
-| **memory** | stdio | 持久化键值存储 | `npx -y @modelcontextprotocol/server-memory` |
-| **sequential-thinking** | stdio | 复杂推理辅助 | `npx -y @modelcontextprotocol/server-sequential-thinking` |
-| **lark / 飞书** | stdio | 飞书消息、文档、日历 | 见 [飞书集成](../integration/feishu-integration.md) [[guides/integration/feishu-integration|飞书集成]] |
-| **自建 HTTP MCP** | streamable-http | 公司内部系统接入 | 自定义 URL + OAuth |
-
-> 列表会随 MCP 生态更新；最新清单见 [MCP 官方目录](https://modelcontextprotocol.io/clients) 与「市场」Tab。
-
-### 敏感值用环境变量引用
-
-无论 GUI 或 JSON 配置，**密钥都不要明文写**：
-
-```json
-{
-  "env": {
-    "GITHUB_TOKEN": "$GITHUB_TOKEN",
-    "BRAVE_API_KEY": "$BRAVE_API_KEY"
-  }
-}
-```
-
-`$VAR` 语法会在运行时从 EvoFlow 进程环境读取。设置环境变量的方式：
-
-- 「**设置 → 环境变量**」Tab 集中维护（推荐）
-- 启动 EvoFlow 前用系统 `export` / `setx`
-- `.env` 文件（仅本地开发）
-
+外部 CLI 类智能体：面板里不能勾选内置工具、MCP 与技能，由本机运行时提供。
 
 ---
 
-## 六、进阶配置（JSON）
+## 内置工具（简述）
 
-适合批量管理、CI/CD 与版本控制场景——把 MCP 配置当代码管。
+内置工具不在「连接器」页开关。它们随聊天**场景**渐进暴露，再在智能体编辑的 **工具** 分区做白名单。高风险项（如删文件、跑命令）可对单个智能体关掉。
 
-### 配置文件位置
+常见类别：文件读写、检索、命令、联网、并行 `worker`、任务与协作（Plan / supervisor）、场景切换与澄清提问。详细映射见 [工作空间](../chat/workspace.md)。
 
-**运行时权威来源**（原生 MCP 绑定）：
+---
 
-| 优先级 | 位置 | 用途 |
-|--------|------|------|
-| 1 | SQLite `evoflow_mcp_servers` | EvoPanel **连接器**、Gateway `PUT /api/mcp/config`、`evoflow mcp add/remove` |
-| 2 | `~/.evoflow/mcp.json` | 首次导入 / 手工编辑（自动 sync 进 SQLite） |
-| 3 | 本机常见 IDE 的 `mcp.json`（若存在） | 空库时可选导入（兼容路径含 `~/.cursor/mcp.json` 等） |
-| 4 | 项目根 `extensions_config.json` | **仅引导种子**（旧安装兼容，非运行时主存储） |
+## MCP 是什么
 
-JSON **格式**（上述文件/API 通用，键名支持 `mcpServers` 或 `mcp_servers`）：
+Model Context Protocol（MCP）用统一协议接外部工具与数据源。EvoFlow 启用后把 MCP 工具注册成 Agent 可调用的 function 工具，命名形如 ``mcp__<服务器>__<工具>``。
+
+| 面板类型 | 形态 | 适合 |
+|----------|------|------|
+| **stdio** | 本机子进程（`npx`、`uvx`、可执行文件） | 文件系统、Git、本地库 |
+| **sse** | 远程 SSE | 跨机器订阅式服务 |
+| **http** | 远程 HTTP | REST 风格远程 MCP（JSON 里也可能写成 `streamable-http`） |
+
+诊断 CLI（可选）：`evoflow mcp list` / `evoflow mcp test [服务器]` / `evoflow mcp login <服务器>`（OAuth）。
+
+---
+
+## 常用连接器速查
+
+| 名称 | 类型 | 用途 | 备注 |
+|------|------|------|------|
+| filesystem | stdio | 受限目录读写 | `npx -y @modelcontextprotocol/server-filesystem <目录>` |
+| github | stdio | 仓库 / Issue / PR | 需 `GITHUB_TOKEN` |
+| postgres | stdio | SQL 查询 | 连接串放环境变量 |
+| brave-search | stdio | 网页搜索 | 需 `BRAVE_API_KEY` |
+| slack | stdio | 收发消息 | 需 Bot Token |
+| playwright | stdio | 浏览器自动化 | 可固定 user-data-dir |
+| lark / 飞书 | stdio | 消息、文档、日历 | 见 [飞书集成](../integration/feishu-integration.md) |
+| 自建 HTTP | http | 公司内部系统 | URL + 可选 OAuth / Header |
+
+最新清单以 **市场** Tab 为准。密钥用 `$VAR` 引用，可在「设置 → 环境变量」维护，不要写进对话。
+
+---
+
+## 进阶：JSON 与热重载
+
+适合批量管理。运行时优先读 SQLite（面板 **连接器** / `PUT /api/mcp/config` / CLI）；也可从 `~/.evoflow/mcp.json` 导入。
 
 ```json
 {
   "mcpServers": {
-    "server_name": {
-      "enabled": true,
-      "type": "stdio|sse|streamable-http"
-    }
-  },
-  "skills": {}
-}
-```
-
-### stdio 完整示例
-
-```json
-{
-  "mcpServers": {
-    "filesystem": {
-      "enabled": true,
-      "type": "stdio",
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed/files"],
-      "env": {},
-      "description": "Provides filesystem access within allowed directories"
-    },
     "github": {
       "enabled": true,
       "type": "stdio",
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-github"],
-      "env": {
-        "GITHUB_TOKEN": "$GITHUB_TOKEN"
-      },
-      "description": "GitHub MCP server for repository operations"
-    }
-  }
-}
-```
-
-### SSE / streamable-http
-
-```json
-{
-  "mcpServers": {
-    "remote-sse": {
-      "enabled": true,
-      "type": "sse",
-      "url": "https://example.com/mcp/sse",
-      "description": "Remote MCP via SSE"
+      "env": { "GITHUB_TOKEN": "$GITHUB_TOKEN" },
+      "description": "GitHub"
     },
-    "remote-http": {
+    "remote": {
       "enabled": true,
-      "type": "streamable-http",
+      "type": "http",
       "url": "https://example.com/mcp",
-      "headers": {
-        "Authorization": "Bearer $MCP_TOKEN"
-      },
-      "description": "Remote MCP via HTTP"
+      "headers": { "Authorization": "Bearer $MCP_TOKEN" }
     }
   }
 }
 ```
 
-### OAuth 认证（HTTP / SSE）
-
-支持 OAuth 2.0 自动令牌获取与刷新：
-
-```json
-{
-  "mcpServers": {
-    "secure-server": {
-      "enabled": true,
-      "type": "streamable-http",
-      "url": "https://api.example.com/mcp",
-      "oauth": {
-        "enabled": true,
-        "token_url": "https://auth.example.com/oauth/token",
-        "grant_type": "client_credentials",
-        "client_id": "$MCP_OAUTH_CLIENT_ID",
-        "client_secret": "$MCP_OAUTH_CLIENT_SECRET",
-        "scope": "mcp.read",
-        "refresh_skew_seconds": 60
-      }
-    }
-  }
-}
-```
-
-**机制要点**：
-
-- 支持 `client_credentials` / `refresh_token` 两种授权类型
-- 令牌自动缓存，到期前按 `refresh_skew_seconds` 提前刷新
-- Authorization 头自动注入到每个 MCP 请求
-- 敏感值通过 `$VAR` 引用，避免明文落盘
-
-### 运行时热重载
-
-通过 EvoPanel 保存、Gateway API 或 CLI 修改 MCP 后会 **reset 工具缓存** 并在后台重连（通常数秒内生效）。也可走 Gateway API：
+面板保存或 API / CLI 改完后会后台重连，列表可能短暂显示「配置已更新，正在重新加载…」。也可用：
 
 ```bash
-# 整包替换（body 为 { "mcp_servers": { ... } } 或标准 mcpServers 对象）
-curl -X PUT http://localhost:8001/api/mcp/config \
-  -H "Content-Type: application/json" \
-  -d @mcp-servers.json
-
-# 获取当前配置与连接状态
-curl http://localhost:8001/api/mcp/config
-
-# CLI
 evoflow mcp list
 evoflow mcp add github -- npx -y @modelcontextprotocol/server-github
 evoflow mcp remove github
@@ -353,88 +192,40 @@ evoflow mcp remove github
 
 ---
 
-## 七、调用排查
+## 调用排查
 
-MCP 配好了，但不确定是否真被 Agent 调用？三步排查：
-
-### 1. 在对话里直接问
-
-让 Agent 列出可用工具：
-
-```
-请列出你当前可以调用的所有 MCP 工具。
-```
-
-Agent 会返回当前 session 实际加载的工具清单。如果你期望的 MCP 不在列表里：
-
-- 「智能体 → 连接器」检查该 MCP 是否启用
-- 「智能体」检查当前角色是否勾选了该 MCP
-- 检查所在场景是否暴露了 MCP 模块
-
-### 2. 看「会话调试」
-
-左侧菜单「运维 → 会话调试」`/observability`：
-
-- 按会话 / 任务 / Agent 维度查工具调用轨迹
-- 每次 MCP 调用展示入参出参 JSON、耗时、是否报错
-- Top N 调用耗时排行可发现拖慢对话的 MCP
-
-### 3. 看 Gateway 日志
-
-```bash
-# 看 MCP 注册情况
-make docker-logs-gateway | grep -i mcp
-
-# 看 MCP 调用错误
-make docker-logs-gateway | grep -i "mcp.*error"
-```
-
-stdio MCP 启动失败时，Gateway 启动日志会带具体报错（如 npx 找不到、env 变量未设）。
+1. **对话里问**：「请列出你当前可以调用的所有 MCP 工具。」没有的话：看已安装是否 **可用** 且已启用；看该智能体 **MCP 服务** 是否勾选；必要时新开对话。
+2. **卡片上测**：点 **测试连接** / **查看日志**，看「最近错误」。
+3. **Gateway 日志**：stdio 启动失败常见原因是 `npx` 不在 PATH、环境变量未设。
 
 ---
 
-## 八、常见问题
+## 常见问题
 
-**Q：装了 MCP 但 Agent 没看到对应工具？**
-依次检查：
-1. 「智能体 → 连接器」该 MCP 是否启用
-2. 「智能体」当前角色 MCP 模块是否勾选
-3. 当前会话所在场景是否暴露 MCP（部分极简场景会屏蔽）
-4. 重启 Gateway 或等待 mtime 热重载
+**装了但聊天里没有？**  
+先看已安装状态是不是 **可用**、开关是否开着；再看智能体是否勾选；旧对话可能仍是旧工具列表，请新开一轮。
 
-**Q：stdio MCP 启动失败？**
-确保 `command` 在 PATH 中可用。`npx` 需 Node.js 已装；`python -m xxx` 需对应模块已 pip 安装。看 Gateway 日志最直接。
+**员工能直接装连接器吗？**  
+不能。改它所绑智能体的 **MCP 服务**。
 
-**Q：OAuth 令牌刷新失败？**
-检查 `token_url`、`client_id`、`client_secret` 是否有效。日志会打印 OAuth 错误码（401 / 403 / invalid_grant 等）。
+**stdio 起不来？**  
+确认命令在 PATH 里；Node / Python 依赖已装；看卡片日志或 Gateway 日志。
 
-**Q：修改 MCP 配置没生效？**
-确认已通过 EvoPanel / `PUT /api/mcp/config` / `evoflow mcp add` 写入 SQLite；看 Gateway 日志或 `evoflow mcp list` 的 `load_status`。改完仍异常时可重启 Gateway。
+**能不能只禁用某个 MCP 的某一个子工具？**  
+当前不能按子工具屏蔽。只能在智能体上不勾选整台服务器，或停用该连接器。
 
-**Q：Agent 工具白名单里要写 MCP 工具名吗？**
-一般不用 — 用「能力 → MCP 模块」勾选服务器即可。若硬编码 `tools` / `disallowed_tools`，须用标准名 ``mcp__<服务器>__<工具>``（不是旧的 ``server__tool``）。
+**市场能自助上架吗？**  
+不能。用手动 **添加连接器**，或把 JSON 配进团队仓库后导入。
 
-**Q：怎么限制单个 MCP 的并发？**
-当前框架对 MCP 调用并发没有专门节流，但**模型层**的并发由场景与 Agent 配置控制。若某 MCP 容易被高频调用拖慢，建议在该 MCP 服务端自己加速率限制。
-
-**Q：能不能让自己写的 MCP 出现在「市场」？**
-当前市场是 EvoFlow 团队整理的精选清单，**不对外开放自助提交**。你可以：
-- 用「方式二：手动添加」配进面板
-- 把 `~/.evoflow/mcp.json` 或 MCP 片段加进团队仓库，队友 clone 后导入或 `evoflow mcp set` 即可
-- 联系 EvoFlow 团队提交收录建议
-
-**Q：MCP 报警敏感数据会被发到第三方吗？**
-本地 stdio MCP **完全在你本机运行**，不会出网（除非该 MCP 自己访问网络）。远程 SSE / HTTP MCP 会按其 URL 出网，配置前请确认服务可信。
-
-**Q：怎么彻底禁用某个 MCP 的某些工具？**
-MCP 服务器自己暴露的工具粒度由其实现决定，EvoFlow 当前**不能屏蔽单个 MCP 的子工具**。可在角色「能力 → MCP 模块」里只勾选需要的服务器，未勾选的服务器工具不会挂载到该 Agent。
+**数据会出网吗？**  
+本地 stdio 默认在本机跑（除非该 MCP 自己访问网络）。远程 sse / http 会访问你填的 URL，配置前确认服务可信。
 
 ---
 
 ## 相关阅读
 
-- [[guides/configuration/agent-management|智能体管理]] — 给角色配权限
-- [[guides/configuration/skill-management|技能管理]] — Skill 与 MCP 的差异
-- [[guides/configuration/sandbox-config|沙箱模式配置]] — 执行环境安全
-- [[guides/configuration/settings|面板设置]] — 环境变量与工具审批策略
-- [[guides/integration/feishu-integration|飞书集成]] — MCP 集成示例
+- [[guides/configuration/agent-management|智能体管理]] — 人设、工具与 MCP 勾选
+- [[guides/configuration/skill-management|技能管理]] — 技能与连接器的差异
+- [[guides/configuration/smart-employees|员工]] — 员工继承所绑智能体的连接器
+- [[guides/configuration/settings|面板设置]] — 环境变量
+- [[guides/integration/feishu-integration|飞书集成]] — 飞书相关连接示例

@@ -1,6 +1,6 @@
 import { defaultTitleForKind } from './right-stage-types.js'
 
-/** 由顶栏「扩展」菜单手动打开的 Stage（与工作区/思维导图等独立入口区分）。 */
+/** 由顶栏「Agent应用」菜单手动打开的 Stage（与工作区/思维导图等独立入口区分）。 */
 export type UserStageExtensionKind = 'web-embed'
 
 export type UserStageExtensionEntry = {
@@ -9,7 +9,7 @@ export type UserStageExtensionEntry = {
   description: string
 }
 
-/** 资讯热榜已从菜单移除；保留浏览器内嵌。扩展应用列表由工具栏动态加载。 */
+/** 资讯热榜已从菜单移除；保留浏览器内嵌。Agent应用列表由工具栏动态加载。 */
 export const USER_STAGE_EXTENSIONS: UserStageExtensionEntry[] = [
   // 「浏览器」入口已由新 BrowserPanel 取代（browser 工具触发自动弹出 / browser kind surface）。
 ]

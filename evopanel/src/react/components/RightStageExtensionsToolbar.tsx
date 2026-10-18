@@ -73,8 +73,8 @@ export const RightStageExtensionsToolbar = memo(function RightStageExtensionsToo
           className={`react-chat-toggle-sidebar-btn react-chat-stage-extensions-toggle-btn${
             isUserStageExtensionKind(activeKind) ? ' is-active' : ''
           }${extOpen ? ' is-menu-open' : ''}`}
-          title="扩展"
-          aria-label="扩展"
+          title="Agent应用"
+          aria-label="Agent应用"
           aria-haspopup="menu"
           aria-expanded={extOpen}
           onClick={() => setOpenMenu((v) => (v === 'ext' ? null : 'ext'))}
@@ -83,7 +83,7 @@ export const RightStageExtensionsToolbar = memo(function RightStageExtensionsToo
         </button>
         {extOpen ? (
           <div className="react-chat-stage-extensions-menu" role="menu">
-            <div className="react-chat-stage-extensions-menu-head">扩展</div>
+            <div className="react-chat-stage-extensions-menu-head">Agent应用</div>
             {USER_STAGE_EXTENSIONS.map((entry) => {
               const active = activeKind === entry.kind
               return (
@@ -121,8 +121,8 @@ export const RightStageExtensionsToolbar = memo(function RightStageExtensionsToo
                 <ExtensionsIcon />
               </span>
               <span className="react-chat-stage-extensions-menu-item-text">
-                <span className="react-chat-stage-extensions-menu-item-label">扩展应用中心</span>
-                <span className="react-chat-stage-extensions-menu-item-desc">安装与管理扩展</span>
+                <span className="react-chat-stage-extensions-menu-item-label">Agent应用中心</span>
+                <span className="react-chat-stage-extensions-menu-item-desc">安装与管理Agent应用</span>
               </span>
             </button>
           </div>

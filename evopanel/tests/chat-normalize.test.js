@@ -1899,6 +1899,28 @@ describe('chat image path normalization', () => {
     )
     expect(src).toContain('/api/threads/b9f10489-5967-449e-ae91-bff079c41feb/browser-snapshots/9a3ac91947414d75')
   })
+
+  it('stripBrowserSnapshotFileMentions drops model-cited snapshot paths', async () => {
+    const { stripBrowserSnapshotFileMentions } = await import('../src/lib/chat-image-src.js')
+    const out = stripBrowserSnapshotFileMentions(
+      '已完成。\n\n截图文件：@@C:\\Users\\admin\\.evoflow-dev\\browser_snapshots\\t1\\aaa35130e2da4b3f.png@@\n\n需要再说一声。',
+    )
+    expect(out).not.toContain('browser_snapshots')
+    expect(out).not.toContain('截图文件')
+    expect(out).not.toContain('aaa35130e2da4b3f.png')
+    expect(out).toContain('已完成')
+    expect(out).toContain('需要再说一声')
+  })
+
+  it('stripBrowserSnapshotFileMentions drops @@browser-snapshots API cites', async () => {
+    const { stripBrowserSnapshotFileMentions } = await import('../src/lib/chat-image-src.js')
+    const out = stripBrowserSnapshotFileMentions(
+      '看这里 @@/api/threads/t1/browser-snapshots/abcdef1234567890@@ 即可。',
+    )
+    expect(out).not.toContain('browser-snapshots')
+    expect(out).toContain('看这里')
+    expect(out).toContain('即可')
+  })
 })
 
 describe('linkifyWorkspaceAtMentions images', () => {

@@ -213,6 +213,33 @@ async function loadRouteModule(loader, path) {
   return mod
 }
 
+/** 慢加载占位升级：>1.5s 未完成时把「转圈」换成真实等待原因。
+ *  reload/自愈窗口里用户点菜单，之前只有静态「加载中...」，现在能看出是在等网关。 */
+function upgradeSlowLoaderText(spinnerEl, startedAt) {
+  if (!spinnerEl) return
+  const textEl = spinnerEl.querySelector('.page-loader-text')
+  if (!textEl) return
+  setTimeout(() => {
+    if (!spinnerEl.isConnected) return
+    // 延迟取 tauri-api，避免给 router 增加静态依赖
+    void import('./lib/tauri-api.js')
+      .then((m) => {
+        if (!spinnerEl.isConnected) return
+        const warming = typeof m.isGatewayWarming === 'function' ? m.isGatewayWarming() : false
+        if (warming) {
+          textEl.textContent = '网关就绪中…（重载或自愈期间，约需数十秒）'
+          // 预热未结束就持续刷新秒数，让用户看到在动而不是卡死
+          setTimeout(() => upgradeSlowLoaderText(spinnerEl, startedAt), 3000)
+        } else {
+          const waitSec = Math.round((Date.now() - startedAt) / 1000)
+          textEl.textContent = `首次加载页面模块…（已等待 ${waitSec} 秒）`
+          setTimeout(() => upgradeSlowLoaderText(spinnerEl, startedAt), 3000)
+        }
+      })
+      .catch(() => {})
+  }, 1500)
+}
+
 /**
  * Hover / idle warm: resolve + cache a route module before the user clicks.
  * Safe to call repeatedly; best-effort (errors swallowed by callers).
@@ -248,6 +275,7 @@ async function renderChatRoute(path, hash, thisLoad) {
       <div class="page-loader-text">加载中...</div>
     `
       _chatHostEl.appendChild(spinnerEl)
+      upgradeSlowLoaderText(spinnerEl, Date.now())
     }
     mod = await loadRouteModule(loader, path)
   } catch (e) {
@@ -309,6 +337,7 @@ async function renderContentRoute(path, hash, thisLoad) {
       <div class="page-loader-text">加载中...</div>
     `
       _contentEl.appendChild(spinnerEl)
+      upgradeSlowLoaderText(spinnerEl, Date.now())
     }
     mod = await loadRouteModule(loader, path)
   } catch (e) {

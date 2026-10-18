@@ -23,13 +23,16 @@ export function shouldSuppressAutoReattach(opts: {
   runtime?: SessionRuntime | null
   runId?: string | null
 }): boolean {
-  if (opts.manualForce) return false
   const key = String(opts.sessionKey || '').trim()
   if (!key) return false
-  if (isSessionRecoveryCooldownActive(key)) return true
   const rt = opts.runtime ?? getSessionRuntime(key)
-  if (isTurnBusy(rt)) return true
+  // Live chatSend POST must never be aborted by reattach — including "manual"
+  // paths used by visibility/online recovery (those still call manualForce).
+  // Killing this wire mid-send shows up as client-abort and freezes the turn.
   if (rt.streamWireSource === 'run') return true
+  if (opts.manualForce) return false
+  if (isSessionRecoveryCooldownActive(key)) return true
+  if (isTurnBusy(rt)) return true
   if (isSessionRuntimeLive(rt)) return true
   const runId = String(opts.runId || rt.activeChatRunId || '').trim()
   if (rt.turnPhase === 'degraded' && isStreamReattachCooldownActive(key, runId || null)) {

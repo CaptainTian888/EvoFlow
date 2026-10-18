@@ -1441,7 +1441,7 @@ textarea.app-run-prompt-input {
 }
 
 .app-run-inspect-split.is-overview .apps-history-step-rows {
-  grid-template-columns: 1fr;
+  grid-template-columns: 1fr 1fr;
 }
 
 .apps-history-inspect-body .apps-history-step-head {

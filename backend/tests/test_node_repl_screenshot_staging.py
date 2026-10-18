@@ -296,7 +296,11 @@ class TestAgentBrowserScreenshotStaging:
         entry = next(iter(staged.values()))
         assert entry["auto"] is True and entry["mime_type"] == "image/png"
         assert Path(entry["path"]).is_file()
-        assert "you will see the pixels" in out.update["messages"][0].content
+        content = out.update["messages"][0].content
+        assert "you will see the pixels" in content
+        assert "do not mention the file path" in content.lower()
+        assert str(shot) not in content
+        assert "@@...png@@" in content
 
     def test_missing_file_falls_back_to_text(self, tmp_path: Path, vision_enabled):
         from evoflow.tools.zcode_port.bash_tool import _maybe_stage_agent_browser_screenshot
@@ -338,6 +342,8 @@ class TestAgentBrowserScreenshotStaging:
         )
         assert isinstance(out, str)
         assert "staged for your next context" in out
+        assert "do not mention the file path" in out.lower()
+        assert str(shot) not in out
 
 
 class TestBrowserSnapshotRef:
@@ -380,6 +386,9 @@ class TestBrowserToolScreenshotFormat:
         new = json.loads(format_screenshot_tool_result("t", meta, staged_for_model=True))
         assert "not included in your context" in old["summary"]
         assert "you will see the pixels" in new["summary"]
+        assert "do not mention the file path" in old["summary"].lower()
+        assert "do not mention the file path" in new["summary"].lower()
+        assert "@@...png@@" in old["summary"] and "@@...png@@" in new["summary"]
         assert new["staged_for_model"] is True and old["staged_for_model"] is False
 
 

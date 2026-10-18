@@ -1050,6 +1050,8 @@ async function checkWebuiRemoteAuth() {
       bootMark('ui-first boot (immediate, liveness async)')
       await boot()
       bootMark('boot() done')
+      // 运行期 latch 提示窗口开启：boot 完成后的重扣（reload/自愈）才提示用户。
+      window.__EVOFLOW_BOOT_DONE__ = true
     } else {
       backendOk = await healthPromise
       if (!backendOk) {
@@ -1069,6 +1071,7 @@ async function checkWebuiRemoteAuth() {
       await checkWebuiRemoteAuth()
       await boot()
       bootMark('boot() done')
+      window.__EVOFLOW_BOOT_DONE__ = true
       const webuiReady = await checkWebuiRemoteAuth()
       if (!webuiReady) return
     }
@@ -1086,6 +1089,10 @@ async function checkWebuiRemoteAuth() {
     if (backendOk || isTauri) {
       import('./lib/skill-catalog.js').then((m) => m.prefetchSkillCatalog()).catch(() => {})
       import('./lib/plugin-catalog.js').then((m) => m.prefetchPluginCatalog()).catch(() => {})
+      // boot 完成：空闲时预热高频菜单模块 chunk，首次点击免冷加载
+      import('./boot/idle-nav-warm.js')
+        .then((m) => m.warmFrequentMenuModules())
+        .catch(() => {})
       const warmSettings = () => {
         import('./components/settings-modal.js')
           .then((m) => m.prefetchSettingsModal?.())

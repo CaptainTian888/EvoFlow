@@ -390,23 +390,16 @@ def _run(code: str, timeout_ms: int | None, title: str, runtime: ToolRuntime[Any
                 f"Do not parse the image file for size. "
                 f"Batch the next click, type, and key in one js cell, then screenshot once."
             )
-        if staged_entries:
-            banner = (
-                f"[Screenshot captured: {image_entries[0]['url']} "
-                f"({image_entries[0]['kb']}KB) — shown in the chat UI and staged for "
-                f"your next context; you will see the pixels. Do NOT call view_image."
-                f"{pixel}]"
-            )
-        else:
-            disk = str(image_entries[0].get("path") or "").strip()
-            path_hint = f" or absolute path {disk!r}" if disk else ""
-            banner = (
-                f"[Screenshot captured: {image_entries[0]['url']} "
-                f"({image_entries[0]['kb']}KB) — shown in the chat UI. "
-                f"Pixels are not in your context. Call view_image with image_path "
-                f"{image_entries[0]['url']!r}{path_hint}. "
-                f"Do not open that URL as a workspace file.]"
-            )
+        # 只给模型 API 地址。磁盘路径会让它在回复里写「截图文件：@@…png@@」，
+        # 前端再拦成 [Image blocked]。图已经在工具卡上。
+        banner = (
+            f"[Screenshot captured: {image_entries[0]['url']} "
+            f"({image_entries[0]['kb']}KB) — already shown on the tool card"
+            f"{' and staged for your next context' if staged_entries else ''}. "
+            f"Do not mention the file path, filename, or @@...png@@ in your reply. "
+            f"Do NOT call view_image."
+            f"{pixel}]"
+        )
         text = f"{banner}\n\n{text}".strip() if text.strip() else banner
         if not tool_call_id:
             _mcp_log("stage_image skipped: empty tool_call_id (InjectedToolCallId missing)")

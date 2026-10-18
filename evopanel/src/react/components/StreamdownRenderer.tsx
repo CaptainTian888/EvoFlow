@@ -24,6 +24,7 @@ import {
   isImagePathLike,
   normalizeLocalImagePath,
   resolveChatImageSrc,
+  stripBrowserSnapshotFileMentions,
 } from '../../lib/chat-image-src.js'
 import { linkifyWorkspaceAtMentions } from '../../lib/workspace-file-mention-display.js'
 
@@ -410,7 +411,12 @@ function StreamdownRendererInner({
   // @@路径@@ → evoflow-file: 链接。旧 renderMarkdown 在渲染前做这一步，产出
   // 可点击的文件 chip（产物/文件预览弹层靠 data-evf-file-path 事件委托触发）；
   // 迁到 Streamdown 后漏掉了，@@路径@@ 退化成纯文本/粗体。
-  const linkifiedText = useMemo(() => linkifyWorkspaceAtMentions(text), [text])
+  // 截图已在工具卡上。模型若仍把 browser_snapshots 的 png 写进正文，
+  // 会变成 [Image blocked]，这里先拿掉这类引用。
+  const linkifiedText = useMemo(
+    () => linkifyWorkspaceAtMentions(stripBrowserSnapshotFileMentions(text)),
+    [text],
+  )
 
   // Mermaid 放大：流式结束后扫描 root 内的 [data-streamdown="mermaid"]，
   // 把 svg.outerHTML 缓存并挂点击事件。流式阶段不挂。

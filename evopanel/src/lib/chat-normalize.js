@@ -5043,9 +5043,37 @@ export function inferEvoflowCuaDisplayFromOutput(value) {
   return out
 }
 
-/** 优先结构化标记，其次从正文 banner 推断。 */
+/**
+ * 优先结构化标记，再与正文 banner / ``app:`` 行合并。
+ * 很多历史截图标记里只有 images、没有 target_app；正文里仍有
+ * ``app: D:\\...\\Feishu.exe ... "飞书"``，合并后任意应用都能取图标（不限微信）。
+ */
 export function resolveEvoflowCuaDisplay(value) {
-  return parseEvoflowCuaDisplay(value) || inferEvoflowCuaDisplayFromOutput(value)
+  const parsed = parseEvoflowCuaDisplay(value)
+  const inferred = inferEvoflowCuaDisplayFromOutput(value)
+  if (!parsed && !inferred) return null
+  if (!parsed) return inferred
+  if (!inferred) return parsed
+  const parsedApp = parsed.target_app && typeof parsed.target_app === 'object' ? parsed.target_app : null
+  const inferredApp =
+    inferred.target_app && typeof inferred.target_app === 'object' ? inferred.target_app : null
+  const hasParsedKey = Boolean(parsedApp && String(parsedApp.app_key || '').trim())
+  const images =
+    Array.isArray(parsed.images) && parsed.images.length
+      ? parsed.images
+      : Array.isArray(inferred.images)
+        ? inferred.images
+        : []
+  return {
+    ...inferred,
+    ...parsed,
+    ...(images.length ? { images } : {}),
+    ...(hasParsedKey
+      ? { target_app: parsedApp }
+      : inferredApp || parsedApp
+        ? { target_app: { ...(parsedApp || {}), ...(inferredApp || {}) } }
+        : {}),
+  }
 }
 
 /** 从输出文本中剥掉 CUA display 标记行（正文展示用）。 */
