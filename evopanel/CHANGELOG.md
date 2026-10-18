@@ -6,6 +6,72 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-10-18
+
+相对 **1.1.0** 以来的增量发布：浏览器内嵌面板能力补齐 + Computer Use 显示链路打通 + 会话执行停止可靠性修复 + 插件目录与性能优化。
+GitHub Release 正文见 `scripts/maintainer/windows/release-notes/PRODUCT-NOTES-1.1.1.md`；升级横幅见 `scripts/maintainer/update/latest.json`。
+
+### Added
+
+- **node_repl Playwright 命令面**：`__pwHandle` 翻译 Playwright Tab API（domSnapshot / click / fill / type / press / selectOption / textContent / getAttribute / isVisible / count / evaluate / waitFor* 等）为引擎命令；locator 链展开为叶子操作；role/text 定位器不支持时给出可操作错误
+- **node_repl 浏览器意图检测**：`nodeReplArgsTouchBrowser` 正则识别代码中的浏览器 API（agent.browsers / tabs.new / tab.navigate 等）；纯数据处理 JS 不再自动拉起浏览器面板；漏判由后端 browser-panel-request 兜底
+- **CUA display 标记 + 预览卡**：node_repl 结果尾部 `{evoflow-cua-display:...}` 标记 → `parseEvoflowCuaDisplay` 解析目标应用徽标 + 截图灯箱；`CuaToolPreview` / `CuaSummaryLeadingIcon` 组件；AG-UI `tool_cua_displays` 状态 + TOOL_CALL_RESULT.cua_display 事件；ZCode ToolCallBlocks cua / node-repl 渲染器
+- **浏览器内嵌 URL 安全**：`browser-page-url.ts` 检测 chrome-error:// / chrome:// / edge:// / devtools:// / about:neterror / chromewebdata；`sanitizeBrowserPageUrl` / `isNavigableBrowserUrl` 阻止错误页写回 pageUrl 造成死循环；Rust `normalize_target_url` 拒绝内部 URL；`clamp_rect` 钳制 y ≥ 48px 不盖拖拽区
+- **浏览器 tab history + 导航**：`browser-panel-store` 新增 pageTitle / canGoBack / canGoForward / TabHistory(stack+index) / favicon / displayTitle；toolbar 后退/前进/重载按钮；`browser_stream.py` 添加 reload 命令
+- **浏览器 zoom**：embed zoom 预设（fit/50/67/75/100/125/150/200）持久化到 localStorage；`browserEmbedSetZoom` 客户端调用；`zoom_hotkeys_enabled(true)` 开启 Ctrl+滚轮；`ZoomFactorChanged` 事件监听推 `browser-embed-zoom` 到面板更新 toolbar
+- **浏览器 embed 跨平台兼容**：`#[cfg(not(target_os = "windows"))]` 存根（embed_is_ws_child / log_region_diag / nest_embed_into_main / place_embed_client / browser_cdp_server::log_line）使 macOS/Linux CI 可编译
+- **per-session 浏览器面板隔离**：`right-stage-session-memory` 跟踪 currentSessionKey + `upsertBrowserTabInSessionMemory` 按会话保存浏览器 tab；`forceHidden` 选项：后台会话导航只保证 HWND/CDP 可用不贴到当前 UI
+- **zcode_port 工具移植**：background / bash_tool / glob_grep / task_notification / task_tools / notify_continuation / capability / prelude
+- **background bash**：`background_bash.py` REST 接口 + `background-bash-api.ts` / `background-work-merge.ts` 前端 API + 流合并
+- **image staging**：`image_staging.py` 工具截图共享暂存到 `viewed_images`；node_repl / browser 工具统一暂存
+- **scrollbar reveal**：`scrollbar-reveal.ts` macOS overlay 风格滚动条显隐（鼠标靠近右缘/滚动时短暂显现）
+- **ChatSummaryPanel 浮动卡**：三态（隐藏 / 气泡 / 浮动卡）+ 缩放过渡动画 + 与右栏互斥展开
+- **全局插件目录**：`plugin-catalog.js` 统一 `GET /api/plugins/overview` 客户端 + 进程内缓存 + 并发去重 + subscribe/listener；对话与首页预加载
+- **STOP-TRACE 取消补丁**：`langgraph_cancellation_patch.py` 修复 vendor `listen_for_cancellation` 240s 超时退出缺陷（长任务取消消息无人消费 → 协作式取消失效）；改为永久 `await queue.get()` + `[STOP-TRACE]` 全链路日志
+- **bash PowerShell 路由**：检测 PowerShell cmdlet（Select-String / Get-ChildItem / ConvertFrom-Json 等）直接走 `powershell -NoProfile -NonInteractive`，不走 Git Bash（省去多秒登录 shell 启动且找不到 cmdlet）；bash 用 `--noprofile --norc -c`
+- **node_repl 窗口隐藏**：`CREATE_NO_WINDOW` 隐藏 node.exe 黑窗 + preload 脚本 claim `evoflow-node-repl` 进程标题
+- **CUA PNG 归一化**：`_raster_png_and_size` 将 CUA JPEG（存为 .png）转成真 PNG + 宽高元数据，修复 IHDR 读 JPEG 头得到垃圾坐标
+- **统一日志重命名**：`browser-debug.log` → `插件控制日志.log`；MCP CUA / node_repl 全量 I/O 日志
+
+### Changed
+
+- 流式结束后自动折叠执行过程，只留最终正文
+- 首页加载去掉分阶段 loadPhase 文案，保留单一横幅
+- 插件市场暂隐藏尚未迁移的 MCP / Skills 独立 Tab（统一收进插件）；移除 mcpStore 预载 + tab 切换死代码
+- `node_repl_tool` 将 `tool_call_id` 加到 args_schema（InjectedToolCallId）使 LangChain 自动注入；fallback 从 `runtime.tool_call_id` 取
+- `runtime.py` 添加 computer-use 运行时提示（截图自动进入上下文，不要调 view_image，坐标用截图像素）
+- 插件图标 `localizeGatewayIcon` 相对路径改写为 Gateway 绝对地址（桌面 WebView 页面源不是 Gateway）；`trustedImageUrl` 放行 loopback
+- `place_embed_client` 统一 `HWND_TOP`（修复 park→show 落到主 WebView2 下面导致右侧空白）
+- `reportEmbedSlot` 在 setBounds 失败时按 URL 重建 embed 窗口
+- i18n（en-US / zh-CN）与主题样式随上述能力更新
+
+### Fixed
+
+- **CI**：`evopanel/vendor/**/package.json` 被根 `.gitignore` 的 `package.json` 规则排除，导致 CI 无法解析 exports 子路径 → 添加例外 `!evopanel/vendor/**/package.json`
+- **api-client import**：ZCode `@/` 解析到 `src/zcode-ui`，`@/lib/api-client.js` 404 → 直接 import `../../lib/api-client.js` + re-export shim
+- **知识库**：documentCount 对空 storage_dir 的 KB 改用 per-KB 库计数（修复内置知识库灰点）；parse_index 成功后回收同文档旧终态 error 任务行（修复索引状态横幅误报）
+- **模型**：厂商拒绝 `thinking.type=disabled` 返回 400 时实例记忆并剥参重试一次
+- **工具审批**：审批挂起时实时视图保留待授权工具（修复审批卡消失无按钮）；摘要文案「曾待授权」→「等待授权」；折叠头带最后一步 + spinner 文案事件化 + proactive 活动走 `panel:activity` 控制面广播
+- **浏览器嵌入**：embed bridge coords + panel store + desktop notification；overlay + modal z-index；park→show 抬层；setBounds 失败按 URL 重建
+- **CDP**：`Runtime.evaluate` 支持 `awaitPromise` 标志；`native_evaluate` 不再 dial embed debug port（每次 4s 阻塞）；`pump_both_ways` 获取 `out_tx_reader` 使 reader loop 可内联回复
+- **node_repl bridge**：`newTab` 无 url 时不映射成 navigate（会报错）回退 getState；`claimTab` __tab 补 `tabId` 字段；`attachTab` 每个结果附加 primary tab（ZCode BrowsersFacade 契约）；错误回显包含 cmd JSON
+
+### Performance
+
+- **session list**：`refreshSessions` do-while 重跑循环改为 trailing timer 补刷；`MIN_REFRESH_INTERVAL_MS` 1500→2500；`panel:session_upserted` / session-thread-rebound / background final 走 `syncSessionRowRef` 单行同步不刷全表；`watchBackgroundBashRef` 按后台 bash 活动门控列表轮询
+- **file preview**：`WorkspaceFilePreviewPanel` 连续 5 次静默拉取无变化后停轮询（~4s）；`workspaceScopeOpts` 拆为原始字段依赖避免会话轮询重渲染时反复 read-file
+- **stream perf**：移除 `buildRow-diag` console.warn 诊断；`PHASE_WARN_MS` 4→30 减少误报
+
+### Docs
+
+- 新增 `RELEASE.md` 发版清单（VERSION 唯一源 / 三份说明 / tag / CI 自检）
+- `MAINTAINERS.md` / `CONTRIBUTING.md` / `README` / `docs/` / `scripts/maintainer/` 全部交叉引用 `RELEASE.md`
+
+### Notes
+
+- 发版说明与版本线对齐 **1.1.1**
+- 建议从 **1.1.0** 覆盖安装至 **1.1.1**；无数据迁移
+
 ## [1.1.0] - 2026-10-16
 
 相对 **1.0.9** 以来主线真实合入（含标签后继续合并、随本包发出的修复）。

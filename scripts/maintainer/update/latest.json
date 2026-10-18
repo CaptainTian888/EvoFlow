@@ -1,10 +1,10 @@
 {
-  "version": "1.1.0",
-  "minAppVersion": "1.1.0",
+  "version": "1.1.1",
+  "minAppVersion": "1.1.1",
   "updateKind": "full",
   "assetKind": "installer",
   "hash": "",
-  "url": "https://github.com/EvovexAI/EvoFlow/releases/download/v1.1.0/EvoFlow_1.1.0_x64-setup.exe",
+  "url": "https://github.com/EvovexAI/EvoFlow/releases/download/v1.1.1/EvoFlow_1.1.1_x64-setup.exe",
   "size": 0,
-  "changelog": "EvoFlow 1.1.0（相对 1.0.9）：新增任务失败步骤重试与术语规范（恢复执行 / 重试失败步骤 / 重新执行）；插件系统（管理页 + 聊天选用 + 内置 guide/skill-kit）；浏览器桥接与右侧 WebView2 嵌入（跟窗缩放、重建恢复、Playwright/node_repl 命令面、CUA 预览卡）；MCP 服务器管理与连接池；右侧舞台标签化；聊天摘要浮动卡（与右栏互斥）；任务完成通知音；统一写入「插件控制日志.log」。审批：折叠不再藏待授权、多轮 id 精确匹配与防闪烁、「始终允许本项目」追溯同批 pending、挂起时保留批准按钮、点击即时回执。聊天/流式：折叠头最后一步、spinner 事件化、proactive panel:activity、行渲染与 stream-perf 噪音收敛。浏览器：park→show 抬层、setBounds 失败按 URL 重建、覆盖层 z-index。模型：thinking.type=disabled 被拒 400 时剥参重试。另含子任务 outcome、SSE 归一化、会话/权限预设、vendor package.json CI 跟踪等修复。覆盖安装即可。"
+  "changelog": "EvoFlow 1.1.1（相对 1.1.0）：浏览器内嵌面板能力补齐——URL 安全（chrome-error 死循环修复）、tab history 后退/前进/重载、Ctrl+滚轮 zoom + toolbar 实时比例、跨平台编译兼容、多会话隔离；node_repl Playwright 命令面（domSnapshot/click/fill/type/press 等）+ 浏览器意图检测（纯 JS 不拉起面板）；CUA 预览卡（应用徽标 + 截图灯箱）贯穿 AG-UI + ZCode 渲染器；STOP-TRACE 取消补丁修复长任务 >240s「已停还在跑」；zcode_port 工具移植 + background bash + image staging；bash PowerShell 路由 + node_repl 窗口隐藏 + CUA PNG 归一化；全局插件目录缓存订阅；聊天摘要浮动卡 + 右栏互斥；会话列表 trailing refresh + 文件预览停轮询性能优化。修复：vendor package.json CI、知识库灰点、thinking.type=disabled 重试、审批卡消失、CDP awaitPromise、api-client 路径。覆盖安装即可。"
 }
