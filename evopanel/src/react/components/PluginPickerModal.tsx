@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import '@/styles-bridge.css'
-import { getGatewayBaseUrl } from '@/lib/api-client.js'
+import { getGatewayBaseUrl } from '../../lib/api-client.js'
 import { loadPluginCatalog } from '../../lib/plugin-catalog.js'
 import { resolvePluginIconSource } from '@/lib/pluginIconSource.js'
 

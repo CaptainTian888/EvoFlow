@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { getGatewayBaseUrl } from '@/lib/api-client.js'
+import { getGatewayBaseUrl } from '../../lib/api-client.js'
 import { resolvePluginIconSource } from '../../zcode-ui/lib/pluginIconSource.js'
 
 /** 已选插件 pill 图标；img 加载失败（CDN 不可达 / 图标文件缺失）回退 🧩，避免裂图。 */
