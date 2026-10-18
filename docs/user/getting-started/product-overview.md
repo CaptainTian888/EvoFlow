@@ -15,7 +15,7 @@
 >
 > 读完本页你会搞清三个问题：**这个产品适合谁？我的问题该用哪条能力？几条能力怎么配合，而不是互相当成同一功能？**
 >
-> 操作细节见各指南；设计理念见 [为什么是 EvoFlow](../explanation/why-evoflow.md) [[explanation/why-evoflow|为什么是 EvoFlow]]；安装上手见 [快速上手](quick-start.md) [[quick-start|快速上手]]。
+> 和 Codex、WorkBuddy 怎么选，按你这周的活来看：[和 Codex、WorkBuddy 差在哪](../explanation/vs-codex-workbuddy.md)。
 
 ---
 

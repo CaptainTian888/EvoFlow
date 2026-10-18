@@ -7,7 +7,7 @@
 > - **纯 harness / 助手网关**：能编排 Agent，但往往缺桌面控制平面上的「排班表、费用账、安全闸门、资源市场」。
 > - **EvoFlow**：桌面控制平面 + Agent Runtime——Plan / Goal、应用中心、智能体员工、资产自我进化、费用与运维，开箱即用。
 >
-> 读完应能回答：它突出什么、适合哪两类用法、和「只聊天 / 只写码」差在哪。功能怎么点见 [产品总览](../getting-started/product-overview.md)；和 DF / 爱马仕 / Codex / 小龙虾对照见 [生态对照](ecosystem-comparison.md)。
+> 读完应能回答：它突出什么、适合哪两类用法、和「只聊天 / 只写码」差在哪。和 Codex、WorkBuddy 怎么选见 [和 Codex、WorkBuddy 差在哪](vs-codex-workbuddy.md)。功能怎么点见 [产品总览](../getting-started/product-overview.md)。
 
 本文回答 **「为什么做成这样」**——先讲产品主叙事与突出能力，再补架构边界与工程原则（给Agent应用开发者）。
 

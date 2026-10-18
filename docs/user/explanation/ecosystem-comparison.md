@@ -11,12 +11,13 @@
 | 口语 / 简称 | 正式名 | 仓库 / 站点 | 本文中的角色 |
 |-------------|--------|-------------|--------------|
 | **爱马仕** | Hermes Agent | [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) | 网关 / IM / 技能 / 记忆插件向的参考实现 |
-| **Codex** | OpenAI Codex（CLI / Agent tooling） | [openai/codex](https://github.com/openai/codex) | 本地编码 Agent 循环、沙箱与 CLI UX 参考 |
+| **Codex** | OpenAI Codex（CLI / Agent tooling） | [openai/codex](https://github.com/openai/codex) | 本地编码 Agent |
+| **WorkBuddy** | 腾讯 WorkBuddy | [cloud.tencent.com/product/workbuddy](https://cloud.tencent.com/product/workbuddy) | 说一句话就交办公成果的桌面工作台 |
 | **小龙虾** | OpenClaw | [openclaw/openclaw](https://github.com/openclaw/openclaw) | 多渠道个人助手 + 技能包装参考 |
 | **DF** | DeerFlow | [bytedance/deer-flow](https://github.com/bytedance/deer-flow) | EvoFlow 早期工程基线之一（MIT 致谢，见 [NOTICE](../../../NOTICE)） |
 | **当前活动项目** | **EvoFlow**（桌面 EvoPanel + Gateway + Harness） | 本仓库 | 面向长任务的 **Agent Runtime + 控制平面**产品 |
 
-**关系一句话（务必读）**
+给用户看的选择说明（Codex / WorkBuddy / EvoFlow，按这周的活怎么选）见 [和 Codex、WorkBuddy 差在哪](vs-codex-workbuddy.md)。下面仍是和 DeerFlow、爱马仕、小龙虾、Codex 的能力地图。
 
 | 关系 | 说明 |
 |------|------|
