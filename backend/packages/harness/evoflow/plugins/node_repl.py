@@ -799,8 +799,17 @@ def _ensure_process() -> subprocess.Popen:
         kernel_env.update(kernel_env_overlay(storage_root))
     except Exception:  # noqa: BLE001
         logger.warning("cua helper overlay unavailable; CUA stays on visual bridge", exc_info=True)
+    from evoflow.utils.subprocess_platform import subprocess_hide_window_kwargs
+
+    # node.exe 是控制台子系统；不带 CREATE_NO_WINDOW 时会弹出黑窗。
+    # 官方内核把 process.title 写成 zcode-node-repl-mcp，preload 把它改成 evoflow-node-repl。
+    # ZCODE_PLUGIN_ROOT 等变量名必须保留：官方 skill 按这个名字读插件根目录，不会出现在窗口标题上。
+    preload = Path(__file__).with_name("evoflow_node_repl_preload.cjs")
+    node_argv = ["node", str(server_js)]
+    if preload.is_file():
+        node_argv = ["node", "-r", str(preload), str(server_js)]
     _proc = subprocess.Popen(
-        ["node", str(server_js)],
+        node_argv,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
@@ -808,6 +817,7 @@ def _ensure_process() -> subprocess.Popen:
         encoding="utf-8",
         cwd=str(server_js.parent),
         env=kernel_env,
+        **subprocess_hide_window_kwargs(),
     )
     _reader_thread = threading.Thread(target=_pump_stdout, args=(_proc,), daemon=True)
     _reader_thread.start()

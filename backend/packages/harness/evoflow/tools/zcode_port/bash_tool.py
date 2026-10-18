@@ -195,7 +195,53 @@ def _strip_pwd_marker(text: str, thread_id: str) -> str:
     return "\n".join(kept)
 
 
+# PowerShell cmdlets have no meaning inside Git Bash. Routing them through
+# ``bash -lc`` pays a login-shell startup (profile, often several seconds on Windows)
+# and then fails to find the cmdlet.
+_POWERSHELL_CMDLET_RE = re.compile(
+    r"(?i)(?:^|[;&|\n]\s*)(?:"
+    r"Select-String|Get-ChildItem|Get-Content|Get-Item|Set-Content|Set-Location|"
+    r"Out-File|ForEach-Object|Where-Object|Measure-Object|Test-Path|"
+    r"Copy-Item|Move-Item|Remove-Item|New-Item|Invoke-WebRequest|Invoke-RestMethod|"
+    r"ConvertFrom-Json|ConvertTo-Json|sls|gci|gc|gi"
+    r")\b"
+)
+
+
+def _powershell_executable() -> str:
+    found = shutil.which("powershell") or shutil.which("powershell.exe")
+    return found or "powershell"
+
+
+def _powershell_argv(command: str, cwd: str) -> list[str] | None:
+    """Run an obvious PowerShell script without Git Bash and without a user profile."""
+    if sys.platform != "win32":
+        return None
+    stripped = command.strip()
+    if not stripped or not _POWERSHELL_CMDLET_RE.search(stripped):
+        return None
+    if re.match(r"(?i)^(powershell|pwsh)(\.exe)?\b", stripped):
+        return None
+    safe_cwd = cwd.replace("'", "''")
+    body = (
+        f"Set-Location -LiteralPath '{safe_cwd}'; "
+        f"{stripped}; "
+        f"Write-Output ('{_PWD_MARKER}' + (Get-Location).Path)"
+    )
+    return [_powershell_executable(), "-NoProfile", "-NonInteractive", "-Command", body]
+
+
+def _bash_args(shell: list[str], script: str) -> list[str]:
+    # ``-l`` sources .bash_profile / /etc/profile. On Windows Git Bash that startup
+    # is the multi-second delay before the command itself runs. The embedded-search
+    # functions are already inlined in ``script``, so a login shell is not required.
+    return [*shell, "--noprofile", "--norc", "-c", script]
+
+
 def _script(command: str, *, cwd: str) -> tuple[list[str], str]:
+    ps = _powershell_argv(command, cwd)
+    if ps is not None:
+        return ps, "powershell"
     shell = bash_shell()
     body = _wrap_with_cwd_and_pwd(command, cwd)
     if shell and embedded_search_enabled():
@@ -206,12 +252,12 @@ def _script(command: str, *, cwd: str) -> tuple[list[str], str]:
             rg_command=rg_cmd,
             wrap_find=wrap_find,
         )
-        return shell + ["-lc", prelude + body], "bash"
+        return _bash_args(shell, prelude + body), "bash"
     if shell:
-        return shell + ["-lc", body], "bash"
+        return _bash_args(shell, body), "bash"
     if sys.platform == "win32":
-        return ["powershell", "-NoProfile", "-Command", f"Set-Location -LiteralPath '{cwd}'; {command}"], "powershell"
-    return ["sh", "-lc", body], "sh"
+        return ["powershell", "-NoProfile", "-NonInteractive", "-Command", f"Set-Location -LiteralPath '{cwd}'; {command}"], "powershell"
+    return ["sh", "-c", body], "sh"
 
 
 def _emit(kind: str, **kwargs: object) -> None:

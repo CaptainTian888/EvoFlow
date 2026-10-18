@@ -245,9 +245,12 @@ def build_plugin_injection_block(
             "Computer Use screenshots returned by mcp__node_repl__js are staged into "
             "the next model context automatically. Do NOT call view_image on those "
             "snapshot paths. Click/type coordinates are pixels of that delivered "
-            "screenshot (its width x height), not the OS window bounds.\n"
+            "screenshot (the WxH in the tool result), not the OS window bounds, and "
+            "not a size parsed from the file header. Put one gesture — click, type, "
+            "and key — in a single js cell and screenshot once at the end.\n"
             "电脑控制截图会自动进入下一轮视觉上下文，不要再对同一张图调 view_image。"
-            "点击坐标必须落在该截图像素范围内（宽×高），不要用窗口 bounds 的屏幕坐标。\n"
+            "点击坐标用结果里给出的截图像素宽高，不要读文件头，也不要用窗口 bounds。"
+            "同一次手势（点击、输入、按键）写在同一个 js 里，最后再截一次图。\n"
             "</evoflow_computer_runtime>\n"
         )
     body = intro + browser_hint + cua_hint + "\n".join(sections)

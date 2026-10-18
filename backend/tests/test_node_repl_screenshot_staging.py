@@ -402,6 +402,26 @@ class TestNodeReplToolCallIdInjection:
             assert "tool_call_id" not in schema.model_fields
 
 
+class TestCuaRasterPng:
+    def test_jpeg_becomes_real_png_with_pixel_size(self):
+        import io
+
+        from PIL import Image
+
+        from evoflow.plugins.node_repl_tool import _raster_png_and_size
+
+        buf = io.BytesIO()
+        Image.new("RGB", (1280, 797), (10, 20, 30)).save(buf, format="JPEG")
+        jpeg = buf.getvalue()
+        assert not jpeg.startswith(b"\x89PNG")
+        png, width, height = _raster_png_and_size(jpeg)
+        assert png.startswith(b"\x89PNG")
+        assert (width, height) == (1280, 797)
+        # PNG IHDR width/height, the offsets the model was reading.
+        assert int.from_bytes(png[16:20], "big") == 1280
+        assert int.from_bytes(png[20:24], "big") == 797
+
+
 class TestCompactBrowserDocsDump:
     def test_passthrough_small_or_non_docs(self):
         from evoflow.plugins.node_repl_tool import _maybe_compact_browser_docs_dump

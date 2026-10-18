@@ -4,6 +4,7 @@ import pdfIconUrl from "@/assets/plugin-icons/pdf.png";
 import pluginCreatorIconUrl from "@/assets/plugin-icons/plugin-creator.png";
 import presentationsIconUrl from "@/assets/plugin-icons/presentations.png";
 import spreadsheetsIconUrl from "@/assets/plugin-icons/spreadsheets.png";
+import { apiUrl } from "@/lib/api-client.js";
 import { isTrustedImageUrl } from "@/lib/trustedImageUrl.js";
 
 const OFFICIAL_PLUGIN_ICON_BY_ID: Readonly<Record<string, string>> = {
@@ -33,12 +34,25 @@ const TRUSTED_BUNDLED_PLUGIN_ICONS = new Set(Object.values(OFFICIAL_ICON_BY_ID))
 export function resolvePluginIconSource(
   pluginId: string | undefined,
   icon?: string,
+  /** 仅用于在 Gateway 地址就绪后触发调用方重渲染。 */
+  _iconEpoch?: number,
 ): string | undefined {
   if (pluginId) {
     const bundledIcon = OFFICIAL_ICON_BY_ID[pluginId];
     if (bundledIcon) return bundledIcon;
   }
-  return isTrustedImageUrl(icon) ? icon : undefined;
+  if (!isTrustedImageUrl(icon)) return undefined;
+  return localizeGatewayIcon(icon);
+}
+
+/** 桌面端 WebView 的页面源不是 Gateway，相对 `/api/plugins/icon/` 会 404。 */
+function localizeGatewayIcon(icon: string): string {
+  if (!icon.startsWith("/api/plugins/icon/")) return icon;
+  try {
+    return apiUrl(icon.slice("/api".length));
+  } catch {
+    return icon;
+  }
 }
 
 /** Session 投影已完成身份匹配；仅放行固定打包资源，不放宽任意本地 URL。 */

@@ -216,9 +216,36 @@ def _validate_kernel_images(images: list[dict[str, Any]], meta: dict[str, Any] |
     return valid, notes
 
 
+def _raster_png_and_size(image_bytes: bytes) -> tuple[bytes, int, int] | None:
+    """Return PNG bytes plus pixel size.
+
+    CUA frames are often JPEG stored under a ``.png`` name. Reading IHDR at
+    offset 16 then yields garbage coordinates (the 32768, 3519884875 miss).
+    """
+    import io
+
+    from PIL import Image
+
+    try:
+        with Image.open(io.BytesIO(image_bytes)) as img:
+            width, height = img.size
+            if width <= 0 or height <= 0:
+                return None
+            if image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+                return image_bytes, width, height
+            out = io.BytesIO()
+            img.convert("RGB").save(out, format="PNG")
+            png = out.getvalue()
+    except Exception:
+        return None
+    if not png:
+        return None
+    return png, width, height
+
+
 def _save_kernel_image(thread_id: str, image_b64: str, mime_type: str) -> dict[str, Any] | None:
-    # helper 回传的栅格是 JPEG（默认编码）或 PNG；统一落进 browser 截图存储
-    # （文件名 .png，服务端点按魔数嗅探 content-type，无需区分扩展名）。
+    # helper 回传的栅格是 JPEG（默认编码）或 PNG；统一转成真正的 PNG 再落盘，
+    # 文件名与内容一致，模型按 PNG 头读宽高才不会点出画面。
     mime = (mime_type or "").lower()
     if mime and mime not in ("image/png", "image/jpeg"):
         return None
@@ -228,13 +255,19 @@ def _save_kernel_image(thread_id: str, image_b64: str, mime_type: str) -> dict[s
         return None
     if not image_bytes:
         return None
+    raster = _raster_png_and_size(image_bytes)
+    if raster is None:
+        return None
+    png_bytes, width, height = raster
     from evoflow.tools.builtins.browser_screenshot_store import resolve_screenshot_file, save_screenshot_png
 
-    meta = save_screenshot_png(thread_id, image_bytes)
+    meta = save_screenshot_png(thread_id, png_bytes, width=width, height=height)
     path = resolve_screenshot_file(thread_id, str(meta["screenshot_id"]))
     return {
         "url": str(meta["image_url"]),
         "kb": int(meta["size_kb"]),
+        "width": width,
+        "height": height,
         **({"path": str(path)} if path is not None else {}),
     }
 
@@ -349,11 +382,20 @@ def _run(code: str, timeout_ms: int | None, title: str, runtime: ToolRuntime[Any
             {"url": entry["url"], "kb": entry["kb"]} for entry in image_entries
         ]
         # Banner first so documentation dumps (screenshots.md) cannot bury it.
+        size = image_entries[0]
+        pixel = ""
+        if size.get("width") and size.get("height"):
+            pixel = (
+                f" Click inside {size['width']}x{size['height']} screenshot pixels. "
+                f"Do not parse the image file for size. "
+                f"Batch the next click, type, and key in one js cell, then screenshot once."
+            )
         if staged_entries:
             banner = (
                 f"[Screenshot captured: {image_entries[0]['url']} "
                 f"({image_entries[0]['kb']}KB) — shown in the chat UI and staged for "
-                f"your next context; you will see the pixels. Do NOT call view_image.]"
+                f"your next context; you will see the pixels. Do NOT call view_image."
+                f"{pixel}]"
             )
         else:
             disk = str(image_entries[0].get("path") or "").strip()

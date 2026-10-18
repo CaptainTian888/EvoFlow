@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import '@/styles-bridge.css'
+import { getGatewayBaseUrl } from '@/lib/api-client.js'
 import { loadPluginCatalog } from '../../lib/plugin-catalog.js'
 import { resolvePluginIconSource } from '@/lib/pluginIconSource.js'
 
@@ -77,7 +78,19 @@ export function PluginPickerModal({
 }) {
   const [query, setQuery] = useState('')
   const [draft, setDraft] = useState<PluginSelection[]>(selected)
+  const [iconEpoch, setIconEpoch] = useState(0)
   const searchRef = useRef<HTMLInputElement | null>(null)
+
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    void getGatewayBaseUrl().then(() => {
+      if (!cancelled) setIconEpoch((n) => n + 1)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [open])
 
   useEffect(() => {
     if (open) queueMicrotask(() => setDraft(selected))
@@ -182,7 +195,7 @@ export function PluginPickerModal({
           {draft.length > 0 ? (
             <div className="flex flex-wrap items-center gap-1.5">
               {draft.map((p) => {
-                const iconSrc = resolvePluginIconSource(p.id, p.iconUrl)
+                const iconSrc = resolvePluginIconSource(p.id, p.iconUrl, iconEpoch)
                 return (
                   <span
                     key={p.id}
@@ -234,7 +247,7 @@ export function PluginPickerModal({
             ) : (
               filtered.map((p) => {
                 const active = isSelected(p.id)
-                const iconSrc = resolvePluginIconSource(p.id, p.iconUrl)
+                const iconSrc = resolvePluginIconSource(p.id, p.iconUrl, iconEpoch)
                 return (
                   <button
                     key={p.id}
