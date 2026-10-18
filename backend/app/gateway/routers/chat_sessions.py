@@ -1510,6 +1510,7 @@ async def stop_session_execution_route(
     key = _require_session_access(request, session_key)
     if sess_repo.is_session_deleted(key):
         raise HTTPException(status_code=404, detail="session not found")
+    logger.warning("[STOP-TRACE] 1.api-received session=%s userInitiated=%s", key, userInitiated)
     try:
         result = await stop_session_execution(key, user_initiated=userInitiated)
     except ValueError as exc:
@@ -1517,6 +1518,12 @@ async def stop_session_execution_route(
         if "not found" in msg:
             raise HTTPException(status_code=404, detail=msg) from exc
         raise HTTPException(status_code=422, detail=msg) from exc
+    logger.info(
+        "[STOP-TRACE] 1.api-done session=%s phase=%s cancelled=%s",
+        key,
+        result.phase,
+        result.cancelled_run_ids,
+    )
     return {
         "ok": result.ok,
         "sessionKey": result.session_key,

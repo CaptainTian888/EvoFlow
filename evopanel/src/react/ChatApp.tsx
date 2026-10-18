@@ -4861,6 +4861,8 @@ useEffect(() => {
   const [pluginList, setPluginList] = useState<Array<{ id: string; name: string; label: string; description: string; version?: string; marketplace: string; componentTypes?: string[]; iconUrl?: string }>>([])
   const [pluginListLoading, setPluginListLoading] = useState(false)
   const [selectedPlugins, setSelectedPlugins] = useState<PluginSelection[]>([])
+  /** 已选插件 pills：仅在用户刚选择时展示，发送后隐藏（粘性选择仍保留并继续注入） */
+  const [pluginComposerPillsVisible, setPluginComposerPillsVisible] = useState(false)
 
   const persistSelectedPlugins = useCallback(async (sk: string, plugins: PluginSelection[]) => {
     const key = String(sk || '').trim()
@@ -4876,6 +4878,7 @@ useEffect(() => {
 
   const removeSelectedPlugin = useCallback(
     (id: string) => {
+      setPluginComposerPillsVisible(true)
       setSelectedPlugins((prev) => {
         const next = prev.filter((p) => p.id !== id)
         void persistSelectedPlugins(String(selectedSessionKey || ''), next)
@@ -4889,6 +4892,7 @@ useEffect(() => {
     (pl: { id: string; label: string; iconUrl?: string }) => {
       const id = String(pl.id || '').trim()
       if (!id) return
+      setPluginComposerPillsVisible(true)
       setSelectedPlugins((prev) => {
         if (prev.some((p) => p.id === id)) return prev
         const next = [
@@ -7025,9 +7029,14 @@ useEffect(() => {
     // 技能弹窗（SkillPickerModal）自带搜索框聚焦与 Esc/遮罩关闭，此处仅作状态同步
   }, [bottomSkillOpen])
 
-  /** 会话级粘性插件：切换会话时从 context 恢复，与发送时 preferred_plugins 一致 */
+  /** 会话级粘性插件：切换会话时从 context 恢复，与发送时 preferred_plugins 一致；恢复不展示 pills */
+  const pluginPillsSessionRef = useRef<string | null>(null)
   useEffect(() => {
     const sk = String(selectedSessionKey || '').trim()
+    if (pluginPillsSessionRef.current !== sk) {
+      pluginPillsSessionRef.current = sk
+      setPluginComposerPillsVisible(false)
+    }
     if (!sk) {
       setSelectedPlugins([])
       return
@@ -14181,6 +14190,8 @@ useEffect(() => {
       setContextFiles([])
       void persistContextFiles([], sessionKey)
     }
+    // 消息已确认发出：隐藏已选插件 pills。粘性选择仍保留，下次再点选时才会重新展示。
+    setPluginComposerPillsVisible(false)
     const preserveCollabOnSend = isUserExecutionStartIntent(message)
 
     // 与输入框发送一致：先立刻展示用户消息 + 处理中，再跑 context/abort/chatSend（避免点「开始执行」长时间无反馈）
@@ -16387,7 +16398,7 @@ useEffect(() => {
                 ))}
               </div>
             ) : null}
-            {selectedPlugins.length > 0 ? (
+            {pluginComposerPillsVisible && selectedPlugins.length > 0 ? (
               <div className="react-chat-skill-composer-pills" aria-label="已选插件">
                 <span className="react-chat-context-pills-label">
                   已选 {selectedPlugins.length} 个插件，发送时自动注入 Agent
@@ -16778,6 +16789,7 @@ useEffect(() => {
                       loading={pluginListLoading}
                       selected={selectedPlugins}
                       onToggle={(item) => {
+                        setPluginComposerPillsVisible(true)
                         setSelectedPlugins((prev) => {
                           const next = prev.some((p) => p.id === item.id)
                             ? prev.filter((p) => p.id !== item.id)

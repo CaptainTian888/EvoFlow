@@ -28,15 +28,18 @@ import {
   isTerminalToolFailed,
   isToolRunning,
   parseBrowserStepToolOutput,
-  parseEvoflowCuaDisplay,
   parseMediaImagePreview,
+  resolveEvoflowCuaDisplay,
   stripEvoflowCuaDisplayMarker,
   toolLabel,
   toolOmitFromChatPanel,
   toolOmitFromStreamingChatPanel,
   isGoalProposalToolName,
 } from '../../lib/chat-normalize.js'
+// 当前产品对话的工具卡（含流式）。电脑控制图标/截图改这里和
+// CuaSummaryLeadingIcon / CuaToolPreview。zcode-ui v4 尚未接入，不要改那边来修可见问题。
 import { CuaToolPreview } from './CuaToolPreview.js'
+import { CuaSummaryLeadingIcon } from './CuaSummaryLeadingIcon.js'
 import {
   toolApprovalHintFromMeta,
 } from '../../lib/tool-approval.js'
@@ -1438,13 +1441,13 @@ function ToolCallListInner({
           return toolShortLabel(toolName, t)
         })()
         const inputJson = formatToolDisplayValue(t.input)
-        // EvoFlow CUA（node_repl js）：截图/目标应用展示。优先读流式层附带的
-        // 结构化 cua_display 字段；文本尾部标记解析是历史回放/未升级流的兜底。
+        // EvoFlow CUA（node_repl js）：截图/目标应用展示。优先结构化字段，
+        // 否则从标记或 Screenshot banner 还原（历史回放 / output 精简后）。
         const isNodeReplTool = toolKind.includes('node_repl')
         const cuaDisplay = isNodeReplTool
           ? (t.cua_display && typeof t.cua_display === 'object'
               ? t.cua_display
-              : parseEvoflowCuaDisplay(t.output))
+              : resolveEvoflowCuaDisplay(t.output))
           : null
         const displayOutput = cuaDisplay
           ? typeof t.output === 'string'
@@ -1689,6 +1692,17 @@ function ToolCallListInner({
                 aria-hidden
                 onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none' }}
               />
+            ) : cuaDisplay?.target_app?.app_key ? (
+              <CuaSummaryLeadingIcon
+                appKey={String(cuaDisplay.target_app.app_key)}
+                appName={
+                  typeof cuaDisplay.target_app.display_name === 'string'
+                    ? cuaDisplay.target_app.display_name
+                    : undefined
+                }
+                toolKind={toolKind}
+                running={running}
+              />
             ) : (
               <ToolCardIcon toolKind={toolKind} running={running} />
             )}
@@ -1923,6 +1937,15 @@ function ToolCallListInner({
             )
           }
         }
+        // 截图进工具卡 body（展开后可见），不要挂在 details 外面显得「在工具上面」。
+        if (cuaDisplay) {
+          inlineDetail = (
+            <>
+              <CuaToolPreview display={cuaDisplay} />
+              {inlineDetail}
+            </>
+          )
+        }
         let modalOnExpand: (() => void) | undefined
         if (openApprovalIfPending) modalOnExpand = openApprovalIfPending
         else if (openPlatformFeedbackPanel) modalOnExpand = openPlatformFeedbackPanel
@@ -1933,6 +1956,13 @@ function ToolCallListInner({
         else if (canOpenToolDetailModal) modalOnExpand = openToolDetailModal
         // 折叠区内有行内详情（终端输出）也可展开；勿仅因 modalOnExpand 才算可交互。
         const foldInteractive = inFold && Boolean(modalOnExpand || inlineDetail)
+        const cuaDefaultOpen = Boolean(
+          cuaDisplay &&
+            Array.isArray(cuaDisplay.images) &&
+            cuaDisplay.images.some(
+              (img: { url?: string }) => typeof img?.url === 'string' && img.url,
+            ),
+        )
         if (isFileEditModalTool && !inFold) {
           const displayPath =
             fileNameFromPath(String(fileEditPath || path || '').trim()) ||
@@ -2108,12 +2138,11 @@ function ToolCallListInner({
               />
             ) : null}
             {browserScreenshotOutput ? <BrowserScreenshotPreview output={browserScreenshotOutput} /> : null}
-            {cuaDisplay ? <CuaToolPreview display={cuaDisplay} /> : null}
             <ToolCallCollapsible
               toolKind={toolKind}
               running={running}
               failed={toolFailed}
-              defaultOpen={false}
+              defaultOpen={cuaDefaultOpen}
               inActivityFold={inFold}
               foldInteractive={foldInteractive}
               summary={summary}

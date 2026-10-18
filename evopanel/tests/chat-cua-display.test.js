@@ -1,9 +1,13 @@
 import { describe, it, expect } from 'vitest'
 import {
   parseEvoflowCuaDisplay,
+  inferEvoflowCuaDisplayFromOutput,
+  resolveEvoflowCuaDisplay,
   stripEvoflowCuaDisplayMarker,
   evoflowCuaAppKeyToIconRequest,
   normalizeChatToolPayloadToEntries,
+  maybeSlimToolOutputForUi,
+  messagesToDisplayRows,
   EVOFLOW_CUA_DISPLAY_PREFIX,
 } from '../src/lib/chat-normalize.js'
 
@@ -155,5 +159,70 @@ describe('old-path tool result → CUA preview payload', () => {
     const entries = normalizeChatToolPayloadToEntries(payload)
     expect(entries[0].cua_display).toBeUndefined()
     expect(parseEvoflowCuaDisplay(entries[0].output)).toBeNull()
+  })
+
+  it('infers cua_display from Screenshot banner after marker was stripped', () => {
+    const text = [
+      'app: D:\\app\\Tencent\\WeChat\\Weixin.exe pid=13620 "微信"',
+      'window: "微信" window_id=1',
+      '',
+      '[Screenshot captured: /api/threads/t1/browser-snapshots/9a3ac91947414d75 (363KB) — shown in the chat UI.]',
+    ].join('\n')
+    const inferred = inferEvoflowCuaDisplayFromOutput(text)
+    expect(inferred?.images?.[0]?.url).toBe(
+      '/api/threads/t1/browser-snapshots/9a3ac91947414d75',
+    )
+    expect(inferred?.target_app?.display_name).toBe('微信')
+    expect(inferred?.target_app?.app_key).toContain('windows-exe:')
+    expect(resolveEvoflowCuaDisplay(text)).toEqual(inferred)
+  })
+
+  it('keeps cua_display on the merged history tool after refresh', () => {
+    const body = [
+      '[Screenshot captured: /api/threads/t1/browser-snapshots/8a8b0e9695cb4753 (394KB) — shown in the chat UI.]',
+      'app: D:\\app\\Tencent\\WeChat\\Weixin.exe pid=13620 "微信"',
+    ].join('\n')
+    const rows = messagesToDisplayRows([
+      { role: 'user', content: '打开微信并截图' },
+      {
+        role: 'assistant',
+        content: '好的',
+        tool_calls: [
+          {
+            id: 'call_hist',
+            name: 'mcp__node_repl__js',
+            args: { title: '打开微信并截图', code: 'screenshot()' },
+          },
+        ],
+      },
+      {
+        role: 'tool',
+        type: 'tool',
+        name: 'mcp__node_repl__js',
+        tool_call_id: 'call_hist',
+        content: body,
+      },
+    ])
+    const assistant = rows.find((row) => row.role === 'assistant')
+    const tool = (assistant?.tools || []).find((item) => item.id === 'call_hist')
+    expect(tool?.cua_display?.target_app?.display_name).toBe('微信')
+    expect(tool?.cua_display?.images?.[0]?.url).toContain('8a8b0e9695cb4753')
+  })
+
+  it('preserves cua_display when maybeSlimToolOutputForUi clears output', () => {
+    const target = {
+      name: 'mcp__node_repl__js',
+      status: 'ok',
+      output: [
+        'app: D:\\app\\Tencent\\WeChat\\Weixin.exe pid=1 "微信"',
+        '[Screenshot captured: /api/threads/t1/browser-snapshots/abc123def456 (12KB) — shown.]',
+        '',
+        buildMarker(cuaPayload),
+      ].join('\n'),
+    }
+    maybeSlimToolOutputForUi(target)
+    expect(target.output).toBe('')
+    expect(target.output_truncated).toBe(true)
+    expect(target.cua_display).toEqual(cuaPayload)
   })
 })

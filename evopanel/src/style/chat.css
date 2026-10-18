@@ -3926,6 +3926,13 @@ button.msg-file-card.msg-file-card--button:focus-visible {
 .evf-tcard-icon--collab { --evf-tc-color: #ec4899; }
 .evf-tcard-icon--media { --evf-tc-color: #14b8a6; }
 .evf-tcard-icon--system { --evf-tc-color: #64748b; }
+.evf-tcard-icon--cua-app {
+  --evf-tc-color: transparent;
+  background: transparent;
+  padding: 0;
+  object-fit: contain;
+  border-radius: 3px;
+}
 [data-theme="dark"] .evf-tcard-icon {
   background: color-mix(in srgb, var(--evf-tc-color) 20%, transparent);
 }

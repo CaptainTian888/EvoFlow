@@ -1891,6 +1891,14 @@ describe('chat image path normalization', () => {
     expect(src).toContain(encodeURIComponent('D:/github/EvoFlow'))
     expect(src).toContain(encodeURIComponent('D:/github/EvoFlow/outputs/cat.png'))
   })
+
+  it('resolveChatImageSrc maps local browser_snapshots path to gateway URL', async () => {
+    const { resolveChatImageSrc } = await import('../src/lib/chat-image-src.js')
+    const src = resolveChatImageSrc(
+      'C:/Users/admin/.evoflow-dev/browser_snapshots/b9f10489-5967-449e-ae91-bff079c41feb/9a3ac91947414d75.png',
+    )
+    expect(src).toContain('/api/threads/b9f10489-5967-449e-ae91-bff079c41feb/browser-snapshots/9a3ac91947414d75')
+  })
 })
 
 describe('linkifyWorkspaceAtMentions images', () => {

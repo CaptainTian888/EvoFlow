@@ -1,7 +1,9 @@
+// NOT MOUNTED. 产品摘要图标在 react/components/CuaSummaryLeadingIcon.tsx。
 import { useEffect, useState, type ReactNode } from "react";
 import type { ApplicationIconRequest } from "@zcode/shared";
 import { cn } from "@/components/lib/utils.js";
 import { useOptionalPlatform } from "@/hooks/usePlatform.js";
+import { apiUrlAsync } from "@/lib/api-client.js";
 import { CUA_TOOL_ICON } from "@/ToolCallBlocks/renderers/cuaIcon.js";
 
 export function CuaAppSummaryIcon({
@@ -44,7 +46,9 @@ export function CuaAppSummaryIcon({
       }
       if (typeof request === "string") return null;
       try {
-        const response = await fetch("/api/cua/app-icon", {
+        // Tauri WebView 没有同端口静态站：相对 /api 会打到错误 origin。
+        // 与 CuaToolPreview 一致，经 apiUrlAsync 解析到本机 Gateway。
+        const response = await fetch(await apiUrlAsync("/cua/app-icon"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(request),
@@ -58,6 +62,14 @@ export function CuaAppSummaryIcon({
     };
     void resolve().then((dataUrl) => {
       if (active) setIconDataUrl(dataUrl);
+      const label = typeof request === "string" ? request : name;
+      void import("../../../react/lib/stream-compare-file-log.js")
+        .then((mod) =>
+          mod.logCuaPanelDisplay(
+            `icon app=${label} ${dataUrl ? "ok" : "miss"}`,
+          ),
+        )
+        .catch(() => undefined);
     });
     return () => {
       active = false;

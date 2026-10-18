@@ -1,5 +1,11 @@
 """H3-B-2: AG-UI event-list -> v4 conversationDeltas translator.
 
+NOT MOUNTED. 当前产品对话（含流式、工具卡、电脑控制图标/截图）走旧链路：
+``sse_ui_normalize`` + ``evopanel/src/react/components/ToolCallList.tsx``。
+本文件和 ``EvoFlowV4SessionPane`` 尚未接入。可见的聊天问题不要改这里。
+
+
+
 This module is intentionally **stateless**: all per-session state lives in
 ``ConversationProjectionWriter`` via the registry, so multiple producers
 (H1 demo + LangGraph main path) can share a single writer instance.
@@ -125,11 +131,14 @@ def _cua_display_block(payload: dict[str, Any], body_text: str) -> dict[str, Any
                     }
                 )
         if display_name or locators:
-            target_app: dict[str, Any] = {"schemaVersion": 1}
+            # 面板 parseCuaTargetApp 要求 iconLocators 为数组；仅有 displayName
+            # 时也带空数组，避免整块 kind:"cua" display 被拒收。
+            target_app: dict[str, Any] = {
+                "schemaVersion": 1,
+                "iconLocators": locators,
+            }
             if display_name:
                 target_app["displayName"] = display_name[:512]
-            if locators:
-                target_app["iconLocators"] = locators
             block["targetApp"] = target_app
     return block
 

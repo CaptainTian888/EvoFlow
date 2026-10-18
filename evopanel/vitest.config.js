@@ -51,6 +51,7 @@ export default defineConfig({
       'tests/assistant-display-noise.test.js',
       'tests/chat-normalize.test.js',
       'tests/chat-cua-display.test.js',
+      'tests/node-repl-cua-display.test.js',
       'tests/clarify-preview-resolve.test.js',
       'tests/tool-display.test.js',
       'tests/subagent-stream-merge.test.js',

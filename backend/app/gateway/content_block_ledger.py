@@ -303,12 +303,14 @@ class ContentBlockLedger:
                         meta = reg.get(cid, {})
                         result = str(meta.get("result") or "")
                         if result:
-                            messages.append(
-                                {
-                                    "id": f"{cid}-result",
-                                    "role": "tool",
-                                    "toolCallId": cid,
-                                    "content": result,
-                                }
-                            )
+                            tool_msg: dict[str, Any] = {
+                                "id": f"{cid}-result",
+                                "role": "tool",
+                                "toolCallId": cid,
+                                "content": result,
+                            }
+                            cua = meta.get("cua_display")
+                            if isinstance(cua, dict):
+                                tool_msg["cua_display"] = cua
+                            messages.append(tool_msg)
         return messages

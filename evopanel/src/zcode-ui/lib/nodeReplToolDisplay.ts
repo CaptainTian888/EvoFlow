@@ -1,10 +1,16 @@
+// NOT MOUNTED. 产品聊天不读本文件。电脑控制展示改 react/components/ToolCallList.tsx。
 import type { TaskChatToolCall as ChatToolCall } from "@/lib/taskChatMessageTypes.js";
+import { cuaIconLocatorsToAppKey } from "@/lib/cuaAppIconRequest.js";
+import { readToolResultDisplay } from "@/ToolCallBlocks/toolResultDisplay.js";
 
 export type NodeReplOperation = "run" | "reset" | "add-module-dir";
 
 export interface NodeReplDisplayImage {
-  base64: string;
+  /** MCP / ZCode 内联截图。 */
+  base64?: string;
   mimeType: string;
+  /** EvoFlow CUA：网关 browser-snapshots URL（无 base64 时由画廊异步解析）。 */
+  url?: string;
 }
 
 export interface NodeReplDisplayError {
@@ -286,18 +292,29 @@ function extractImages(values: unknown[]): NodeReplDisplayImage[] {
   const visited = new Set<object>();
   const addImage = (value: Record<string, unknown>) => {
     // 旧 built-in result 使用 {images:[{base64,mimeType}]}，真实 MCP
-    // 使用 content 里的 {type:"image",data,mimeType}。专用 renderer 必须兼容两种历史形态。
+    // 使用 content 里的 {type:"image",data,mimeType}。EvoFlow CUA 投影用
+    // {mimeType,artifactUri}（无内联 base64）。专用 renderer 必须兼容三种形态。
     const base64 = readNonEmptyString(value.base64) ?? readNonEmptyString(value.data);
-    const mimeType = readNonEmptyString(value.mimeType)?.trim();
-    if (!base64 || !mimeType || !IMAGE_MIME_TYPE_PATTERN.test(mimeType)) {
+    const url =
+      readNonEmptyString(value.artifactUri)?.trim() ??
+      readNonEmptyString(value.url)?.trim();
+    const mimeType = readNonEmptyString(value.mimeType)?.trim() ?? (url ? "image/png" : undefined);
+    if (!mimeType || !IMAGE_MIME_TYPE_PATTERN.test(mimeType)) {
       return;
     }
-    const key = `${mimeType}:${base64.length}:${base64.slice(0, 24)}`;
+    if (!base64 && !url) return;
+    const key = base64
+      ? `${mimeType}:${base64.length}:${base64.slice(0, 24)}`
+      : `${mimeType}:url:${url}`;
     if (seen.has(key)) {
       return;
     }
     seen.add(key);
-    images.push({ base64, mimeType });
+    images.push({
+      mimeType,
+      ...(base64 ? { base64 } : {}),
+      ...(url ? { url } : {}),
+    });
   };
   const visit = (value: unknown): void => {
     if (!value || typeof value !== "object" || visited.has(value)) return;
@@ -307,7 +324,9 @@ function extractImages(values: unknown[]): NodeReplDisplayImage[] {
       return;
     }
     if (!isRecord(value)) return;
-    if (value.type === "image" || "base64" in value) addImage(value);
+    if (value.type === "image" || "base64" in value || "artifactUri" in value) {
+      addImage(value);
+    }
     for (const child of Object.values(value)) visit(child);
   };
 
@@ -316,6 +335,36 @@ function extractImages(values: unknown[]): NodeReplDisplayImage[] {
   }
 
   return images;
+}
+
+/** EvoFlow 网关投影的 kind:"cua" display → Node REPL 卡用的 app + 截图。 */
+function extractFromEvoflowCuaDisplay(toolCall: ChatToolCall): {
+  app?: NodeReplCuaApp;
+  images: NodeReplDisplayImage[];
+} {
+  const display = readToolResultDisplay(toolCall.raw);
+  if (display?.kind !== "cua") return { images: [] };
+  const images: NodeReplDisplayImage[] = [];
+  for (const item of display.media ?? []) {
+    const mimeType = item.mimeType?.trim();
+    if (!mimeType || !IMAGE_MIME_TYPE_PATTERN.test(mimeType)) continue;
+    if (item.data) {
+      images.push({ base64: item.data, mimeType });
+    } else if (item.artifactUri) {
+      images.push({ url: item.artifactUri, mimeType });
+    }
+  }
+  const appKey = cuaIconLocatorsToAppKey(display.targetApp?.iconLocators);
+  const displayName = display.targetApp?.displayName?.trim();
+  // 无 locator 时无法向 /cua/app-icon 取图标；勿造假 appKey。
+  if (!appKey) return { images };
+  return {
+    images,
+    app: {
+      appKey,
+      ...(displayName ? { displayName } : {}),
+    },
+  };
 }
 
 /**
@@ -398,8 +447,10 @@ export function buildNodeReplDisplayModel(toolCall: ChatToolCall): NodeReplDispl
     .find((candidate) => candidate !== undefined);
   // 实时 tool.updated 把 display 放在 raw.result 内，终态 snapshot 则把
   // completed part 的 metadata 直接作为 raw。只扫描 raw.result 会让对话结束后的图片消失。
-  const images = extractImages([...outputCandidates, toolCall.raw]);
-  const app = findCuaApp(toolCall.raw);
+  const evoflowCua = extractFromEvoflowCuaDisplay(toolCall);
+  const inlineImages = extractImages([...outputCandidates, toolCall.raw]);
+  const images = inlineImages.length > 0 ? inlineImages : evoflowCua.images;
+  const app = findCuaApp(toolCall.raw) ?? evoflowCua.app;
   const persisted = parsePersistedResult(
     removeProjectedImagePlaceholders(
       removeProjectedCompletionMarkers(projectedText),

@@ -135,6 +135,15 @@ def mount_langgraph_in_process() -> Starlette:
     except Exception:
         logger.debug("langgraph_api map_cmd patch skipped", exc_info=True)
 
+    # listen_for_cancellation 无 240s 超时退出 patch：长任务（>240s）点停止时
+    # vendor 版监听已退出，cancel control message 无人消费 → 协作式取消失效。
+    try:
+        from evoflow.langgraph_cancellation_patch import apply_langgraph_cancellation_patch
+
+        apply_langgraph_cancellation_patch()
+    except Exception:
+        logger.debug("langgraph cancellation patch skipped", exc_info=True)
+
     try:
         _lg_route_paths = []
         for _r in getattr(lg_app, "routes", []):

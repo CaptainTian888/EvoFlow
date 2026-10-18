@@ -15,6 +15,7 @@ import {
 import {
   maybeSlimToolOutputForUi,
   mergeStreamingToolCallArgStrings,
+  resolveEvoflowCuaDisplay,
   syncToolStatusFromEnvelope,
 } from '../../lib/chat-normalize.js'
 import { parseStreamBlockWire, type ContentBlockKind } from './content-blocks.js'
@@ -126,6 +127,8 @@ export type AgUiToolCall = {
   /** v5.10：UI 侧计时（TOOL_CALL_START / TOOL_CALL_RESULT 到达时刻），透传到 tool entry 供耗时 chip */
   _uiStartedAtMs?: number
   _uiEndedAtMs?: number
+  /** node_repl CUA：网关剥离标记后附带的展示载荷（目标应用 + 截图 URL） */
+  cuaDisplay?: Record<string, unknown>
 }
 
 export type AgUiStep = {
@@ -445,6 +448,7 @@ type AgUiSnapshotMessage = {
   seq?: number
   blockKind?: string
   block_kind?: string
+  cua_display?: Record<string, unknown>
 }
 
 function blockMetaFromSnapshotMessage(msg: AgUiSnapshotMessage): AgUiOrderBlockMeta {
@@ -534,6 +538,11 @@ function applyToolResultFromSnapshotMessage(state: AgUiTurnState, msg: AgUiSnaps
   }
   tc.result = content
   tc.phase = 'done'
+  const cua =
+    msg.cua_display && typeof msg.cua_display === 'object'
+      ? msg.cua_display
+      : resolveEvoflowCuaDisplay(content)
+  if (cua && typeof cua === 'object') tc.cuaDisplay = cua as Record<string, unknown>
 }
 
 /** Rebuild chronological order from terminal MESSAGES_SNAPSHOT (block ledger authority). */
@@ -621,6 +630,7 @@ function toolEntryFromAgUi(tc: AgUiToolCall): Record<string, unknown> {
     ...(tc.platformSettings ? { platform_settings: { ...tc.platformSettings } } : {}),
     ...(tc.platformClientEffect ? { platform_client_effect: tc.platformClientEffect } : {}),
     ...(tc.platformOk ? { platform_ok: true } : {}),
+    ...(tc.cuaDisplay ? { cua_display: { ...tc.cuaDisplay } } : {}),
   }
   syncToolStatusFromEnvelope(entry)
   return entry
@@ -1137,6 +1147,7 @@ export function applyAgUiEvent(state: AgUiTurnState, event: AGUIEvent): AgUiTurn
       output_truncated?: boolean
       content_bytes?: number
       output_bytes?: number
+      cua_display?: Record<string, unknown>
     }
     const truncated = e.truncated === true || e.output_truncated === true
     const contentBytes = e.content_bytes ?? e.output_bytes
@@ -1146,6 +1157,13 @@ export function applyAgUiEvent(state: AgUiTurnState, event: AGUIEvent): AgUiTurn
     }
     if (tc) {
       tc.result = String(e.content || '')
+      const wireCua =
+        e.cua_display && typeof e.cua_display === 'object'
+          ? e.cua_display
+          : resolveEvoflowCuaDisplay(tc.result)
+      if (wireCua && typeof wireCua === 'object') {
+        tc.cuaDisplay = wireCua as Record<string, unknown>
+      }
       const wireStatus = String(e.status || '').trim().toLowerCase()
       if (wireStatus === 'pending_approval' || wireStatus === 'blocked' || wireStatus === 'error') {
         tc.resultStatus = wireStatus

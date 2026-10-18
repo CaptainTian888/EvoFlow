@@ -92,6 +92,15 @@ export function resolveChatImageSrc(rawPathOrUrl) {
   const root = getChatWorkspaceRoot() || inferWorkspaceRootFromFilePath(u)
   const norm = u.replace(/\\/g, '/')
 
+  // 模型正文常引用落盘绝对路径（~/.evoflow(-dev)/browser_snapshots/...）；
+  // 转成 Gateway 截图 URL，否则 markdown 安全层会变成 [Image blocked]。
+  const localSnap = norm.match(
+    /(?:^|\/)(?:\.?evoflow(?:-dev)?\/)?(?:profiles\/[^/]+\/)?browser_snapshots\/([^/]+)\/([0-9a-f]{12,32})(?:\.png)?$/i,
+  )
+  if (localSnap) {
+    return apiUrl(`/threads/${localSnap[1]}/browser-snapshots/${localSnap[2]}`)
+  }
+
   if (_isWindowsAbs(u) || /^[a-zA-Z]:\//.test(norm) || _isUnixAbs(u)) {
     const effectiveRoot = root || inferWorkspaceRootFromFilePath(u)
     if (effectiveRoot) return _serveFileUrl(effectiveRoot, u)

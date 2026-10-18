@@ -52,6 +52,8 @@ class AgUiEncoderState:
     tool_args_accum: dict[str, str] = field(default_factory=dict)
     tool_ended: set[str] = field(default_factory=set)
     tool_results: dict[str, str] = field(default_factory=dict)
+    # node_repl CUA：sse_ui_normalize 从结果尾部剥离的展示载荷（图标 + 截图 URL）
+    tool_cua_displays: dict[str, dict[str, Any]] = field(default_factory=dict)
     tool_args_emitted: set[str] = field(default_factory=set)
     # Bytes already sent via TOOL_CALL_ARGS for each toolCallId (for remainder/force).
     tool_args_emitted_len: dict[str, int] = field(default_factory=dict)
@@ -188,12 +190,27 @@ def _close_reasoning_block(state: AgUiEncoderState, block_id: str) -> list[dict[
 def _tool_registry(state: AgUiEncoderState) -> dict[str, dict[str, Any]]:
     reg: dict[str, dict[str, Any]] = {}
     for tid in state.tool_started:
-        reg[tid] = {
+        entry: dict[str, Any] = {
             "name": state.tool_names.get(tid, "tool"),
             "arguments": state.tool_args_accum.get(tid, ""),
             "result": state.tool_results.get(tid, ""),
         }
+        cua = state.tool_cua_displays.get(tid)
+        if isinstance(cua, dict):
+            entry["cua_display"] = cua
+        reg[tid] = entry
     return reg
+
+
+def _cua_display_from_tool_result(payload: dict[str, Any], tool_obj: dict[str, Any]) -> dict[str, Any] | None:
+    """Pick structured cua_display attached by sse_ui_normalize (or leftover marker)."""
+    for bag in (tool_obj, payload):
+        if not isinstance(bag, dict):
+            continue
+        cua = bag.get("cua_display")
+        if isinstance(cua, dict):
+            return cua
+    return None
 
 
 def _emit_tool_args_if_needed(
@@ -587,8 +604,11 @@ def evf_payload_to_agui_events(
                     pass
         truncated = bool(payload.get("truncated") or tool_obj.get("truncated"))
         content_bytes = payload.get("content_bytes") or tool_obj.get("content_bytes")
+        cua_display = _cua_display_from_tool_result(payload, tool_obj)
         if tid:
             state.tool_results[tid] = content
+            if cua_display is not None:
+                state.tool_cua_displays[tid] = cua_display
             _emit_tool_args_if_needed(state, tid, out, force=True)
             if tid not in state.tool_ended:
                 state.tool_ended.add(tid)
@@ -607,6 +627,10 @@ def evf_payload_to_agui_events(
             if content_bytes is not None:
                 result_evt["content_bytes"] = content_bytes
                 result_evt["output_bytes"] = content_bytes
+            # 旧版 ToolCallList 读 TOOL_CALL_RESULT.cua_display（图标 + 截图）；
+            # 正文里的 {evoflow-cua-display:...} 已被 sse_ui_normalize 剥掉。
+            if cua_display is not None:
+                result_evt["cua_display"] = cua_display
             out.append(result_evt)
         return out
 

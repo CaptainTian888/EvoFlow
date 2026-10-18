@@ -329,13 +329,19 @@ function buildCuaDetailsModel(
   };
 }
 
+// NOT MOUNTED：产品里的电脑控制卡片在 react/components/ToolCallList.tsx
+// （CuaSummaryLeadingIcon + CuaToolPreview）。本渲染器只留给尚未接入的 v4。
 export function isCuaToolCall(
   toolCall: ToolCallBlockRenderContext["toolCallNode"]["toolCall"],
 ): boolean {
   if (collectToolNames(toolCall).some(isZCodeCuaToolName)) return true;
-  // EvoFlow：CUA 调用经 node_repl js 单元执行，row.toolName 是 "mcp__node_repl__js"；
-  // 结果携带 kind:"cua" display 块时同样按 CUA 卡片渲染（ZCode 主链路按工具名命中，
-  // 这里补 display 命中，两条路都收敛到同一个渲染器）。
+  // EvoFlow：CUA 经 mcp__node_repl__js 执行。ZCode 同款保留 Node REPL 卡（自述
+  // title + 结果画廊）；不要因 display.kind:"cua" 把整行抢走——否则 toolName 落
+  // 到 computer_use、截图只认 screenshot/zoom base64，界面变成无图无标题。
+  const toolNames = collectToolNames(toolCall)
+    .filter((name): name is string => typeof name === "string" && name.trim().length > 0)
+    .join(" ");
+  if (/node_repl/i.test(toolNames)) return false;
   const display = readToolResultDisplay(toolCall.raw);
   return display?.kind === "cua";
 }

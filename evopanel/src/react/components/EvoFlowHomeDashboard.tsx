@@ -307,6 +307,8 @@ export function EvoFlowHomeDashboard({ onPrompt, workspaceLabel = '', workspaceP
   const [pluginList, setPluginList] = useState<PluginPickerItem[]>([])
   const [pluginListLoading, setPluginListLoading] = useState(false)
   const [selectedPlugins, setSelectedPlugins] = useState<PluginSelection[]>([])
+  /** 已选插件 pills：仅在刚选择时展示，发送后隐藏（选择仍随任务注入） */
+  const [pluginComposerPillsVisible, setPluginComposerPillsVisible] = useState(false)
   const [voiceReplyEnabled, setVoiceReplyEnabled] = useState(() => getVoiceReplyEnabled())
   const [memoryEnabled, setMemoryEnabled] = useState(true)
   const [goalActive, setGoalActive] = useState(false)
@@ -553,6 +555,7 @@ export function EvoFlowHomeDashboard({ onPrompt, workspaceLabel = '', workspaceP
 
   /** 「+」面板插件行：即点即存（与主对话一致，发送时随任务注入 Agent） */
   const toggleHomePlugin = useCallback((item: PluginPickerItem) => {
+    setPluginComposerPillsVisible(true)
     setSelectedPlugins((prev) => {
       if (prev.some((p) => p.id === item.id)) {
         return prev.filter((p) => p.id !== item.id)
@@ -778,6 +781,7 @@ export function EvoFlowHomeDashboard({ onPrompt, workspaceLabel = '', workspaceP
       setChips([])
       setPendingFiles([])
       setPendingContextFiles([])
+      setPluginComposerPillsVisible(false)
       try {
         sessionStorage.removeItem('evopanel_home_composer_draft')
       } catch {
@@ -968,7 +972,7 @@ export function EvoFlowHomeDashboard({ onPrompt, workspaceLabel = '', workspaceP
                 ))}
               </div>
             ) : null}
-            {selectedPlugins.length > 0 ? (
+            {pluginComposerPillsVisible && selectedPlugins.length > 0 ? (
               <div className="react-chat-skill-composer-pills" aria-label="已选插件">
                 <span className="react-chat-context-pills-label">
                   已选 {selectedPlugins.length} 个插件，发送时自动注入 Agent
@@ -979,7 +983,10 @@ export function EvoFlowHomeDashboard({ onPrompt, workspaceLabel = '', workspaceP
                     type="button"
                     className="react-chat-skill-composer-pill"
                     title={`插件：${pl.label}（点击移除）`}
-                    onClick={() => setSelectedPlugins((prev) => prev.filter((p) => p.id !== pl.id))}
+                    onClick={() => {
+                      setPluginComposerPillsVisible(true)
+                      setSelectedPlugins((prev) => prev.filter((p) => p.id !== pl.id))
+                    }}
                   >
                     <span
                       className="react-chat-skill-composer-pill-icon"

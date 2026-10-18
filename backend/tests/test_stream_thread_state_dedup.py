@@ -316,5 +316,37 @@ class AguiToolStartPathTests(unittest.TestCase):
         )
 
 
+class AguiCuaDisplayWireTests(unittest.TestCase):
+    def test_tool_call_result_forwards_cua_display(self) -> None:
+        from app.gateway.agui_stream_normalizer import AgUiEncoderState, evf_payload_to_agui_events
+
+        state = AgUiEncoderState(thread_id="t1", run_id="r1")
+        state.tool_started.add("call-cua")
+        state.tool_names["call-cua"] = "mcp__node_repl__js"
+        cua = {
+            "status": "success",
+            "images": [{"url": "/api/threads/t1/browser-snapshots/abc123def456", "kb": 12}],
+            "target_app": {"app_key": "windows-exe:d:\\app\\weixin.exe", "display_name": "微信"},
+        }
+        events = evf_payload_to_agui_events(
+            {
+                "type": "tool_result",
+                "tool_call_id": "call-cua",
+                "content": "[Screenshot captured]",
+                "status": "ok",
+                "tool": {
+                    "tool_call_id": "call-cua",
+                    "name": "mcp__node_repl__js",
+                    "content": "[Screenshot captured]",
+                    "cua_display": cua,
+                },
+            },
+            state=state,
+        )
+        result = next(e for e in events if e.get("type") == "TOOL_CALL_RESULT")
+        self.assertEqual(result["cua_display"], cua)
+        self.assertEqual(state.tool_cua_displays["call-cua"], cua)
+
+
 if __name__ == "__main__":
     unittest.main()

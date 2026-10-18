@@ -46,21 +46,43 @@ export function CuaToolPreview({ display }: CuaToolPreviewProps) {
     setIconSrc('')
     setShotSrc('')
     setBroken(false)
+    const shotUrl = shot?.url || ''
+    void import('../lib/stream-compare-file-log.js')
+      .then((mod) =>
+        mod.logCuaPanelDisplay(
+          `preview app=${appName || '-'} key=${appKey || '-'} images=${
+            (display.images || []).length
+          }${shotUrl ? ` urls=${shotUrl}` : ''}`,
+        ),
+      )
+      .catch(() => undefined)
     if (appKey) {
       const request = evoflowCuaAppKeyToIconRequest(appKey)
       if (request) {
         void (async () => {
+          let ok = false
           try {
-            const response = await fetch(await apiUrlAsync('/api/cua/app-icon'), {
+            const response = await fetch(await apiUrlAsync('/cua/app-icon'), {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify(request),
             })
             if (!response.ok) return
             const result = (await response.json()) as { iconDataUrl?: string } | null
-            if (active && result?.iconDataUrl) setIconSrc(result.iconDataUrl)
+            if (active && result?.iconDataUrl) {
+              setIconSrc(result.iconDataUrl)
+              ok = true
+            }
           } catch {
             /* 图标失败回退通用图形 */
+          } finally {
+            void import('../lib/stream-compare-file-log.js')
+              .then((mod) =>
+                mod.logCuaPanelDisplay(
+                  `icon-preview app=${appName || appKey} ${ok ? 'ok' : 'miss'}`,
+                ),
+              )
+              .catch(() => undefined)
           }
         })()
       }
@@ -79,7 +101,7 @@ export function CuaToolPreview({ display }: CuaToolPreviewProps) {
     return () => {
       active = false
     }
-  }, [appKey, shot?.url])
+  }, [appKey, appName, display.images, shot?.url])
 
   if (!appKey && !shot && !failed) return null
 

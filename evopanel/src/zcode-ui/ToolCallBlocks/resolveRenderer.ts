@@ -1,5 +1,10 @@
 // ============================================================
 // 工具卡 renderer 注册表：tool identity → 具体 renderer 组件
+//
+// NOT MOUNTED. 这是尚未接入的 zcode-ui / v4 工具卡。
+// 当前产品对话（流式 + 工具折叠卡 + CUA 微信图标/截图）在
+// evopanel/src/react/components/ToolCallList.tsx。
+// 用户能看到的聊天问题不要改本目录。
 // ============================================================
 // 从 ToolCallBlocks.tsx 拆出：这张表随工具种类线性增长，和 renderContext 装配叠在一处后
 // ToolCallBlocks.tsx 越过 oxlint max-lines(400)（rows.ts → toolDisplay.ts 是同一先例）。
