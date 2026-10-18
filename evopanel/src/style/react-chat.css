@@ -23173,8 +23173,7 @@ html.dark .kvft-row.is-focused {
   padding: 0;
 }
 
-.react-chat-workspace-tree .kv-browse-refresh,
-.react-chat-workspace-tree .kv-browse-action {
+.react-chat-workspace-tree .kv-browse-refresh {
   flex: 0 0 28px;
   width: 28px;
   height: 28px;
@@ -23189,14 +23188,12 @@ html.dark .kvft-row.is-focused {
   padding: 0;
 }
 
-.react-chat-workspace-tree .kv-browse-refresh:hover,
-.react-chat-workspace-tree .kv-browse-action:hover {
+.react-chat-workspace-tree .kv-browse-refresh:hover {
   background: var(--tree-bg-hover);
   color: var(--tree-fg);
 }
 
-.react-chat-workspace-tree .kv-browse-refresh:disabled,
-.react-chat-workspace-tree .kv-browse-action:disabled {
+.react-chat-workspace-tree .kv-browse-refresh:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }

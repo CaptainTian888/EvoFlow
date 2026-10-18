@@ -1482,6 +1482,7 @@ export default function ChatApp() {
     refreshSessionsRef,
     scheduleRefreshSessions,
     scheduleRefreshSessionsRef,
+    syncSessionRowRef,
     workspaceSummaries,
     workspacePagination,
     ensureWorkspaceExpanded,
@@ -1506,6 +1507,8 @@ export default function ChatApp() {
     return String(wsClient.getSessionThreadId(sk) || '').trim()
   }, [selectedSessionKey, sessions])
   const streamRef = useRef<StreamState>(emptyStream())
+  /** 有后台 bash 在跑时才继续拉列表；空闲时由 background_work 事件再叫醒。 */
+  const watchBackgroundBashRef = useRef<(() => void) | null>(null)
   /**
    * stream-snapshot-store seq 计数器：每次 commit 都递增，让 React 端
    * ``useStreamSnapshotSeq`` 能感知 mutable streamRef 内部 mutation。
@@ -7366,10 +7369,6 @@ useEffect(() => {
         force: opts.force,
         onClear: () => {
           clearTurnSendingState(sk, rt, isBackground)
-          void refreshSessionsRef.current?.({
-            skipAutoReselect: true,
-            summariesOnly: isBackground,
-          })
         },
         onResume: () => {
           /* 续流仅用户刷新触发；run 仍 active 时保持 turn busy */
@@ -8176,10 +8175,11 @@ useEffect(() => {
           try {
             const ev = JSON.parse(String(dataJson || '{}'))
             if (String(ev?.type || '').trim() !== 'panel:session_upserted') return
-            // 单源触发:一条 upserted 只 schedule 一次。listener 路径已统一走
-            // scheduleRefreshSessions(150) (useSessionList.ts onSessionsMutated),
-            // 这里不再 dispatch 自定义事件,避免双触发放大成两轮 refresh。
-            scheduleRefreshSessionsRef.current?.(250)
+            const data = ev?.data && typeof ev.data === 'object' ? ev.data : ev
+            const sk = String(data?.session_key || data?.sessionKey || '').trim()
+            if (!sk) return
+            if (sessionsRef.current.some((s) => String(s.sessionKey || '') === sk)) return
+            void syncSessionRowRef.current?.(sk)
           } catch {
             /* ignore */
           }
@@ -8231,7 +8231,6 @@ useEffect(() => {
       setSessions((prev) =>
         prev.map((s) => (String(s.sessionKey || '') === sk ? { ...s, threadId: tid } : s)),
       )
-      scheduleRefreshSessions(300)
     }
     window.addEventListener('evopanel:session-thread-rebound', onThreadRebound)
 
@@ -9673,7 +9672,7 @@ useEffect(() => {
       const isBackground = !!(eventSk && uiSk && eventSk !== uiSk)
       if (isBackground) {
         if (state === 'final' || state === 'error' || state === 'aborted') {
-          scheduleRefreshSessionsRef.current?.()
+          void syncSessionRowRef.current?.(eventSk)
         }
         chatStreamBgApplyRef.current = true
       } else {
@@ -10265,6 +10264,8 @@ useEffect(() => {
         if (ev && typeof ev === 'object' && !Array.isArray(ev)) {
           if (!S.backgroundWorks) S.backgroundWorks = {}
           mergeBackgroundWorkEvent(S.backgroundWorks, ev as Record<string, unknown>)
+          const workStatus = String((ev as { status?: string }).status || 'running').trim().toLowerCase()
+          if (!workStatus || workStatus === 'running') watchBackgroundBashRef.current?.()
           if (!S.runId && runId) S.runId = runId
           if (!S.startTs) S.startTs = Date.now()
           const sk = String(payload.sessionKey || sessionRef.current || '').trim()
@@ -10807,18 +10808,11 @@ useEffect(() => {
               })
             }
           }
-          // 流式结束后立即收尾 runtime 与 session row：
-          // 后端通常先发 RUN_FINISHED 关 SSE，再异步把 session.runStatus='idle' 落库。
-          // 不主动清会让「左下『运行中』+ 停止按钮」多亮 3-5s（等待下一次 refreshSessions
-          // 把 runStatus='idle' 拉回来）。守卫 isTurnBusy(rt) 避免覆盖用户已触发的
-          // stopped/error；isBackground 同理尊重后台会话。
+          // 运行态由本机 TURN_IDLE 收掉。这里重拉 workspace 会话列表只会在每个
+          // 内层 RUN_FINISHED 上打一轮 sessions?workspace_key，侧栏用不到。
           if (rt && isTurnBusy(rt) && targetSk) {
             dispatchSessionTurnEvent(targetSk, { type: 'TURN_IDLE' })
           }
-          void refreshSessionsRef.current?.({
-            skipAutoReselect: true,
-            summariesOnly: isBackground,
-          })
           const hasArtifacts = turnRunArtifactsRef.current.length > 0
           const platformEntries = turnPlatformEntriesRef.current
           if (platformEntries.length > 0 && !hasArtifacts) {
@@ -11139,12 +11133,6 @@ useEffect(() => {
         dispatchSessionTurnEvent(targetSk, { type: 'SEALING' })
         dispatchSessionTurnEvent(targetSk, { type: 'SESSION_EVENT', at: Date.now() })
         flushPendingSessionTitle()
-        if (!isBackground) {
-          // 标题由后台异步生成并写库；合并为两次刷新（singleflight 会再合并叠请求），
-          // 避免 1.5s/4s/8s 三次全量 sessions 风暴堵住 /messages。
-          scheduleRefreshSessionsRef.current?.(1800)
-          window.setTimeout(() => { scheduleRefreshSessionsRef.current?.(0) }, 5500)
-        }
         const c = extractChatContent(payload.message)
         sfLog('ChatApp final enter', {
           sessionKey: targetSk,
@@ -11771,9 +11759,7 @@ useEffect(() => {
               sessionsRef.current.find((s) => String(s.sessionKey || '') === targetSk)?.title || '',
             ).trim() || '后台会话'
           toast(`${bgTitle}：回复已完成`, 'info')
-          void refreshSessionsRef.current?.({ skipAutoReselect: true, summariesOnly: true })
-        } else {
-          void refreshSessionsRef.current?.({ skipAutoReselect: true })
+          void syncSessionRowRef.current?.(targetSk)
         }
         const built = buildCollabSidebarFromTools(toolsForCollab) as {
           main: CollabTaskSnapshot | null
@@ -11942,9 +11928,6 @@ useEffect(() => {
         }
         flushPendingSessionTitle()
         scheduleBump({ immediate: true })
-        if (!isBackground) {
-          void refreshSessionsRef.current?.({ skipAutoReselect: true })
-        }
         const skPersist = String(targetSk || sessionRef.current || selectedSessionKey || '').trim()
         // 优化：仅当流式 final 未产出正文/工具时才拉 DB 对账（正常完成时流式内容即为权威值）
         // 注意：preferStreamTimeline=true 时正文在 segments 中，finalText(payload 文本)可能为空
@@ -11980,21 +11963,6 @@ useEffect(() => {
             body: '本轮 AI 回复已完成',
             tag: `chat-final:${skPersist}`,
           })
-        }
-        // TitleMiddleware writes LLM title to DB in background; pick it up after a short delay.
-        window.setTimeout(
-          () =>
-            void refreshSessionsRef.current?.({
-              skipAutoReselect: true,
-              summariesOnly: true,
-            }),
-          2500,
-        )
-        if (!isBackground) {
-          window.setTimeout(
-            () => void refreshSessionsRef.current?.({ skipAutoReselect: true, summariesOnly: true }),
-            8000,
-          )
         }
         return
       }
@@ -12815,7 +12783,17 @@ useEffect(() => {
     if (!liveProcessPanelEnabled) return
     backgroundWorksPollSigRef.current = ''
     let cancelled = false
+    let timer: number | null = null
+    const clearTimer = () => {
+      if (timer != null) {
+        window.clearTimeout(timer)
+        timer = null
+      }
+    }
     const tick = async () => {
+      timer = null
+      if (cancelled) return
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
       try {
         const works = await listBackgroundBashWorks({
           runningOnly: true,
@@ -12829,35 +12807,45 @@ useEffect(() => {
           .map((w) => `${w.workId}:${w.status}:${w.endedAt || 0}`)
           .sort()
           .join('|')
-        if (signature === backgroundWorksPollSigRef.current) return
+        const changed = signature !== backgroundWorksPollSigRef.current
         backgroundWorksPollSigRef.current = signature
-        for (const w of works) {
-          S.backgroundWorks[w.workId] = {
-            workId: w.workId,
-            kind: 'bash',
-            title: w.title || w.command || w.workId,
-            status: w.status || 'running',
-            startedAt: w.startedAt || Date.now(),
-            endedAt: w.endedAt,
-            cancellable: w.status === 'running' && w.cancellable !== false,
-            toolCallId: w.toolCallId || w.workId,
-            command: w.command,
+        if (changed) {
+          for (const w of works) {
+            S.backgroundWorks[w.workId] = {
+              workId: w.workId,
+              kind: 'bash',
+              title: w.title || w.command || w.workId,
+              status: w.status || 'running',
+              startedAt: w.startedAt || Date.now(),
+              endedAt: w.endedAt,
+              cancellable: w.status === 'running' && w.cancellable !== false,
+              toolCallId: w.toolCallId || w.workId,
+              command: w.command,
+            }
+          }
+          const sk = String(selectedSessionKey || '').trim()
+          if (sk) {
+            streamSeqRef.current += 1
+            commitStreamSnapshot(sk, S, { seq: streamSeqRef.current })
           }
         }
-        const sk = String(selectedSessionKey || '').trim()
-        if (sk) {
-          streamSeqRef.current += 1
-          commitStreamSnapshot(sk, S, { seq: streamSeqRef.current })
+        const stillRunning = works.some((w) => String(w.status || 'running') === 'running')
+        if (stillRunning && !cancelled) {
+          timer = window.setTimeout(() => void tick(), 2000)
         }
       } catch {
-        /* gateway may be down; the next tick retries */
+        /* gateway may be down; a later background_work event retries */
       }
     }
+    watchBackgroundBashRef.current = () => {
+      if (cancelled || timer != null) return
+      void tick()
+    }
     void tick()
-    const timer = window.setInterval(() => void tick(), 1000)
     return () => {
       cancelled = true
-      window.clearInterval(timer)
+      watchBackgroundBashRef.current = null
+      clearTimer()
     }
   }, [liveProcessPanelEnabled, selectedSessionKey, selectedThreadId])
 

@@ -1000,30 +1000,6 @@ export function WorkspaceFileTree({
             >
               <KvFolderIcon name="refresh" size={14} />
             </button>
-            <button
-              type="button"
-              className="kv-browse-action"
-              disabled={isSearchMode || loading}
-              onClick={() => {
-                setCreateDialog({ type: 'file', parentPath: relPath })
-                setCreateName('')
-              }}
-              title="新建文件"
-            >
-              <KvFolderIcon name="file" size={14} />
-            </button>
-            <button
-              type="button"
-              className="kv-browse-action"
-              disabled={isSearchMode || loading}
-              onClick={() => {
-                setCreateDialog({ type: 'folder', parentPath: relPath })
-                setCreateName('')
-              }}
-              title="新建文件夹"
-            >
-              <KvFolderIcon name="folder" size={14} />
-            </button>
           </div>
 
           <div className="kv-browse-extras">

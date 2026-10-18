@@ -71,8 +71,13 @@ export function WorkspaceFilePreviewPanel({
   const tid = String(threadId || '').trim()
   const path = normalizeWorkspaceReadPath(resolveWritePreviewPath(rawPath) || rawPath, root)
   const name = displayName || basename(path)
+  // 父组件常内联传 workspaceScopeOpts；用原始字段做依赖，避免会话轮询重渲染时反复 read-file
+  const configuredRoot = workspaceScopeOpts?.configuredRoot
+  const useVirtualPaths = workspaceScopeOpts?.useVirtualPaths
   const ticketRef = useRef(0)
+  const unchangedSilentRef = useRef(0)
   const [contentZoom, setContentZoom] = useState(PREVIEW_ZOOM_DEFAULT)
+  const [pollActive, setPollActive] = useState(!!poll)
   const zoomPercent = useMemo(() => Math.round(contentZoom * 100), [contentZoom])
 
   const zoomOut = useCallback(() => {
@@ -93,6 +98,23 @@ export function WorkspaceFilePreviewPanel({
     truncated: false,
     size: null,
   }))
+  const previewRef = useRef(preview)
+  previewRef.current = preview
+
+  useEffect(() => {
+    setPollActive(!!poll)
+    unchangedSilentRef.current = 0
+  }, [poll, path])
+
+  const noteSilentResult = useCallback((unchanged: boolean) => {
+    if (!unchanged) {
+      unchangedSilentRef.current = 0
+      return
+    }
+    unchangedSilentRef.current += 1
+    // 内容已稳定：连续 5 次静默拉取无变化后停轮询（约 4s）
+    if (unchangedSilentRef.current >= 5) setPollActive(false)
+  }, [])
 
   const fetchContent = useCallback(
     async (ticket: number, opts?: { silent?: boolean }) => {
@@ -131,71 +153,74 @@ export function WorkspaceFilePreviewPanel({
       }
       try {
         const { api } = await import('../../lib/tauri-api.js')
-        const data = await api.readWorkspaceFile(root, path, tid || undefined, workspaceScopeOpts)
+        const data = await api.readWorkspaceFile(root, path, tid || undefined, {
+          configuredRoot,
+          useVirtualPaths,
+        })
         if (ticketRef.current !== ticket) return
+        const prev = previewRef.current
         if (data?.binary) {
-          setPreview((prev) => {
-            if (silent && prev.binary && prev.path === path) return prev
-            return {
-              path,
-              name,
-              loading: false,
-              content: '',
-              error: null,
-              binary: true,
-              truncated: false,
-              size: data?.size ?? null,
-            }
+          const unchanged = !!(silent && prev.binary && prev.path === path)
+          if (silent) noteSilentResult(unchanged)
+          if (unchanged) return
+          setPreview({
+            path,
+            name,
+            loading: false,
+            content: '',
+            error: null,
+            binary: true,
+            truncated: false,
+            size: data?.size ?? null,
           })
           return
         }
         const nextContent = String(data?.content ?? '')
         const nextTruncated = !!data?.truncated
         const nextSize = data?.size ?? null
-        setPreview((prev) => {
-          if (
-            silent &&
-            prev.path === path &&
-            !prev.loading &&
-            !prev.error &&
-            !prev.binary &&
-            prev.content === nextContent &&
-            prev.truncated === nextTruncated &&
-            prev.size === nextSize
-          ) {
-            return prev
-          }
-          return {
-            path,
-            name,
-            loading: false,
-            content: nextContent,
-            error: null,
-            binary: false,
-            truncated: nextTruncated,
-            size: nextSize,
-          }
+        const unchanged = !!(
+          silent &&
+          prev.path === path &&
+          !prev.loading &&
+          !prev.error &&
+          !prev.binary &&
+          prev.content === nextContent &&
+          prev.truncated === nextTruncated &&
+          prev.size === nextSize
+        )
+        if (silent) noteSilentResult(unchanged)
+        if (unchanged) return
+        setPreview({
+          path,
+          name,
+          loading: false,
+          content: nextContent,
+          error: null,
+          binary: false,
+          truncated: nextTruncated,
+          size: nextSize,
         })
       } catch (e) {
         if (ticketRef.current !== ticket) return
         const msg = String((e as Error)?.message || e || '无法读取文件')
         const errText = formatWorkspaceReadError(msg, path)
-        setPreview((prev) => {
-          if (silent && prev.error === errText && prev.path === path) return prev
-          return {
-            path,
-            name,
-            loading: false,
-            content: '',
-            error: errText,
-            binary: false,
-            truncated: false,
-            size: null,
-          }
+        const prev = previewRef.current
+        const unchanged = !!(silent && prev.error === errText && prev.path === path)
+        if (silent) noteSilentResult(unchanged)
+        if (unchanged) return
+        setPreview({
+          path,
+          name,
+          loading: false,
+          content: '',
+          error: errText,
+          binary: false,
+          truncated: false,
+          size: null,
         })
       }
     },
-    [name, path, root, tid, workspaceScopeOpts],
+    [name, path, root, tid, configuredRoot, useVirtualPaths, noteSilentResult],
   )
 
   useEffect(() => {
@@ -207,12 +232,12 @@ export function WorkspaceFilePreviewPanel({
   }, [fetchContent, path])
 
   useEffect(() => {
-    if (!poll || preview.loading || preview.streaming || isWorkspaceMediaBinaryPath(path)) return
+    if (!pollActive || preview.loading || preview.streaming || isWorkspaceMediaBinaryPath(path)) return
     const id = window.setInterval(() => {
       void fetchContent(ticketRef.current, { silent: true })
     }, 800)
     return () => window.clearInterval(id)
-  }, [poll, preview.loading, preview.streaming, fetchContent, path])
+  }, [pollActive, preview.loading, preview.streaming, fetchContent, path])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {

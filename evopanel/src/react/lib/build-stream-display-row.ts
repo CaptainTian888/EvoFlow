@@ -112,24 +112,20 @@ function writeProgressFingerprint(s: StreamState): string {
   const parts: string[] = []
   const pushWp = (id: string, wp: Record<string, unknown> | undefined) => {
     if (!wp) return
-    const len =
-      typeof wp.content_len === 'number' && Number.isFinite(wp.content_len)
-        ? wp.content_len
-        : typeof wp.content === 'string'
-          ? wp.content.length
-          : 0
-    const bw =
-      typeof wp.bytes_written === 'number' && Number.isFinite(wp.bytes_written)
-        ? wp.bytes_written
-        : 0
+
     const phase = typeof wp.phase === 'string' ? wp.phase : ''
     const added = Number(wp.lines_added) || 0
     const removed = Number(wp.lines_removed) || 0
     // Path often arrives after the first content delta; include it so the live
     // tool-row brief can refresh from "…" to the target filename.
     const path = typeof wp.path === 'string' ? wp.path.trim() : ''
-    if (!len && !bw && !phase && !added && !removed && !path) return
-    parts.push(`${id}:${phase}:${len}:${bw}:${added}:${removed}:${path}`)
+    // ★ 性能修复：len/bw（bytes_written/content_len）每条 delta 都增长，若计入
+    // fingerprint 会导致 structuralKey 每 delta 变 → 缓存失效 → 每条 delta 走
+    // 全量重建（turnStateForStreamDisplay + isolateStreamProjection ≈ 400ms）。
+    // 只保留 phase/path/added/removed（低频变化），bytes 进度更新走增量路径
+    // （path 2 仍会重建投影并更新 row.tools，进度显示不受影响）。
+    if (!phase && !added && !removed && !path) return
+    parts.push(`${id}:${phase}:${added}:${removed}:${path}`)
   }
   if (s.aguiTurn) {
     for (const tc of s.aguiTurn.toolCalls.values()) {
@@ -301,6 +297,9 @@ export function buildStreamDisplayRow(
     return cached.row
   }
 
+  const _diagT0 = performance.now()
+  const _diagPath = cached ? 'path2/3' : 'no-cache'
+
   const activityLabel = String(s.turn.systemActivity || '').trim() || null
   const aguiProj = s.aguiTurn ? projectAgUiToStreamTurnFields(s.aguiTurn) : null
   const hasContent = streamRefHasVisibleContent(s)
@@ -357,7 +356,12 @@ export function buildStreamDisplayRow(
     // 正文只在 structural 事件时才一次性刷新 → 用户看到"积累一大段才显示"。
     // 渲染频率由上游 Rust 50ms 合并窗口（≤20Hz）+ MarkdownHtml rAF(16ms)
     // paint 节流兜底，不会造成 per-token 渲染风暴。
+    const _tA = performance.now()
     const p = isolateStreamProjection(turnStateForStreamDisplay(s), priorTurnStrip)
+    const _tB = performance.now()
+    if (_tB - _tA > 30) {
+      console.warn(`[buildRow-diag] ${_diagPath} incremental turnState+isolate=${(_tB-_tA).toFixed(1)}ms total=${(performance.now()-_diagT0).toFixed(1)}ms textLen=${textLen} compacted=${s.compactedParts?.length ?? 0} aguiMsgs=${s.aguiTurn?.messages?.size ?? 0} aguiOrder=${s.aguiTurn?.order?.length ?? 0} aguiCompatSegs=${s.aguiTurn?.compatSegments?.length ?? 0} tools=${s.turn?.tools?.length ?? 0}`)
+    }
     const cleaned = sanitizeLiveStreamDisplayFields(
       {
         text: p.text,
@@ -404,8 +408,15 @@ export function buildStreamDisplayRow(
     return row
   }
 
+  const _tC = performance.now()
   const p = isolateStreamProjection(turnStateForStreamDisplay(s), priorTurnStrip)
+  const _tD = performance.now()
   const row = finalizeStreamRow(s, p, priorTurnStrip, liveTurnTokenStr, suppressStreamFiles, isSending)
+  const _tE = performance.now()
+  if (_tE - _tC > 30) {
+    const agui = s.aguiTurn
+    console.warn(`[buildRow-diag] ${_diagPath} FULL turnState+isolate=${(_tD-_tC).toFixed(1)}ms finalize=${(_tE-_tD).toFixed(1)}ms total=${(_tE-_diagT0).toFixed(1)}ms textLen=${textLen} compacted=${s.compactedParts?.length ?? 0} aguiOrder=${agui?.order?.length ?? 0} aguiMsgs=${agui?.messages?.size ?? 0} aguiCompatSegs=${agui?.compatSegments?.length ?? 0} tools=${s.turn?.tools?.length ?? 0}`)
+  }
   if (sessionKey && row?.role === '_stream') {
     logStreamCompareAgUiInternals({
       sessionKey,
