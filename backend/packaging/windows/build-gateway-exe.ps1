@@ -117,7 +117,7 @@ try {
   Write-Host "[gateway-build] official-plugins-bundle OK ($($OfficialPluginDirs.Count) plugin dirs)"
 
   # Whisper ASR: opt-in only. openai-whisper pulls torch and blows past the
-  # lean sidecar budget (~564MB → ~1.1GB). Cloud ASR remains the default.
+  # lean sidecar budget (~564MB -> ~1.1GB). Cloud ASR remains the default.
   $bundleWhisper = $IncludeWhisper -or (
     $env:EVOFLOW_BUNDLE_WHISPER -and (
       $env:EVOFLOW_BUNDLE_WHISPER.Trim().ToLower() -in @("1", "true", "yes", "on")
@@ -187,7 +187,7 @@ try {
 
   Copy-Item -Path (Join-Path $DistDir "*") -Destination $OutputAbs -Recurse -Force
 
-  # Official plugins ship once via PyInstaller datas → _internal/evoflow/plugins/bundled_official.
+  # Official plugins ship once via PyInstaller datas -> _internal/evoflow/plugins/bundled_official.
   # Do not also copy packaging/official-plugins-bundle next to the exe (was a ~53MB duplicate).
   $OfficialTarget = Join-Path $OutputAbs "official-plugins-bundle"
   if (Test-Path -LiteralPath $OfficialTarget) {
@@ -196,7 +196,7 @@ try {
   }
   $BundledOfficial = Join-Path $OutputAbs "_internal\evoflow\plugins\bundled_official"
   if (-not (Test-Path -LiteralPath $BundledOfficial)) {
-    throw "[gateway-build] in-package bundled_official missing under $OutputAbs — check gateway.spec datas"
+    throw "[gateway-build] in-package bundled_official missing under $OutputAbs -- check gateway.spec datas"
   }
   Write-Host "[gateway-build] official plugins in-package -> $BundledOfficial"
 

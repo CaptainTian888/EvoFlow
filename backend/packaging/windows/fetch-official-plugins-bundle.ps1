@@ -185,7 +185,7 @@ if (Test-BundleReady $Dest) {
   exit 0
 }
 
-# All sources failed — generate stub bundle so CI build can proceed.
+# All sources failed -- generate stub bundle so CI build can proceed.
 Write-Host @"
 [fetch-official-plugins] WARNING: official-plugins-bundle is empty and no source was configured.
 Generating stub bundle so the build can proceed without real plugin binaries.
