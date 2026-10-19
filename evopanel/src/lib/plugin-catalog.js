@@ -44,7 +44,11 @@ function normalizePluginRow(row) {
     componentTypes: Array.isArray(row?.componentTypes)
       ? row.componentTypes.map((t) => String(t))
       : undefined,
-    iconUrl: listing?.icon ? String(listing.icon) : undefined,
+    iconUrl: listing?.icon
+      ? String(listing.icon)
+      : name
+        ? `/api/plugins/icon/${name}`
+        : undefined,
     enabled: row?.enabled !== false,
   }
 }

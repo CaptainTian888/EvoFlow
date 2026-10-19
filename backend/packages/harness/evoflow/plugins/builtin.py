@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 BUILTIN_DIR = Path(__file__).parent / "builtin"
 
-SEED_MANIFEST_VERSION = 13  # v13: seed icons from packaged bundle / local icons dir
+SEED_MANIFEST_VERSION = 14  # v14: empty marketplace must reseed; icons from local icons dir
 
 # 面向用户展示的 listing 文案统一使用 EvoFlow 品牌（这是 EvoFlow 平台的市场）。
 # 仅替换文本字段；插件 name slug、icon URL 等标识保持原样。
@@ -387,7 +387,13 @@ def seed_official_marketplace(storage_root: Path) -> dict[str, Any]:
     from .storage import load_marketplace_manifest_cached, save_marketplace_manifest_cache
 
     existing = load_marketplace_manifest_cached(storage_root, EVOFLOW_OFFICIAL_PLUGIN_MARKETPLACE)
-    if existing is not None and existing.raw.get("__seededVersion") == SEED_MANIFEST_VERSION:
+    existing_plugins = existing.raw.get("plugins") if existing is not None else None
+    if (
+        existing is not None
+        and existing.raw.get("__seededVersion") == SEED_MANIFEST_VERSION
+        and isinstance(existing_plugins, list)
+        and existing_plugins
+    ):
         _cleanup_excluded_installed_plugins(storage_root)
         return existing.raw
     manifest = build_official_marketplace_manifest()
@@ -447,6 +453,14 @@ def _localize_official_icons(storage_root: Path, manifest: dict[str, Any]) -> No
 
 
 _ICON_SUFFIXES = (".png", ".jpg", ".jpeg", ".svg", ".webp")
+
+
+def local_plugin_icon_api_path(storage_root: Path, name: str) -> str | None:
+    """API path when ``<storage>/icons/<name>.<ext>`` already exists on disk."""
+    safe = str(name or "").strip()
+    if not safe or _find_icon_file(icons_dir(storage_root), safe) is None:
+        return None
+    return f"/api/plugins/icon/{safe}"
 
 
 def _find_icon_file(directory: Path, name: str) -> Path | None:

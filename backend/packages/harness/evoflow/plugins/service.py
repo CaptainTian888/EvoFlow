@@ -16,7 +16,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .builtin import EVOFLOW_OFFICIAL_PLUGIN_MARKETPLACE, EXCLUDED_OFFICIAL_PLUGINS, seed_official_marketplace
+from .builtin import (
+    EVOFLOW_OFFICIAL_PLUGIN_MARKETPLACE,
+    EXCLUDED_OFFICIAL_PLUGINS,
+    local_plugin_icon_api_path,
+    seed_official_marketplace,
+)
 from .components import component_types_from_groups, enumerate_plugin_components
 from .manifest import (
     DEFAULT_VERSION,
@@ -72,6 +77,25 @@ def _ulog(message: str) -> None:
 
 def _diagnostic_to_json(diagnostic: PluginDiagnostic) -> dict[str, Any]:
     return diagnostic.to_json()
+
+
+def _listing_with_local_icon(
+    storage_root: Path, name: str, listing: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """Point the picker at ``/api/plugins/icon/<name>`` when a png is already on disk.
+
+    Installed builds can have an empty marketplace listing (bundle not discovered)
+    while ``<storage>/icons`` still holds the files from an earlier seed.
+    """
+    icon = str((listing or {}).get("icon") or "").strip()
+    if icon.startswith(("/api/plugins/icon/", "http://", "https://")):
+        return listing
+    local = local_plugin_icon_api_path(storage_root, name)
+    if not local:
+        return listing
+    merged = dict(listing or {})
+    merged["icon"] = local
+    return merged
 
 
 class PluginManagementService:
@@ -560,6 +584,7 @@ class PluginManagementService:
             summary["description"] = manifest.description
         if record.installPath:
             summary["installPath"] = record.installPath
+        listing = _listing_with_local_icon(self.storage_root, record.name, listing)
         if listing:
             summary["listing"] = listing
         return summary
