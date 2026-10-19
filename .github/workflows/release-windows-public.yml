@@ -208,5 +208,5 @@ jobs:
           if ($LASTEXITCODE -eq 0) {
             gh release upload $tag --clobber $files
           } else {
-            gh release create $tag --title "EvoFlow $ver" --notes-file $notes $files
+            gh release create $tag --title "Captain Work $ver" --notes-file $notes $files
           }
