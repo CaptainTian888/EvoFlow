@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 BUILTIN_DIR = Path(__file__).parent / "builtin"
 
-SEED_MANIFEST_VERSION = 12  # v12: require packaged product plugins; demos optional
+SEED_MANIFEST_VERSION = 13  # v13: seed icons from packaged bundle / local icons dir
 
 # 面向用户展示的 listing 文案统一使用 EvoFlow 品牌（这是 EvoFlow 平台的市场）。
 # 仅替换文本字段；插件 name slug、icon URL 等标识保持原样。
@@ -393,7 +393,7 @@ def seed_official_marketplace(storage_root: Path) -> dict[str, Any]:
     manifest = build_official_marketplace_manifest()
     manifest["__seededVersion"] = SEED_MANIFEST_VERSION
     _localize_official_icons(storage_root, manifest)
-    _seed_builtin_plugin_icons(storage_root, manifest)
+    _seed_local_plugin_icons(storage_root, manifest)
     save_marketplace_manifest_cache(storage_root, manifest)
     _install_default_enabled_plugins(storage_root, manifest)
     _cleanup_excluded_installed_plugins(storage_root)
@@ -446,30 +446,74 @@ def _localize_official_icons(storage_root: Path, manifest: dict[str, Any]) -> No
         entry["icon"] = f"/api/plugins/icon/{name}"
 
 
-def _seed_builtin_plugin_icons(storage_root: Path, manifest: dict[str, Any]) -> None:
-    """Copy local icon.png from builtin plugin directories into ``<storage>/icons``."""
+_ICON_SUFFIXES = (".png", ".jpg", ".jpeg", ".svg", ".webp")
+
+
+def _find_icon_file(directory: Path, name: str) -> Path | None:
+    if not directory.is_dir():
+        return None
+    for suffix in _ICON_SUFFIXES:
+        candidate = directory / f"{name}{suffix}"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _seed_local_plugin_icons(storage_root: Path, manifest: dict[str, Any]) -> None:
+    """Populate ``<storage>/icons`` and rewrite listing ``icon`` to local API paths.
+
+    Sources (in order): packaged ``official-plugins-bundle/icons``,
+    ``cachePath/icon.png``, then any icon already present under storage.
+    """
     target_dir = icons_dir(storage_root)
+    bundled = discover_bundled_official_cache()
+    bundled_icons = (bundled / "icons") if bundled is not None else None
+
     for entry in manifest.get("plugins", []):
         if not isinstance(entry, dict):
             continue
         name = str(entry.get("name") or "").strip()
-        source = str(entry.get("source") or "").strip()
-        if not name or source != "filesystem":
+        if not name:
             continue
+
+        # 1) Packaged installer icons (offline).
+        if bundled_icons is not None:
+            packaged = _find_icon_file(bundled_icons, name)
+            if packaged is not None:
+                dest = target_dir / packaged.name
+                if not dest.is_file():
+                    try:
+                        target_dir.mkdir(parents=True, exist_ok=True)
+                        dest.write_bytes(packaged.read_bytes())
+                    except OSError as error:
+                        logger.info("Packaged icon copy failed for %s: %s", name, error)
+                if dest.is_file() or packaged.is_file():
+                    entry["icon"] = f"/api/plugins/icon/{name}"
+                    continue
+
+        # 2) Per-plugin icon.png next to the plugin root (demos / filesystem).
         cache_path = entry.get("cachePath")
-        if not cache_path:
-            continue
-        builtin_icon = Path(cache_path) / "icon.png"
-        if not builtin_icon.is_file():
-            continue
-        target = target_dir / f"{name}.png"
-        if target.is_file():
-            continue
-        try:
-            target_dir.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(builtin_icon.read_bytes())
-        except Exception as error:  # noqa: BLE001 - icon is cosmetic
-            logger.info("Builtin icon copy failed for %s: %s", name, error)
+        if cache_path:
+            builtin_icon = Path(str(cache_path)) / "icon.png"
+            if builtin_icon.is_file():
+                dest = target_dir / f"{name}.png"
+                if not dest.is_file():
+                    try:
+                        target_dir.mkdir(parents=True, exist_ok=True)
+                        dest.write_bytes(builtin_icon.read_bytes())
+                    except OSError as error:
+                        logger.info("Builtin icon copy failed for %s: %s", name, error)
+                if dest.is_file() or builtin_icon.is_file():
+                    entry["icon"] = f"/api/plugins/icon/{name}"
+                    continue
+
+        # 3) Already cached from a prior CDN download — still wire the API path.
+        if _find_icon_file(target_dir, name) is not None:
+            entry["icon"] = f"/api/plugins/icon/{name}"
+
+
+# Back-compat alias for tests / callers that still monkeypatch the old name.
+_seed_builtin_plugin_icons = _seed_local_plugin_icons
 
 
 def _install_default_enabled_plugins(storage_root: Path, manifest: dict[str, Any]) -> None:

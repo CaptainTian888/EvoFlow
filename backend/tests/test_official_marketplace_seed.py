@@ -91,3 +91,40 @@ def test_seed_version_bump_rewrites_cache(
     cached = load_marketplace_manifest_cached(storage, "evoflow-plugins-official")
     assert cached is not None
     assert cached.raw.get("__seededVersion") == SEED_MANIFEST_VERSION
+
+
+def test_seed_attaches_packaged_and_cached_icons(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    cache = tmp_path / "bundle"
+    browser = cache / "browser-use" / "0.5.1"
+    browser.mkdir(parents=True)
+    (browser / ".evoflow-plugin").mkdir()
+    (browser / ".evoflow-plugin" / "plugin.json").write_text(
+        '{"name":"browser-use","version":"0.5.1"}',
+        encoding="utf-8",
+    )
+    icons = cache / "icons"
+    icons.mkdir()
+    (icons / "browser-use.png").write_bytes(b"\x89PNG\r\n\x1a\npackaged")
+
+    storage = tmp_path / "plugins"
+    # Pre-existing CDN download for computer-use (no packaged icon).
+    (storage / "icons").mkdir(parents=True)
+    (storage / "icons" / "computer-use.png").write_bytes(b"\x89PNG\r\n\x1a\ncached")
+    computer = cache / "computer-use" / "0.6.4"
+    computer.mkdir(parents=True)
+    (computer / ".evoflow-plugin").mkdir()
+    (computer / ".evoflow-plugin" / "plugin.json").write_text(
+        '{"name":"computer-use","version":"0.6.4"}',
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(builtin_mod, "discover_bundled_official_cache", lambda: cache)
+    monkeypatch.setattr(builtin_mod, "_localize_official_icons", lambda *_a, **_k: None)
+
+    seeded = seed_official_marketplace(storage)
+    by_name = {p["name"]: p for p in seeded["plugins"]}
+    assert by_name["browser-use"]["icon"] == "/api/plugins/icon/browser-use"
+    assert by_name["computer-use"]["icon"] == "/api/plugins/icon/computer-use"
+    assert (storage / "icons" / "browser-use.png").read_bytes().endswith(b"packaged")

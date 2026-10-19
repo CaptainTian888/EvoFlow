@@ -223,6 +223,31 @@ $marketplacePath = Join-Path $Dest "marketplace.json"
 $json = $marketplace | ConvertTo-Json -Depth 8
 [System.IO.File]::WriteAllText($marketplacePath, $json, [System.Text.UTF8Encoding]::new($false))
 
+# Copy plugin icons from …/plugins/icons (sibling of cache/) into the bundle.
+# Source layout: <plugins>/cache/evoflow-plugins-official  →  <plugins>/icons
+$iconSrc = Join-Path (Split-Path -Parent (Split-Path -Parent $resolvedSource)) "icons"
+if (-not (Test-Path -LiteralPath $iconSrc)) {
+  $iconSrc = Join-Path (Split-Path -Parent $resolvedSource) "icons"
+}
+$iconDest = Join-Path $Dest "icons"
+if (Test-Path -LiteralPath $iconSrc) {
+  New-Item -ItemType Directory -Path $iconDest -Force | Out-Null
+  $iconCopied = 0
+  foreach ($name in $RequiredPlugins) {
+    foreach ($ext in @(".png", ".jpg", ".jpeg", ".svg", ".webp")) {
+      $srcIcon = Join-Path $iconSrc ($name + $ext)
+      if (Test-Path -LiteralPath $srcIcon) {
+        Copy-Item -LiteralPath $srcIcon -Destination (Join-Path $iconDest ($name + $ext)) -Force
+        $iconCopied++
+        break
+      }
+    }
+  }
+  Write-Host "[sync-official-plugins] copied $iconCopied icons from $iconSrc"
+} else {
+  Write-Host "[sync-official-plugins] WARNING: no icons dir next to source cache ($iconSrc); store may lack icons until CDN/local seed"
+}
+
 # Validate required presence.
 $missing = @()
 foreach ($name in $RequiredPlugins) {
