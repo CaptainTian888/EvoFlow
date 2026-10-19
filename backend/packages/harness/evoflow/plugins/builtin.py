@@ -1,20 +1,14 @@
-"""Builtin official marketplace seeding (ZCode ``bundled-plugins`` parity).
+"""Builtin official marketplace seeding.
 
-The official marketplace mirrors ZCode's own bundled seed semantics:
+The store lists only plugins shipped with EvoFlow:
 
-- When a ZCode CLI installation with the official plugin cache exists on this
-  machine (``~/.zcode/cli/plugins/cache/zcode-plugins-official``), its plugins
-  (browser-use / computer-use / documents / pdf / presentations / spreadsheets /
-  zcode-guide / skill-creator / ...) are exposed with ``filesystem`` sources
-  pointing at that cache — the same mechanism ZCode uses for its bundled seed.
-  Entries carry the real official store listings (displayName_i18n / category /
-  icon) copied from ZCode's official marketplace manifest.
-- ``DEFAULT_ENABLED_OFFICIAL_PLUGINS`` mirrors ZCode's ``defaultEnabled``
-  content-only plugins: they are installed + enabled automatically on first
-  seed so users get them out of the box (computer-use stays default-off, also
-  matching ZCode).
-- When no ZCode cache exists, the marketplace falls back to two self-contained
-  demo plugins shipped inside this package so the store is never empty.
+1. **Packaged bundle** — ``EVOFLOW_BUNDLED_PLUGINS_ROOT``,
+   ``evoflow/plugins/bundled_official``, or the gateway sidecar
+   ``official-plugins-bundle``. Each ``<name>/<version>/`` directory becomes a
+   filesystem marketplace entry.
+2. **Shipped demos** — ``evoflow-guide`` / ``hello-command`` / ``evoflow-skill-kit``.
+
+No external plugin cache or remote catalog is consulted.
 """
 
 from __future__ import annotations
@@ -22,6 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -32,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 BUILTIN_DIR = Path(__file__).parent / "builtin"
 
-SEED_MANIFEST_VERSION = 9  # v9: computer-use 加入 defaultEnabled（存量安装补装）
+SEED_MANIFEST_VERSION = 12  # v12: require packaged product plugins; demos optional
 
 # 面向用户展示的 listing 文案统一使用 EvoFlow 品牌（这是 EvoFlow 平台的市场）。
 # 仅替换文本字段；插件 name slug、icon URL 等标识保持原样。
@@ -74,13 +69,11 @@ def _rebrand_entry_text(entry: dict[str, Any]) -> None:
         if isinstance(name, str) and "zcode" in name.lower():
             author["name"] = _rebrand_listing_text(name)
 
-# ZCode official plugin ids exposed in the marketplace (node-repl-host is the
-# hidden host runtime and intentionally excluded, matching ZCode).
-EXCLUDED_OFFICIAL_PLUGINS = {"node-repl-host", "zcode-guide", "hello-command", "evoflow-skill-kit"}
 
-# ZCode ``defaultEnabled`` content-only plugins — auto-installed + enabled.
-# computer-use：产品决策默认启用（ZCode 官方默认关，EvoFlow 打开——helper 运行时
-# 首次调用时自愈复制，无 ZCode 安装的机器走 v1 视觉兜底，不阻塞启动）。
+# Host / helper runtimes and legacy guide slugs — not shown in the store.
+EXCLUDED_OFFICIAL_PLUGINS = {"node-repl-host", "cua-helper", "zcode-guide"}
+
+# Auto-installed + enabled when packaged files resolve.
 DEFAULT_ENABLED_OFFICIAL_PLUGINS = {
     "browser-use",
     "computer-use",
@@ -94,45 +87,98 @@ DEFAULT_ENABLED_OFFICIAL_PLUGINS = {
     "evoflow-guide",
 }
 
-ZCODE_OFFICIAL_MARKETPLACE_ID = "zcode-plugins-official"
+# Core product plugins expected under packaging/official-plugins-bundle.
+BUNDLED_OFFICIAL_PLUGIN_NAMES = (
+    "browser-use",
+    "computer-use",
+    "documents",
+    "pdf",
+    "presentations",
+    "spreadsheets",
+    "image-search",
+    "plugin-creator",
+    "skill-creator",
+    "node-repl-host",
+)
 
 
 def builtin_plugin_dir(name: str) -> Path:
     return BUILTIN_DIR / "plugins" / name
 
 
-def _zcode_official_cache_candidates() -> list[Path]:
-    override = os.getenv("EVOFLOW_ZCODE_PLUGINS_CACHE_ROOT", "").strip()
+def _path_nonempty_dir(path: Path) -> bool:
+    """True when ``path`` has at least one plugin subdirectory (ignore lone .gitignore)."""
+    try:
+        if not path.is_dir():
+            return False
+        return any(child.is_dir() for child in path.iterdir())
+    except OSError:
+        return False
+
+
+def _bundled_official_cache_candidates() -> list[Path]:
+    """Installer / PyInstaller / dev packaging locations for official plugins."""
     candidates: list[Path] = []
+    override = os.getenv("EVOFLOW_BUNDLED_PLUGINS_ROOT", "").strip()
     if override:
         candidates.append(Path(override))
-    home = Path.home()
-    candidates.append(home / ".zcode" / "cli" / "plugins" / "cache" / ZCODE_OFFICIAL_MARKETPLACE_ID)
-    candidates.append(home / ".zcode" / "plugins" / "cache" / ZCODE_OFFICIAL_MARKETPLACE_ID)
+    # In-package path (PyInstaller datas → evoflow/plugins/bundled_official).
+    candidates.append(Path(__file__).resolve().parent / "bundled_official")
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        candidates.append(Path(meipass) / "evoflow" / "plugins" / "bundled_official")
+    if getattr(sys, "frozen", False):
+        exe_dir = Path(sys.executable).resolve().parent
+        candidates.append(exe_dir / "official-plugins-bundle")
+        candidates.append(exe_dir / "bundled_official")
+    # Dev tree: backend/packaging/official-plugins-bundle
+    try:
+        backend_root = Path(__file__).resolve().parents[4]
+        candidates.append(backend_root / "packaging" / "official-plugins-bundle")
+    except IndexError:
+        pass
     return candidates
 
 
-def discover_zcode_official_cache() -> Path | None:
-    """Latest ZCode official plugin cache root on this machine, if any."""
-    for candidate in _zcode_official_cache_candidates():
-        if candidate.is_dir() and any(candidate.iterdir()):
+def discover_bundled_official_cache() -> Path | None:
+    """Official plugins shipped with the EvoFlow installer / packaging tree."""
+    for candidate in _bundled_official_cache_candidates():
+        if _path_nonempty_dir(candidate):
             return candidate
     return None
 
 
-def _load_zcode_official_manifest() -> dict[str, Any] | None:
-    for base in (
-        Path.home() / ".zcode" / "cli" / "plugins" / "marketplaces" / ZCODE_OFFICIAL_MARKETPLACE_ID,
-        Path.home() / ".zcode" / "plugins" / "marketplaces" / ZCODE_OFFICIAL_MARKETPLACE_ID,
+def discover_official_plugin_cache() -> Path | None:
+    """Plugins shipped inside this EvoFlow build."""
+    return discover_bundled_official_cache()
+
+
+def _load_json_object(path: Path) -> dict[str, Any] | None:
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return None
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        text = raw.decode("utf-16")
+    else:
+        text = raw.decode("utf-8")
+    try:
+        payload = json.loads(text)
+    except ValueError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _load_bundled_marketplace_manifest(cache_root: Path | None) -> dict[str, Any] | None:
+    if cache_root is None:
+        return None
+    for path in (
+        cache_root / "marketplace.json",
+        cache_root.parent / "marketplace.json",
     ):
-        manifest_path = base / "marketplace.json"
-        if manifest_path.is_file():
-            try:
-                payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                continue
-            if isinstance(payload, dict) and isinstance(payload.get("plugins"), list):
-                return payload
+        payload = _load_json_object(path)
+        if payload is not None and isinstance(payload.get("plugins"), list):
+            return payload
     return None
 
 
@@ -147,13 +193,26 @@ def _latest_cache_version_dir(cache_root: Path, plugin_name: str) -> Path | None
     return version_dirs[-1] if version_dirs else None
 
 
+def _resolve_cache_version(cache_roots: list[Path], plugin_name: str) -> Path | None:
+    for root in cache_roots:
+        resolved = _latest_cache_version_dir(root, plugin_name)
+        if resolved is not None:
+            return resolved
+    return None
+
+
 def _demo_marketplace_manifest() -> dict[str, Any]:
-    plugins: list[dict[str, Any]] = [
+    """Dev-tree demos only when their source dirs exist (not packed into installers)."""
+    candidates: list[dict[str, Any]] = [
         {
             "name": "evoflow-guide",
             "displayName": "EvoFlow Guide",
             "displayName_i18n": {"zh-CN": "EvoFlow 使用与诊断指南"},
-            "description": "EvoFlow usage and self-diagnosis guide: teaches agents and users how to configure MCP servers, commands, skills, hooks, and plugins, and how to locate and fix configuration problems for each.",
+            "description": (
+                "EvoFlow usage and self-diagnosis guide: teaches agents and users how to "
+                "configure MCP servers, commands, skills, hooks, and plugins, and how to "
+                "locate and fix configuration problems for each."
+            ),
             "version": "1.0.0",
             "category": "guides",
             "tags": ["guide", "diagnostics", "configuration"],
@@ -162,7 +221,35 @@ def _demo_marketplace_manifest() -> dict[str, Any]:
             "cachePath": str(builtin_plugin_dir("evoflow-guide")),
             "icon": "/api/plugins/icon/evoflow-guide",
         },
-
+        {
+            "name": "hello-command",
+            "displayName": "Hello Command",
+            "displayName_i18n": {"zh-CN": "Hello 命令示例"},
+            "description": "Demo slash-command plugin shipped with EvoFlow.",
+            "version": "1.0.0",
+            "category": "demos",
+            "author": {"name": "EvoFlow"},
+            "source": "filesystem",
+            "cachePath": str(builtin_plugin_dir("hello-command")),
+            "icon": "/api/plugins/icon/hello-command",
+        },
+        {
+            "name": "evoflow-skill-kit",
+            "displayName": "EvoFlow Skill Kit",
+            "displayName_i18n": {"zh-CN": "EvoFlow 技能示例包"},
+            "description": "Demo skill plugin shipped with EvoFlow.",
+            "version": "1.0.0",
+            "category": "demos",
+            "author": {"name": "EvoFlow"},
+            "source": "filesystem",
+            "cachePath": str(builtin_plugin_dir("evoflow-skill-kit")),
+            "icon": "/api/plugins/icon/evoflow-skill-kit",
+        },
+    ]
+    plugins = [
+        entry
+        for entry in candidates
+        if Path(str(entry["cachePath"])).is_dir()
     ]
     return {
         "name": EVOFLOW_OFFICIAL_PLUGIN_MARKETPLACE,
@@ -171,37 +258,91 @@ def _demo_marketplace_manifest() -> dict[str, Any]:
     }
 
 
-def build_official_marketplace_manifest() -> dict[str, Any]:
-    """Compose the official marketplace manifest.
+def _entry_from_listing(raw: dict[str, Any], cache_roots: list[Path]) -> dict[str, Any] | None:
+    """Keep a bundled listing row only when the plugin files are in the package."""
+    name = str(raw.get("name") or "").strip()
+    if not name or name in EXCLUDED_OFFICIAL_PLUGINS:
+        return None
+    resolved = _resolve_cache_version(cache_roots, name)
+    if resolved is None:
+        return None
+    entry = dict(raw)
+    _rebrand_entry_text(entry)
+    entry["source"] = "filesystem"
+    entry["cachePath"] = str(resolved)
+    if not entry.get("version"):
+        entry["version"] = resolved.name
+    return entry
 
-    Mirrors ZCode's bundled official plugins from the local ZCode installation
-    when available; the shipped demo plugins are always appended so the store
-    stays installable on any machine.
-    """
+
+def _synthesize_filesystem_entries(
+    cache_roots: list[Path],
+    listing_by_name: dict[str, dict[str, Any]],
+    seen: set[str],
+) -> list[dict[str, Any]]:
+    """Expose every packaged ``<name>/<version>/`` directory."""
+    out: list[dict[str, Any]] = []
+    for root in cache_roots:
+        try:
+            children = list(root.iterdir())
+        except OSError:
+            continue
+        for child in children:
+            if not child.is_dir():
+                continue
+            name = child.name
+            if name in seen or name in EXCLUDED_OFFICIAL_PLUGINS:
+                continue
+            if name in {"marketplace.json"}:
+                continue
+            resolved = _latest_cache_version_dir(root, name)
+            if resolved is None:
+                continue
+            raw = dict(listing_by_name.get(name) or {"name": name})
+            raw.setdefault("version", resolved.name)
+            raw.setdefault("displayName", name)
+            raw["source"] = "filesystem"
+            raw["cachePath"] = str(resolved)
+            _rebrand_entry_text(raw)
+            seen.add(name)
+            out.append(raw)
+    return out
+
+
+def build_official_marketplace_manifest() -> dict[str, Any]:
+    """Compose the official marketplace manifest for seed / store UI."""
     plugins: list[dict[str, Any]] = []
     seen: set[str] = set()
 
-    cache_root = discover_zcode_official_cache()
-    official_manifest = _load_zcode_official_manifest() if cache_root else None
-    if cache_root and official_manifest:
-        for raw in official_manifest.get("plugins", []):
+    cache_roots: list[Path] = []
+    bundled = discover_bundled_official_cache()
+    if bundled is not None:
+        cache_roots.append(bundled)
+
+    listing = _load_bundled_marketplace_manifest(bundled)
+    listing_by_name: dict[str, dict[str, Any]] = {}
+    if listing:
+        for raw in listing.get("plugins", []):
             if not isinstance(raw, dict):
                 continue
             name = str(raw.get("name") or "").strip()
-            if not name or name in seen or name in EXCLUDED_OFFICIAL_PLUGINS:
+            if name:
+                listing_by_name[name] = raw
+
+    if listing:
+        for raw in listing.get("plugins", []):
+            if not isinstance(raw, dict):
                 continue
-            entry = dict(raw)
-            _rebrand_entry_text(entry)
-            resolved = _latest_cache_version_dir(cache_root, name)
-            if resolved is not None:
-                # 有本地缓存的内置插件：与 ZCode bundled seed 相同的 filesystem + cachePath 语义。
-                entry["source"] = "filesystem"
-                entry["cachePath"] = str(resolved)
-                if not entry.get("version"):
-                    entry["version"] = resolved.name
-            # 其余条目（CDN zip 源等）原样保留 source，商店目录与 ZCode 1:1。
+            entry = _entry_from_listing(raw, cache_roots)
+            if entry is None:
+                continue
+            name = str(entry.get("name") or "")
+            if not name or name in seen:
+                continue
             seen.add(name)
             plugins.append(entry)
+
+    plugins.extend(_synthesize_filesystem_entries(cache_roots, listing_by_name, seen))
 
     for demo in _demo_marketplace_manifest()["plugins"]:
         if demo["name"] in seen:
@@ -212,11 +353,11 @@ def build_official_marketplace_manifest() -> dict[str, Any]:
     if not plugins:
         return _demo_marketplace_manifest()
 
-    description = (
-        "EvoFlow 官方插件市场（与 EvoFlow 官方市场 1:1 对齐）。"
-        if cache_root and official_manifest
-        else "EvoFlow 官方插件市场（内置示例，离线可用）。"
-    )
+    if cache_roots:
+        description = "EvoFlow 官方插件市场（安装包内置插件）。"
+    else:
+        description = "EvoFlow 官方插件市场（内置示例）。"
+
     return {
         "name": EVOFLOW_OFFICIAL_PLUGIN_MARKETPLACE,
         "description": description,
@@ -268,7 +409,7 @@ def icons_dir(storage_root: Path) -> Path:
 def _localize_official_icons(storage_root: Path, manifest: dict[str, Any]) -> None:
     """Download official CDN icons once into ``<storage>/icons`` and rewrite the
     manifest icon fields to the local ``/api/plugins/icon/<name>`` endpoint, so
-    the store shows real ZCode plugin icons without a browser-side CDN round trip."""
+    the store shows real plugin icons without a browser-side CDN round trip."""
     import httpx
 
     target_dir = icons_dir(storage_root)
@@ -288,7 +429,12 @@ def _localize_official_icons(storage_root: Path, manifest: dict[str, Any]) -> No
                 with httpx.Client(follow_redirects=True, timeout=ICON_DOWNLOAD_TIMEOUT_SEC) as client:
                     response = client.get(icon_url)
                 if response.status_code != 200 or len(response.content) > ICON_MAX_BYTES:
-                    logger.info("Icon download skipped for %s (status=%s size=%s)", name, response.status_code, len(response.content))
+                    logger.info(
+                        "Icon download skipped for %s (status=%s size=%s)",
+                        name,
+                        response.status_code,
+                        len(response.content),
+                    )
                     continue
                 target_dir.mkdir(parents=True, exist_ok=True)
                 local_path.write_bytes(response.content)
@@ -299,12 +445,7 @@ def _localize_official_icons(storage_root: Path, manifest: dict[str, Any]) -> No
 
 
 def _seed_builtin_plugin_icons(storage_root: Path, manifest: dict[str, Any]) -> None:
-    """Copy local icon.png from builtin plugin directories into ``<storage>/icons``.
-
-    Builtin plugins (filesystem source, shipped in this package) carry their
-    icon next to the manifest; CDN download does not apply. Without this step
-    the ``/api/plugins/icon/<name>`` endpoint has no file to serve.
-    """
+    """Copy local icon.png from builtin plugin directories into ``<storage>/icons``."""
     target_dir = icons_dir(storage_root)
     for entry in manifest.get("plugins", []):
         if not isinstance(entry, dict):
@@ -330,7 +471,7 @@ def _seed_builtin_plugin_icons(storage_root: Path, manifest: dict[str, Any]) -> 
 
 
 def _install_default_enabled_plugins(storage_root: Path, manifest: dict[str, Any]) -> None:
-    """Auto-install + enable ZCode ``defaultEnabled`` content-only plugins."""
+    """Auto-install + enable default-enabled official plugins when resolvable."""
     from datetime import datetime, timezone
 
     from .manifest import parse_marketplace_manifest, resolve_installed_plugin_version

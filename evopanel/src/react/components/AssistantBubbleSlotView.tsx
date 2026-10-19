@@ -68,7 +68,15 @@ function AssistantBubbleSlotViewInner({
   interactiveToolApproval: boolean
   subagentTasks?: Record<string, SubagentStreamTask>
   terminalStreams?: Record<string, TerminalStreamTask>
-  onOpenFile?: (rawUrl: string, name?: string) => void
+  onOpenFile?: (
+    rawUrl: string,
+    name?: string,
+    opts?: {
+      line?: number
+      endLine?: number
+      annotation?: { title?: string; body?: string; priority?: number }
+    },
+  ) => void
   onToolApproval?: (
     action: 'approve' | 'approve_all' | 'deny' | 'grant_all' | 'approve_remember',
     toolCallId?: string,

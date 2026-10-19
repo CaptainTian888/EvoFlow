@@ -113,7 +113,15 @@ function ExploringActivityChunkInner({
   hideSubagentInnerTools?: boolean
   showToolTiming?: boolean
   sessionKey?: string
-  onOpenFile?: (rawUrl: string, name?: string) => void
+  onOpenFile?: (
+    rawUrl: string,
+    name?: string,
+    opts?: {
+      line?: number
+      endLine?: number
+      annotation?: { title?: string; body?: string; priority?: number }
+    },
+  ) => void
   compareSessionKey?: string
   onOpenKnowledgeMap?: () => void
   hasFinalReplyBelow?: boolean
@@ -224,6 +232,7 @@ function ExploringActivityChunkInner({
               /* 轮内正文用正常 Markdown，勿走 msg-stream-plain 黑框纯文本 */
               isStreaming={false}
               onOpenWorkspaceFile={onOpenFile}
+              enableCodeComments
             />
           </div>
         )

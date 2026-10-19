@@ -849,6 +849,9 @@ fn kill_ports(ports: &[u16]) {
             let mut cmd = Command::new("powershell");
             cmd.args([
                 "-NoProfile",
+                "-WindowStyle",
+                "Hidden",
+                "-NonInteractive",
                 "-Command",
                 &format!(
                     "Get-NetTCPConnection -LocalPort {port} -State Listen -ErrorAction SilentlyContinue | ForEach-Object {{ Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }}"

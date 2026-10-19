@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../../lib/tauri-api.js'
-import { StreamdownRenderer } from './StreamdownRenderer.js'
+import { MarkdownHtml } from './MarkdownHtml.js'
 import { resolveHistoryMessageContent } from '../../lib/chat-normalize.js'
 
 type LeadMessage = {
@@ -117,7 +117,11 @@ export function LeadConversationPanel({
             </div>
             {msg.content ? (
               <div className="message-content markdown-body">
-                <StreamdownRenderer text={msg.content} className="" />
+                <MarkdownHtml
+                  text={msg.content}
+                  className=""
+                  enableCodeComments={!isUser}
+                />
               </div>
             ) : null}
           </div>

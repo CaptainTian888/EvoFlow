@@ -1,18 +1,16 @@
-r"""ZCode CUA helper runtime for EvoFlow — discovery, self-healing copy, kernel env.
+r"""CUA helper runtime for EvoFlow — discovery, self-healing copy, kernel env.
 
-ZCode 的 14 个电脑控制工具面实现在 node-repl-host 的 broker 模块里，helper
-（windows-helper.js + ax_native.node 原生插件）只提供底层原语（UIA 读写、截图、
-SendInput、应用枚举与图标提取）。宿主 broker 的激活条件是两个环境变量：
+电脑控制工具面由 node-repl-host broker 提供；helper（windows-helper.js +
+ax_native.node）只做底层原语（UIA / 截图 / SendInput / 应用枚举）。宿主 broker
+激活依赖：
 
-  - ``ZCODE_CUA_PERMISSION_BROKER_SOCKET`` — helper 监听的命名管道
-    （宿主校验管道名必须落在 ``\\.\pipe\zcode-cua-helper-`` 命名空间内）。
-  - ``ZCODE_CUA_WIN_HELPER_RECIPE`` — helper fork 配方 JSON（command / entryPath /
-    root / addonPath / commandEnv / hostPid）。宿主在连接失败时按配方 detached
-    拉起 helper：``<command> <entryPath> --socket <pipe> --parent-pid <hostPid>``。
+  - ``ZCODE_CUA_PERMISSION_BROKER_SOCKET`` — helper 命名管道
+    （须落在 ``\\.\pipe\zcode-cua-helper-`` 命名空间）。
+  - ``ZCODE_CUA_WIN_HELPER_RECIPE`` — helper fork 配方 JSON。
 
-本模块沿用 node-repl-host 的“本地运行时自愈复制”模式：优先 EvoFlow 自己的插件
-缓存副本，缺失时从本机 ZCode 桌面安装（``resources/tools/cua-helper``）复制一份；
-都不可用则返回 None，调用方回退到 v1 视觉桥（cua_exec.ps1）。
+解析顺序：``EVOFLOW_CUA_HELPER_ROOT`` → 已缓存副本 → 安装包
+``official-plugins-bundle/cua-helper``。都不可用则返回 None，调用方回退 v1
+视觉桥（cua_exec.ps1）。
 """
 
 from __future__ import annotations
@@ -51,87 +49,6 @@ def is_helper_runtime(root: Path) -> bool:
     return _helper_entry(root).is_file() and _helper_addon(root).is_file()
 
 
-# ---------------------------------------------------------------------------
-# 发现
-# ---------------------------------------------------------------------------
-
-
-def discover_zcode_desktop_root() -> Path | None:
-    """Locate the local ZCode desktop install root (containing ``resources``)."""
-    override = os.getenv("EVOFLOW_ZCODE_DESKTOP_ROOT", "").strip()
-    candidates: list[Path] = []
-    if override:
-        candidates.append(Path(override))
-    candidates.extend(_registry_install_roots())
-    program_files = os.getenv("ProgramFiles", "C:\\Program Files")
-    program_files_x86 = os.getenv("ProgramFiles(x86)", "C:\\Program Files (x86)")
-    local_appdata = os.getenv("LOCALAPPDATA", "")
-    for base in (program_files, program_files_x86):
-        candidates.append(Path(base) / "ZCode")
-    if local_appdata:
-        candidates.append(Path(local_appdata) / "Programs" / "zcode")
-        candidates.append(Path(local_appdata) / "Programs" / "ZCode")
-    for candidate in candidates:
-        try:
-            if (candidate / "resources" / "tools" / "cua-helper").is_dir():
-                return candidate
-        except OSError:
-            continue
-    return None
-
-
-def _registry_install_roots() -> list[Path]:
-    """Read ZCode's NSIS uninstall entry (DisplayName contains "ZCode")."""
-    roots: list[Path] = []
-    try:
-        import winreg
-    except ImportError:
-        return roots
-    for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
-        for view in (0,) if hive == winreg.HKEY_CURRENT_USER else (0, winreg.KEY_WOW64_32KEY, winreg.KEY_WOW64_64KEY):
-            try:
-                key = winreg.OpenKey(
-                    hive,
-                    r"Software\Microsoft\Windows\CurrentVersion\Uninstall",
-                    0,
-                    winreg.KEY_READ | view,
-                )
-            except OSError:
-                continue
-            with key:
-                index = 0
-                while True:
-                    try:
-                        subkey_name = winreg.EnumKey(key, index)
-                    except OSError:
-                        break
-                    index += 1
-                    try:
-                        with winreg.OpenKey(key, subkey_name) as subkey:
-                            display, _ = winreg.QueryValueEx(subkey, "DisplayName")
-                            if "zcode" not in str(display).lower():
-                                continue
-                            for value_name in ("InstallLocation", "DisplayIcon"):
-                                try:
-                                    value, _ = winreg.QueryValueEx(subkey, value_name)
-                                except OSError:
-                                    continue
-                                text = str(value).split(",")[0].strip().strip('"')
-                                if not text:
-                                    continue
-                                path = Path(text)
-                                # InstallLocation 是目录；DisplayIcon/UninstallString 是
-                                # 文件（.ico/.exe），取其父目录作为安装根。
-                                root = path.parent if path.suffix else path
-                                if root.name.lower() in {"", "windows"}:
-                                    continue
-                                if root not in roots:
-                                    roots.append(root)
-                    except OSError:
-                        continue
-    return roots
-
-
 def resolve_helper_runtime(storage_root: Path | None = None) -> Path | None:
     """Resolve a usable helper runtime root; self-heal a copy into the EvoFlow cache."""
     override = os.getenv("EVOFLOW_CUA_HELPER_ROOT", "").strip()
@@ -152,11 +69,19 @@ def resolve_helper_runtime(storage_root: Path | None = None) -> Path | None:
     if is_helper_runtime(cache_copy):
         return cache_copy
 
-    desktop_root = discover_zcode_desktop_root()
-    if desktop_root is None:
-        return None
-    source = desktop_root / "resources" / "tools" / "cua-helper"
-    if not is_helper_runtime(source):
+    from .builtin import discover_bundled_official_cache
+
+    bundle = discover_bundled_official_cache()
+    source: Path | None = None
+    if bundle is not None:
+        for candidate in (
+            bundle / HELPER_RUNTIME_DIRNAME / "runtime",
+            bundle / HELPER_RUNTIME_DIRNAME,
+        ):
+            if is_helper_runtime(candidate):
+                source = candidate
+                break
+    if source is None:
         return None
     try:
         cache_copy.parent.mkdir(parents=True, exist_ok=True)
@@ -167,11 +92,10 @@ def resolve_helper_runtime(storage_root: Path | None = None) -> Path | None:
             cache_copy,
             ignore=shutil.ignore_patterns(".git", "*.log"),
         )
-        logger.info("cua-helper runtime copied from ZCode install %s → %s", source, cache_copy)
+        logger.info("cua-helper runtime copied from packaged bundle %s → %s", source, cache_copy)
         return cache_copy
     except OSError:
         logger.warning("cua-helper copy into plugin cache failed", exc_info=True)
-        # 安装目录仍可直接运行（只读引用），复制失败不阻断。
         return source if is_helper_runtime(source) else None
 
 

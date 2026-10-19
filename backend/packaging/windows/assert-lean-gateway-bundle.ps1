@@ -102,6 +102,27 @@ if (Test-Path -LiteralPath $skillsPublic) {
   }
 }
 
+# Official product plugins must ship with the installer (empty market = broken install).
+$officialBundle = Join-Path $GatewayDir "official-plugins-bundle"
+$requiredOfficial = @(
+  "browser-use", "computer-use", "node-repl-host", "documents", "pdf",
+  "presentations", "spreadsheets", "image-search", "plugin-creator", "skill-creator"
+)
+if (-not (Test-Path -LiteralPath $officialBundle)) {
+  $errors.Add("official-plugins-bundle missing under $GatewayDir (run sync-official-plugins-bundle.ps1 before build)")
+} else {
+  foreach ($name in $requiredOfficial) {
+    if (-not (Test-Path -LiteralPath (Join-Path $officialBundle $name))) {
+      $errors.Add("official plugin missing from sidecar: $name")
+    }
+  }
+  $helperEntry = Join-Path $officialBundle "cua-helper\runtime\dist\windows-helper.js"
+  $helperAddon = Join-Path $officialBundle "cua-helper\runtime\build\Release\ax_native.node"
+  if (-not ((Test-Path -LiteralPath $helperEntry) -and (Test-Path -LiteralPath $helperAddon))) {
+    $errors.Add("cua-helper runtime incomplete under official-plugins-bundle (need windows-helper.js + ax_native.node)")
+  }
+}
+
 # Soft size guard: lean sidecar should stay well under ~800MB uncompressed.
 $totalSum = (Get-ChildItem -LiteralPath $GatewayDir -Recurse -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum
 $totalMb = if ($null -ne $totalSum) { [math]::Round($totalSum / 1MB, 1) } else { 0 }

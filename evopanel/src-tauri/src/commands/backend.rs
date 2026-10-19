@@ -1334,26 +1334,33 @@ fn kill_gateway_port(port: u16) {
         // would race our sidecar bind and cause Windows dual-bind
         // (0.0.0.0:port + 127.0.0.1:port coexisting). Mirrors the PowerShell
         // Stop-EvoFlowKillPortListenerRoots logic in backend-common.ps1.
+        // Use taskkill.exe directly (not `cmd /c taskkill`) — nested cmd.exe flashes a
+        // console even when this PowerShell parent has CREATE_NO_WINDOW.
         let script = format!(
-            "Get-NetTCPConnection -LocalPort {port} -State Listen -ErrorAction SilentlyContinue | ForEach-Object {{ \
+            "function Invoke-EvoFlowTaskKill([int]$TargetPid) {{ \
+                if ($TargetPid -gt 0) {{ \
+                    & taskkill.exe /T /F /PID $TargetPid 2>$null | Out-Null \
+                }} \
+             }}; \
+             Get-NetTCPConnection -LocalPort {port} -State Listen -ErrorAction SilentlyContinue | ForEach-Object {{ \
                 $lp = [int]$_.OwningProcess; \
                 if ($lp -gt 0) {{ \
                     $p = $lp; \
                     for ($i=0; $i -le 20; $i++) {{ \
                         $r = @(Get-CimInstance Win32_Process -Filter \"ProcessId=$p\" -ErrorAction SilentlyContinue)[0]; \
-                        if (-not $r) {{ cmd /c taskkill /T /F /PID $lp >nul 2>&1; break }}; \
+                        if (-not $r) {{ Invoke-EvoFlowTaskKill $lp; break }}; \
                         $n=[string]$r.Name; $c=[string]$r.CommandLine; \
-                        if (($n -match '(?i)powershell|pwsh') -and ($c -match '(?i)uvicorn|langgraph_cli|watch-external-gateway')) {{ cmd /c taskkill /T /F /PID $p >nul 2>&1; break }}; \
-                        if (($n -match '(?i)^python(?:w)?\\.exe$') -and ($c -match '(?i)app\\.gateway\\.app:app')) {{ cmd /c taskkill /T /F /PID $p >nul 2>&1; break }}; \
+                        if (($n -match '(?i)powershell|pwsh') -and ($c -match '(?i)uvicorn|langgraph_cli|watch-external-gateway')) {{ Invoke-EvoFlowTaskKill $p; break }}; \
+                        if (($n -match '(?i)^python(?:w)?\\.exe$') -and ($c -match '(?i)app\\.gateway\\.app:app')) {{ Invoke-EvoFlowTaskKill $p; break }}; \
                         $pp=[int]$r.ParentProcessId; \
-                        if ($pp -le 0 -or $pp -eq $p) {{ cmd /c taskkill /T /F /PID $lp >nul 2>&1; break }}; \
+                        if ($pp -le 0 -or $pp -eq $p) {{ Invoke-EvoFlowTaskKill $lp; break }}; \
                         $p=$pp \
                     }} \
                 }} \
             }}"
         );
         let mut cmd = Command::new("powershell");
-        cmd.args(["-NoProfile", "-Command", &script]);
+        cmd.args(["-NoProfile", "-WindowStyle", "Hidden", "-NonInteractive", "-Command", &script]);
         const CREATE_NO_WINDOW: u32 = 0x08000000;
         cmd.creation_flags(CREATE_NO_WINDOW);
         let _ = cmd.output();

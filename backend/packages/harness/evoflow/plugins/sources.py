@@ -110,11 +110,18 @@ def fetch_marketplace_json(url: str) -> dict[str, Any]:
 
 def _run_git(args: list[str]) -> None:
     try:
+        from evoflow.utils.subprocess_platform import (
+            subprocess_hide_window_kwargs,
+            subprocess_text_io_kwargs,
+        )
+
         result = subprocess.run(
             ["git", *args],
             capture_output=True,
             text=True,
             timeout=GIT_COMMAND_TIMEOUT_SEC,
+            **subprocess_hide_window_kwargs(),
+            **subprocess_text_io_kwargs(),
         )
     except FileNotFoundError as error:
         raise PluginSourceError("Git is not available on this machine") from error

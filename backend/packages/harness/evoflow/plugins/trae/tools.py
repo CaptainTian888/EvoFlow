@@ -182,11 +182,18 @@ def _kill_listener_on_port(port: int) -> None:
     if os.name != "nt":
         return
     try:
+        from evoflow.utils.subprocess_platform import (
+            subprocess_hide_window_kwargs,
+            subprocess_text_io_kwargs,
+        )
+
+        hide = {**subprocess_hide_window_kwargs(), **subprocess_text_io_kwargs()}
         completed = subprocess.run(
             ["netstat", "-ano", "-p", "tcp"],
             check=False,
             capture_output=True,
             text=True,
+            **hide,
         )
         if completed.returncode != 0:
             return
@@ -202,7 +209,13 @@ def _kill_listener_on_port(port: int) -> None:
             if token in local_addr and state == "LISTENING" and pid.isdigit():
                 pids.add(pid)
         for pid in pids:
-            subprocess.run(["taskkill", "/PID", pid, "/F"], check=False, capture_output=True, text=True)
+            subprocess.run(
+                ["taskkill", "/PID", pid, "/F"],
+                check=False,
+                capture_output=True,
+                text=True,
+                **hide,
+            )
     except Exception:
         return
 
@@ -469,7 +482,18 @@ def trae_start_tool(
             env["TRAE_RESPONSE_TIMEOUT_MS"] = env.get("TRAE_RESPONSE_TIMEOUT_MS", "180000")
             kwargs["env"] = env
             if hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
-                kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+                flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+                if hasattr(subprocess, "CREATE_NO_WINDOW"):
+                    flags |= subprocess.CREATE_NO_WINDOW
+                kwargs["creationflags"] = flags
+                try:
+                    from evoflow.utils.subprocess_platform import subprocess_hide_window_kwargs
+
+                    hide = subprocess_hide_window_kwargs()
+                    if hide.get("startupinfo") is not None:
+                        kwargs["startupinfo"] = hide["startupinfo"]
+                except Exception:
+                    pass
                 subprocess.Popen(candidate_command, shell=True, **kwargs)
             else:
                 kwargs["start_new_session"] = True

@@ -122,9 +122,18 @@ def _normalize_mcp_server_config(server_name: str, config: dict[str, Any]) -> di
         if not command:
             logger.warning("MCP server %r (stdio) missing command — skipped", server_name)
             return None
+        raw_args = config.get("args", [])
+        args_list = list(raw_args) if isinstance(raw_args, (list, tuple)) else []
+        # Windows: avoid *.cmd flash; prefer exe / node cli.js / cmd.exe /d /c wrap.
+        try:
+            from evoflow.utils.subprocess_platform import harden_windows_stdio_argv
+
+            command, args_list = harden_windows_stdio_argv(command, args_list)
+        except Exception:
+            pass
         normalized["transport"] = "stdio"
         normalized["command"] = command
-        normalized["args"] = config.get("args", [])
+        normalized["args"] = args_list
         if config.get("env"):
             normalized["env"] = config["env"]
         if config.get("cwd"):

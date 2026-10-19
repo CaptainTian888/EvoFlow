@@ -26,7 +26,17 @@ from evoflow.tools.zcode_port.prelude import BASH_DESCRIPTION, BASH_DESCRIPTION_
 
 MAX_BASH_TIMEOUT_MS = 600_000
 DEFAULT_TIMEOUT_MS = 120_000
-MAX_INLINE_CHARS = 20_000
+# Soft cap when the model omits timeout on short read-only probes (git status/log, ls, …).
+# Without this, a hung Git Bash child can sit until the 120s kill path — and on Windows
+# that kill path itself used to deadlock in communicate() for minutes.
+PROBE_TIMEOUT_MS = int(os.getenv("EVOFLOW_BASH_PROBE_TIMEOUT_MS", "30000"))
+# ZCode bash.ts resultBudget: inline cap 30KB; once persisted, model sees a 2KB preview.
+MAX_INLINE_BYTES = 30_000
+MODEL_PREVIEW_CHARS = 2_000
+# ZCode bash-model-content.ts: assistant turns must not block on a foreground shell.
+ASSISTANT_BLOCKING_BUDGET_MS = 15_000
+# ZCode bash.ts metadata.concurrentSafe = false
+_BASH_EXEC_LOCK = threading.Lock()
 
 _TRUE = {"true", "1", "yes", "y", "on"}
 _FALSE = {"false", "0", "no", "n", "off"}
@@ -35,6 +45,15 @@ _FALSE = {"false", "0", "no", "n", "off"}
 _PERSISTED_CWD: dict[str, str] = {}
 _PERSISTED_CWD_LOCK = threading.Lock()
 _PWD_MARKER = "__EVOFLOW_PWD__="
+
+# Compound `cd … && <probe>` still counts as a probe for soft-timeout purposes.
+_PROBE_COMMAND_RE = re.compile(
+    r"(?is)^\s*(?:(?:cd|Set-Location)\s+[^\n;&|]+(?:\s*&&\s*|\s*;\s*))*"
+    r"(?:"
+    r"git\s+(?:-C\s+\S+\s+)?(?:status|log|diff|branch|rev-parse|show|remote|tag)\b"
+    r"|ls\b|dir\b|pwd\b|echo\b|true\b|false\b|whoami\b|uname\b"
+    r")\b"
+)
 
 
 def _semantic_bool(value: object, default: bool = False) -> bool:
@@ -51,6 +70,16 @@ def _semantic_bool(value: object, default: bool = False) -> bool:
     return default
 
 
+def _timeout_was_explicit(value: object) -> bool:
+    if value is None or value == "":
+        return False
+    try:
+        int(float(str(value).strip()))
+    except ValueError:
+        return False
+    return True
+
+
 def _semantic_timeout(value: object) -> int:
     if value is None or value == "":
         return DEFAULT_TIMEOUT_MS
@@ -59,6 +88,107 @@ def _semantic_timeout(value: object) -> int:
     except ValueError:
         return DEFAULT_TIMEOUT_MS
     return max(1, min(parsed, MAX_BASH_TIMEOUT_MS))
+
+
+def _effective_timeout_ms(command: str, timeout_ms: int, *, explicit: bool) -> int:
+    if explicit:
+        return timeout_ms
+    if _PROBE_COMMAND_RE.search(str(command or "").strip()):
+        return min(timeout_ms, max(1, PROBE_TIMEOUT_MS))
+    return timeout_ms
+
+
+def _blocking_budget_ms(timeout_ms: int, *, explicit: bool) -> int:
+    """Honor an explicit timeout. Otherwise stop blocking the turn at 15s."""
+    if explicit:
+        return timeout_ms
+    return min(timeout_ms, ASSISTANT_BLOCKING_BUDGET_MS)
+
+
+# ZCode bash-read-file-state.ts: only surface stale reads after a mutating command.
+_WRITE_COMMAND_RE = re.compile(
+    r"(?i)(?:--write|--fix|--in-place|--auto-correct|\bsed\s+-i\b|"
+    r"\brun\s+format\b|\brun\s+fix\b|\b(?:yarn|pnpm)\s+format\b|"
+    r"\blint:file\b|\blint:fix\b|\bblack\b|\bisort\b|\bruff\s+format\b|"
+    r"\bcargo\s+(?:fmt|fix)\b|\brustfmt\b|\bgo\s+fmt\b|\bterraform\s+fmt\b)"
+)
+
+
+def _utf8_len(text: str) -> int:
+    return len((text or "").encode("utf-8", errors="replace"))
+
+
+def _format_byte_size(nbytes: int) -> str:
+    if nbytes < 1024:
+        return f"{nbytes} bytes"
+    kb = nbytes / 1024
+    if kb < 1024:
+        return f"{kb:.1f}".replace(".0", "") + "KB"
+    return f"{kb / 1024:.1f}".replace(".0", "") + "MB"
+
+
+def _preview_first(content: str, max_chars: int) -> tuple[str, bool]:
+    if len(content) <= max_chars:
+        return content, False
+    newline = content.rfind("\n", 0, max_chars)
+    end = newline if newline > max_chars * 0.5 else max_chars
+    return content[:end], True
+
+
+def _persisted_output_envelope(content: str, path: Path) -> str:
+    """ZCode ``<persisted-output>``: full bytes on disk, short preview for the model."""
+    preview, has_more = _preview_first(content, MODEL_PREVIEW_CHARS)
+    lines = [
+        "<persisted-output>",
+        f"Output too large ({_format_byte_size(_utf8_len(content))}). Full output saved to: {path}",
+        "",
+        f"Preview (first {_format_byte_size(MODEL_PREVIEW_CHARS)}):",
+        preview,
+    ]
+    if has_more:
+        lines.append("...")
+    lines.append("</persisted-output>")
+    return "\n".join(lines)
+
+
+def _model_stream(text: str) -> tuple[str, bool]:
+    raw = text or ""
+    if _utf8_len(raw) <= MAX_INLINE_BYTES:
+        return raw, False
+    path = _output_file(new_task_id())
+    path.write_text(raw, encoding="utf-8", errors="replace")
+    return _persisted_output_envelope(raw, path), True
+
+
+def _kill_process_tree(pid: int) -> None:
+    """Best-effort kill of *pid* and descendants.
+
+    Git Bash spawns ``git.exe`` children. On Windows, ``Popen.kill()`` only stops the
+    shell; children keep stdout pipes open and ``communicate()`` hangs past timeout.
+    """
+    if pid <= 0:
+        return
+    if sys.platform == "win32":
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(pid), "/F", "/T"],
+                capture_output=True,
+                timeout=8,
+                **_no_window(),
+            )
+        except Exception:
+            try:
+                os.kill(pid, 9)
+            except OSError:
+                pass
+        return
+    try:
+        os.killpg(pid, 9)
+    except OSError:
+        try:
+            os.kill(pid, 9)
+        except OSError:
+            pass
 
 
 def bash_shell() -> list[str] | None:
@@ -123,6 +253,26 @@ def _no_window() -> dict:
     if sys.platform == "win32":
         return {"creationflags": subprocess.CREATE_NO_WINDOW}
     return {}
+
+
+def _popen_kwargs() -> dict:
+    """Spawn kwargs that avoid stdin waits and enable process-group kill on timeout."""
+    kw: dict = {
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "text": True,
+        "encoding": "utf-8",
+        "errors": "replace",
+    }
+    if sys.platform == "win32":
+        flags = subprocess.CREATE_NO_WINDOW
+        if hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
+            flags |= subprocess.CREATE_NEW_PROCESS_GROUP
+        kw["creationflags"] = flags
+    else:
+        kw["start_new_session"] = True
+    return kw
 
 
 def _to_posix(path: str) -> str:
@@ -296,12 +446,6 @@ def _session_key(runtime: ToolRuntime | None) -> str:
     return str(ctx.get("session_key") or "").strip()
 
 
-def _clip(text: str) -> tuple[str, bool]:
-    if len(text) <= MAX_INLINE_CHARS:
-        return text, False
-    return text[:MAX_INLINE_CHARS] + "\n…[truncated]", True
-
-
 def _output_file(task_id: str) -> Path:
     root = Path(os.environ.get("TEMP") or os.environ.get("TMP") or "/tmp") / "evoflow-bash-tasks"
     root.mkdir(parents=True, exist_ok=True)
@@ -341,6 +485,119 @@ def _emit_task_notification(task: BackgroundBashTask) -> None:
     )
 
 
+def _stale_hint_for(command: str) -> str:
+    if not _WRITE_COMMAND_RE.search(command or ""):
+        return ""
+    from evoflow.tools.zcode_port.read_file_state import stale_read_hint
+
+    return stale_read_hint()
+
+
+def _format_finished(
+    *,
+    command: str,
+    stdout: str,
+    stderr: str,
+    exit_code: int,
+    timed_out: bool,
+) -> str:
+    out, out_tr = _model_stream(stdout)
+    err, err_tr = _model_stream(stderr)
+    hint = _stale_hint_for(command)
+    hint_block = f"\n{hint}" if hint else ""
+    if timed_out:
+        return f"status: timed_out\ninterrupted: true\nstdout:\n{out}\nstderr:\n{err}{hint_block}"
+    status = "completed" if exit_code == 0 else "failed"
+    return (
+        f"status: {status}\nexitCode: {exit_code}\ninterrupted: false\n"
+        f"stdoutTruncated: {str(out_tr).lower()}\nstderrTruncated: {str(err_tr).lower()}\n"
+        f"stdout:\n{out}\nstderr:\n{err}{hint_block}"
+    )
+
+
+def _promote_to_background(
+    proc: subprocess.Popen,
+    *,
+    command: str,
+    cwd: str,
+    tool_call_id: str,
+    description: str,
+    thread_id: str,
+    session_key: str,
+    partial_stdout: str,
+    partial_stderr: str,
+) -> str:
+    """Keep a still-running foreground command alive and return immediately."""
+    del cwd
+    task_id = new_task_id()
+    output_path = _output_file(task_id)
+    stream_id = (tool_call_id or "").strip() or task_id
+    partial_stdout = _strip_pwd_marker(partial_stdout or "", thread_id)
+    chunks = [partial_stdout]
+    if partial_stderr:
+        chunks.append(f"\n[stderr]\n{partial_stderr}")
+    output_path.write_text("".join(chunks), encoding="utf-8", errors="replace")
+    task = BackgroundBashTask(
+        task_id=task_id,
+        command=command,
+        description=description or command[:80],
+        output_path=output_path,
+        proc=proc,
+        tool_call_id=stream_id,
+        thread_id=thread_id,
+        session_key=session_key,
+    )
+    register_task(task)
+    started_ms = int(task.started_at * 1000)
+    _emit(
+        "background",
+        work_id=task_id,
+        title=description or command[:80],
+        command=command,
+        tool_call_id=stream_id,
+        status="running",
+        started_at_ms=started_ms,
+    )
+
+    def _pump() -> None:
+        try:
+            rest_out, rest_err = proc.communicate()
+        except Exception:
+            rest_out, rest_err = "", ""
+        rest_out = _strip_pwd_marker(rest_out or "", thread_id)
+        if rest_out:
+            _emit("stdout", invocation_id=stream_id, tool_call_id=stream_id, text=rest_out)
+            chunks.append(rest_out)
+        if rest_err:
+            _emit("stderr", invocation_id=stream_id, tool_call_id=stream_id, text=rest_err)
+            chunks.append(f"\n[stderr]\n{rest_err}")
+        output_path.write_text("".join(chunks), encoding="utf-8", errors="replace")
+        code = proc.returncode if proc.returncode is not None else 0
+        if task.status == "running":
+            mark(task, status="completed" if code == 0 else "failed", exit_code=code)
+        _emit("exit", invocation_id=stream_id, tool_call_id=stream_id, exit_code=code, success=code == 0)
+        _emit(
+            "background",
+            work_id=task_id,
+            title=description or command[:80],
+            command=command,
+            tool_call_id=stream_id,
+            status=task.status if task.status != "stopped" else "cancelled",
+            started_at_ms=started_ms,
+        )
+        _emit_task_notification(task)
+
+    threading.Thread(target=_pump, name=f"bash-bg-{task_id}", daemon=True).start()
+    seconds = ASSISTANT_BLOCKING_BUDGET_MS // 1000
+    return (
+        f"status: backgrounded\ninterrupted: false\nbackgroundTaskId: {task_id}\n"
+        f"persistedOutputPath: {output_path}\n"
+        f"Command exceeded the assistant-mode blocking budget ({seconds}s) and was moved to the "
+        f"background with ID: {task_id}. It is still running — you will be notified when it completes. "
+        f"Output is being written to: {output_path}. To check interim output, use Read on that file path."
+    )
+
+
 def _run_foreground(
     command: str,
     timeout_ms: int,
@@ -348,46 +605,75 @@ def _run_foreground(
     tool_call_id: str,
     *,
     thread_id: str = "",
+    explicit: bool = False,
+    description: str = "",
+    session_key: str = "",
 ) -> str:
     argv, _dialect = _script(command, cwd=cwd)
     invocation = tool_call_id or uuid.uuid4().hex
+    blocking_ms = _blocking_budget_ms(timeout_ms, explicit=explicit)
     # CreateProcess requires a Windows path. Git Bash accepts that cwd and converts it.
     _emit("start", invocation_id=invocation, tool_call_id=tool_call_id, command=command)
     try:
-        proc = subprocess.run(
-            argv,
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout_ms / 1000.0,
-            **_no_window(),
-        )
-    except subprocess.TimeoutExpired as exc:
-        stdout = (exc.stdout or "") if isinstance(exc.stdout, str) else ""
-        stderr = (exc.stderr or "") if isinstance(exc.stderr, str) else ""
-        _emit("stdout", invocation_id=invocation, tool_call_id=tool_call_id, text=stdout)
-        _emit("stderr", invocation_id=invocation, tool_call_id=tool_call_id, text=stderr)
-        _emit("exit", invocation_id=invocation, tool_call_id=tool_call_id, exit_code=124, success=False)
-        out, _ = _clip(stdout)
-        err, _ = _clip(stderr)
-        return f"status: timed_out\ninterrupted: true\nstdout:\n{out}\nstderr:\n{err}"
+        proc = subprocess.Popen(argv, cwd=cwd, **_popen_kwargs())
     except OSError as exc:
         _emit("exit", invocation_id=invocation, tool_call_id=tool_call_id, exit_code=127, success=False)
         return f"status: spawn_error\ninterrupted: false\nstderr:\n{exc}"
-    stdout = _strip_pwd_marker(proc.stdout or "", thread_id)
-    stderr = proc.stderr or ""
+
+    timed_out = False
+    stdout = ""
+    stderr = ""
+    try:
+        stdout, stderr = proc.communicate(timeout=blocking_ms / 1000.0)
+    except subprocess.TimeoutExpired as exc:
+        if blocking_ms < timeout_ms:
+            return _promote_to_background(
+                proc,
+                command=command,
+                cwd=cwd,
+                tool_call_id=tool_call_id,
+                description=description,
+                thread_id=thread_id,
+                session_key=session_key,
+                partial_stdout=exc.stdout if isinstance(exc.stdout, str) else "",
+                partial_stderr=exc.stderr if isinstance(exc.stderr, str) else "",
+            )
+        timed_out = True
+        _kill_process_tree(proc.pid)
+        try:
+            leftover = proc.communicate(timeout=2.0)
+            stdout = leftover[0] or ""
+            stderr = leftover[1] or ""
+        except Exception:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+            try:
+                leftover = proc.communicate(timeout=1.0)
+                stdout = leftover[0] or ""
+                stderr = leftover[1] or ""
+            except Exception:
+                stdout, stderr = "", ""
+
+    if timed_out:
+        _emit("stdout", invocation_id=invocation, tool_call_id=tool_call_id, text=stdout)
+        _emit("stderr", invocation_id=invocation, tool_call_id=tool_call_id, text=stderr)
+        _emit("exit", invocation_id=invocation, tool_call_id=tool_call_id, exit_code=124, success=False)
+        return _format_finished(command=command, stdout=stdout, stderr=stderr, exit_code=124, timed_out=True)
+
+    stdout = _strip_pwd_marker(stdout or "", thread_id)
+    stderr = stderr or ""
+    exit_code = proc.returncode if proc.returncode is not None else 0
     _emit("stdout", invocation_id=invocation, tool_call_id=tool_call_id, text=stdout)
     _emit("stderr", invocation_id=invocation, tool_call_id=tool_call_id, text=stderr)
-    _emit("exit", invocation_id=invocation, tool_call_id=tool_call_id, exit_code=proc.returncode, success=proc.returncode == 0)
-    out, out_tr = _clip(stdout)
-    err, err_tr = _clip(stderr)
-    status = "completed" if proc.returncode == 0 else "failed"
-    return (
-        f"status: {status}\nexitCode: {proc.returncode}\ninterrupted: false\n"
-        f"stdoutTruncated: {str(out_tr).lower()}\nstderrTruncated: {str(err_tr).lower()}\n"
-        f"stdout:\n{out}\nstderr:\n{err}"
+    _emit("exit", invocation_id=invocation, tool_call_id=tool_call_id, exit_code=exit_code, success=exit_code == 0)
+    return _format_finished(
+        command=command,
+        stdout=stdout,
+        stderr=stderr,
+        exit_code=exit_code,
+        timed_out=False,
     )
 
 
@@ -408,16 +694,10 @@ def _run_background(
     stream_id = (tool_call_id or "").strip() or task_id
     invocation = stream_id
     try:
-        proc = subprocess.Popen(
-            argv,
-            cwd=cwd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            **_no_window(),
-        )
+        bg_kw = _popen_kwargs()
+        # Merge stderr into stdout for background pump (single reader).
+        bg_kw["stderr"] = subprocess.STDOUT
+        proc = subprocess.Popen(argv, cwd=cwd, **bg_kw)
     except OSError as exc:
         return f"status: spawn_error\ninterrupted: false\nstderr:\n{exc}"
     task = BackgroundBashTask(
@@ -567,17 +847,23 @@ def bash_tool(
     """
     del dangerouslyDisableSandbox  # EvoFlow host-direct already runs on the host; flag is accepted for schema parity.
     cwd = _cwd(runtime)
-    timeout_ms = _semantic_timeout(timeout)
+    explicit = _timeout_was_explicit(timeout)
+    timeout_ms = _effective_timeout_ms(command, _semantic_timeout(timeout), explicit=explicit)
     tid = _thread_id(runtime)
     sk = _session_key(runtime)
-    if _semantic_bool(run_in_background):
-        return _run_background(
+    desc = description or command[:80]
+    # ZCode Bash is not concurrent-safe: one shell at a time per process.
+    with _BASH_EXEC_LOCK:
+        if _semantic_bool(run_in_background):
+            return _run_background(command, cwd, tool_call_id, desc, thread_id=tid, session_key=sk)
+        result = _run_foreground(
             command,
+            timeout_ms,
             cwd,
             tool_call_id,
-            description or command[:80],
             thread_id=tid,
+            explicit=explicit,
+            description=desc,
             session_key=sk,
         )
-    result = _run_foreground(command, timeout_ms, cwd, tool_call_id, thread_id=tid)
     return _maybe_stage_agent_browser_screenshot(runtime, command, cwd, tool_call_id, result)

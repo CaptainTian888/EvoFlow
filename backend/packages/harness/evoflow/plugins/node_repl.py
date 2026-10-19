@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -627,8 +628,8 @@ def _meta_envelope(session_id: str | None = None) -> dict[str, Any]:
 def resolve_host_server_js(storage_root: Path | None = None) -> Path | None:
     """Locate ``dist/mcp/server.js`` from the node-repl-host install cache.
 
-    node-repl-host 不出现在市场清单（ZCode 同款语义：宿主不对用户露出）。
-    首次需要时从本机 ZCode 安装的官方缓存自愈复制到 EvoFlow 插件缓存。
+    node-repl-host 不出现在市场清单（宿主运行时不对用户露出）。
+    首次需要时从安装包 ``official-plugins-bundle`` 自愈复制到插件缓存。
     """
     try:
         if storage_root is None:
@@ -652,15 +653,15 @@ def resolve_host_server_js(storage_root: Path | None = None) -> Path | None:
 
 
 def _ensure_host_runtime_copied(storage_root: Path, cache_root: Path) -> None:
-    """Copy node-repl-host from the local ZCode installation cache (self-healing)."""
+    """Copy node-repl-host from the packaged official plugin bundle."""
     import shutil
 
-    from .builtin import discover_zcode_official_cache
+    from .builtin import discover_bundled_official_cache
 
-    zcode_root = discover_zcode_official_cache()
-    if zcode_root is None:
+    bundle_root = discover_bundled_official_cache()
+    if bundle_root is None:
         return
-    host_dir = zcode_root / _NODE_REPL_HOST_PLUGIN
+    host_dir = bundle_root / _NODE_REPL_HOST_PLUGIN
     if not host_dir.is_dir():
         return
     version_dirs = sorted(
@@ -673,7 +674,7 @@ def _ensure_host_runtime_copied(storage_root: Path, cache_root: Path) -> None:
             target = cache_root / version_dir.name
             if not (target / _NODE_REPL_SERVER_REL).is_file():
                 shutil.copytree(version_dir, target, dirs_exist_ok=True, ignore=shutil.ignore_patterns(".git"))
-                logger.info("node-repl-host runtime copied from EvoFlow cache: %s", target)
+                logger.info("node-repl-host runtime copied from packaged bundle: %s", target)
             return
 
 
@@ -805,6 +806,12 @@ def _ensure_process() -> subprocess.Popen:
     # 官方内核把 process.title 写成 zcode-node-repl-mcp，preload 把它改成 evoflow-node-repl。
     # ZCODE_PLUGIN_ROOT 等变量名必须保留：官方 skill 按这个名字读插件根目录，不会出现在窗口标题上。
     preload = Path(__file__).with_name("evoflow_node_repl_preload.cjs")
+    if not preload.is_file():
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            frozen_preload = Path(meipass) / "evoflow" / "plugins" / "evoflow_node_repl_preload.cjs"
+            if frozen_preload.is_file():
+                preload = frozen_preload
     node_argv = ["node", str(server_js)]
     if preload.is_file():
         node_argv = ["node", "-r", str(preload), str(server_js)]

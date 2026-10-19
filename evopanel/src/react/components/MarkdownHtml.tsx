@@ -36,8 +36,11 @@ function MarkdownHtmlInner({
   isStreaming = false,
   /** 思考流：更短节流间隔 */
   streamProfile = 'default',
-  /** 助手正文：投影 `::code-comment{...}` 指令为评论卡片，协议原文不出现在正文里 */
-  enableCodeComments = false,
+  /**
+   * 助手正文：投影 `::code-comment{...}` 为评论卡片。
+   * 默认开启，避免历史/轮内等漏传 props 时仍露出协议原文；文档预览等需原文处显式传 false。
+   */
+  enableCodeComments = true,
 }: {
   text?: string
   className?: string
@@ -280,29 +283,35 @@ function MarkdownHtmlInner({
   }, [renderText, isStreaming])
 
   /**
-   * Effect 3（结束落 MD）：非流式时用 Streamdown 渲染。
+   * Effect 3（结束落 MD）：非流式时清掉流式 plain DOM，交给 Streamdown。
+   * 不再把 plain `<pre>` 留到 ready 之后，避免协议原文与 MD 双份残留。
    */
   useEffect(() => {
     if (isStreaming) return
     const raw = renderText
     textRef.current = raw
-    const holdPlain = plainStreamActiveRef.current || !!rootRef.current?.querySelector('pre.msg-stream-plain')
-    if (holdPlain) {
-      paintPlainStreamDom(raw, false)
-    } else {
-      plainStreamActiveRef.current = false
+    cancelStreamTween()
+    plainStreamActiveRef.current = false
+    lastPaintedTextRef.current = ''
+    const root = rootRef.current
+    const leftover = root?.querySelector('pre.msg-stream-plain')
+    if (leftover) {
+      try {
+        leftover.remove()
+      } catch {
+        /* ignore */
+      }
     }
-    // 标记 ready，让 render 里的条件渲染显示 Streamdown
     setMarkdownReady(true)
   }, [renderText, isStreaming])
 
   /**
-   * Effect 4（DOM 应用）：处理流式期间的 plain DOM，或非流式时的 Streamdown 占位符准备。
+   * Effect 4（DOM 应用）：仅流式期间维护 plain DOM。
    */
   useEffect(() => {
     const el = rootRef.current
     if (!el) return
-    
+
     if (isStreaming) {
       const pre = el.querySelector('pre.msg-stream-plain')
       if (!pre && textRef.current) {
@@ -312,11 +321,7 @@ function MarkdownHtmlInner({
       }
       return
     }
-    
-    // 非流式且 plain 还活跃：继续显示 plain，避免空闪/高度悬崖
-    if (plainStreamActiveRef.current && !markdownReady) {
-      return
-    }
+
     plainStreamActiveRef.current = false
   }, [isStreaming, markdownReady])
 

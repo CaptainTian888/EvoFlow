@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -53,9 +54,18 @@ _PS_EXEC_PATH = Path(__file__).resolve().parents[3] / "packages" / "harness" / "
 def _resolve_ps1() -> Path:
     if _PS_EXEC_PATH.is_file():
         return _PS_EXEC_PATH
+    # Frozen: PyInstaller datas → evoflow/plugins/cua_exec.ps1 under _MEIPASS.
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        frozen = Path(meipass) / "evoflow" / "plugins" / "cua_exec.ps1"
+        if frozen.is_file():
+            return frozen
     here = Path(__file__).resolve()
     for parent in here.parents:
         candidate = parent / "plugins" / "cua_exec.ps1"
+        if candidate.is_file():
+            return candidate
+        candidate = parent / "evoflow" / "plugins" / "cua_exec.ps1"
         if candidate.is_file():
             return candidate
     raise RuntimeError("cua_exec.ps1 not found next to the gateway or in the harness package")
@@ -65,16 +75,27 @@ def _run_ps_action(action: str, payload: dict[str, Any]) -> dict[str, Any]:
     ps1 = _resolve_ps1()
     payload_json = json.dumps(payload, ensure_ascii=False)
     encoded = base64.b64encode(payload_json.encode("utf-8")).decode("ascii")
+    from evoflow.utils.subprocess_platform import subprocess_hide_window_kwargs
+
     cmd = [
         "powershell",
         "-NoProfile",
+        "-WindowStyle", "Hidden",
         "-NonInteractive",
         "-ExecutionPolicy", "Bypass",
         "-File", str(ps1),
         "-Action", action,
         "-EncodedPayload", encoded,
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
+    proc = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=120,
+        **subprocess_hide_window_kwargs(),
+    )
     if proc.returncode != 0:
         raise RuntimeError(f"cua_exec.ps1 failed: {(proc.stderr or proc.stdout)[-400:]}")
     return json.loads(proc.stdout)
@@ -218,9 +239,12 @@ def _read_icon_via_powershell(kind: str, value: str) -> str | None:
         handle.write(_APP_ICON_PS)
         script_path = handle.name
     try:
+        from evoflow.utils.subprocess_platform import subprocess_hide_window_kwargs
+
         proc = subprocess.run(
             [
-                "powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                "powershell", "-NoProfile", "-WindowStyle", "Hidden", "-NonInteractive",
+                "-ExecutionPolicy", "Bypass",
                 "-File", script_path, "-Kind", kind, "-Value", value,
             ],
             capture_output=True,
@@ -228,6 +252,7 @@ def _read_icon_via_powershell(kind: str, value: str) -> str | None:
             encoding="utf-8",
             errors="replace",
             timeout=15,
+            **subprocess_hide_window_kwargs(),
         )
         data = (proc.stdout or "").strip()
         if proc.returncode == 0 and data and len(data) < 400_000:

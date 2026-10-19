@@ -103,6 +103,22 @@ _docs_knowledge = (
 if _docs_knowledge.is_dir():
     datas.append((str(_docs_knowledge), "evoflow/assets/builtin_knowledge_vaults/ops-knowledge"))
 
+# Official product plugins (browser-use / computer-use / …). Run
+# packaging/windows/sync-official-plugins-bundle.ps1 before building.
+_official_plugins = backend_root / "packaging" / "official-plugins-bundle"
+_official_plugin_dirs = [
+    p for p in _official_plugins.iterdir() if p.is_dir()
+] if _official_plugins.is_dir() else []
+if _official_plugin_dirs:
+    datas.append((str(_official_plugins), "evoflow/plugins/bundled_official"))
+
+# Fallback CUA visual bridge + node-repl preload (non-.py siblings of plugins/).
+_plugins_pkg = _harness_evoflow / "plugins"
+for _sidecar_name in ("cua_exec.ps1", "evoflow_node_repl_preload.cjs"):
+    _sidecar = _plugins_pkg / _sidecar_name
+    if _sidecar.is_file():
+        datas.append((str(_sidecar), "evoflow/plugins"))
+
 
 # langgraph/version.py uses importlib.metadata.version() — PyInstaller strips .dist-info by default.
 try:

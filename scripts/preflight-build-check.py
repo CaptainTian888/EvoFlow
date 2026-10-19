@@ -11,6 +11,7 @@ Environment variables (all default to "1" = enabled):
     CHECK_GATEWAY_ENTRY    gateway_entry.py static analysis
     CHECK_HIDDEN_IMPORTS   .spec hiddenimports reachability
     CHECK_GITIGNORE        gitignore cross-check
+    CHECK_OFFICIAL_PLUGINS packaging/official-plugins-bundle product plugins
 """
 
 from __future__ import annotations
@@ -335,6 +336,62 @@ def _is_git_ignored(path: Path) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Check 4: official product plugins packed for the installer
+# ---------------------------------------------------------------------------
+
+_REQUIRED_OFFICIAL_PLUGINS = (
+    "browser-use",
+    "computer-use",
+    "documents",
+    "pdf",
+    "presentations",
+    "spreadsheets",
+    "image-search",
+    "plugin-creator",
+    "skill-creator",
+    "node-repl-host",
+)
+
+
+def check_official_plugins_bundle() -> None:
+    print(f"\n[{GREEN}4{RESET}] official-plugins-bundle product plugins")
+
+    bundle = REPO_ROOT / "backend" / "packaging" / "official-plugins-bundle"
+    if not bundle.is_dir():
+        _e(f"missing {bundle.relative_to(REPO_ROOT)} — run packaging/windows/sync-official-plugins-bundle.ps1")
+        return
+
+    plugin_dirs = [p for p in bundle.iterdir() if p.is_dir()]
+    if not plugin_dirs:
+        _e(
+            "official-plugins-bundle has no plugin directories "
+            "(only .gitignore?) — run packaging/windows/sync-official-plugins-bundle.ps1"
+        )
+        return
+
+    missing = [name for name in _REQUIRED_OFFICIAL_PLUGINS if not (bundle / name).is_dir()]
+    for name in missing:
+        _e(f"required official plugin missing: {name}")
+
+    helper_entry = bundle / "cua-helper" / "runtime" / "dist" / "windows-helper.js"
+    helper_addon = bundle / "cua-helper" / "runtime" / "build" / "Release" / "ax_native.node"
+    if not (helper_entry.is_file() and helper_addon.is_file()):
+        _e("cua-helper runtime incomplete (need windows-helper.js + ax_native.node)")
+
+    if not missing and helper_entry.is_file() and helper_addon.is_file():
+        _ok(f"{len(plugin_dirs)} plugin dirs present under official-plugins-bundle")
+
+    for sidecar in (
+        HARNESS_ROOT / "evoflow" / "plugins" / "cua_exec.ps1",
+        HARNESS_ROOT / "evoflow" / "plugins" / "evoflow_node_repl_preload.cjs",
+    ):
+        if sidecar.is_file():
+            _ok(f"runtime sidecar present: {sidecar.name}")
+        else:
+            _e(f"runtime sidecar missing: {sidecar.relative_to(REPO_ROOT)}")
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -344,6 +401,7 @@ def main() -> None:
         "CHECK_GATEWAY_ENTRY": (check_gateway_entry, True),
         "CHECK_HIDDEN_IMPORTS": (check_hidden_imports, True),
         "CHECK_GITIGNORE": (check_gitignore_cross, True),
+        "CHECK_OFFICIAL_PLUGINS": (check_official_plugins_bundle, True),
     }
 
     total = 0

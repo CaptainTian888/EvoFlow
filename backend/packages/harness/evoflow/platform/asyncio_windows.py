@@ -361,13 +361,21 @@ def apply_windows_langgraph_runtime_fixes() -> None:
     _patch_httpx_response_aclose()
     # If a loop is already running (e.g. lifespan), install disconnect muffler now.
     install_asyncio_benign_disconnect_handler()
+    mcp_flash_patched = False
+    try:
+        from evoflow.utils.subprocess_platform import patch_mcp_stdio_no_console_flash
+
+        mcp_flash_patched = bool(patch_mcp_stdio_no_console_flash())
+    except Exception:
+        logger.debug("MCP stdio no-console-flash patch skipped", exc_info=True)
     if not _APPLIED:
         _APPLIED = True
         logger.info(
-            "Windows LangGraph runtime fixes active (selector_loop=%s, limit_concurrency=%s, BG_JOB_ISOLATED_LOOPS=%s, httpx_aclose_patch=on)",
+            "Windows LangGraph runtime fixes active (selector_loop=%s, limit_concurrency=%s, BG_JOB_ISOLATED_LOOPS=%s, httpx_aclose_patch=on, mcp_stdio_no_flash=%s)",
             _windows_selector_event_loop_enabled(),
             windows_selector_recommended_limit_concurrency(),
             os.environ.get("BG_JOB_ISOLATED_LOOPS", ""),
+            mcp_flash_patched,
         )
 
 

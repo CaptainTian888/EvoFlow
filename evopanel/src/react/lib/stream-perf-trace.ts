@@ -9,7 +9,9 @@
  *   5. 内存趋势 → GC 压力
  *
  * 开关：?streamperf=1 或 localStorage.evoflow_streamperf=1
+ *   也可热开（无需 reload）：window.__streamPerf.enable()
  *   开启后：单环节 > PHASE_WARN_MS 或 delta 总 > DELTA_WARN_MS 时 console.warn
+ *   心跳：每 HEARTBEAT_MS 打一行当前帧上下文（历史行数 / 思考字数 / bump 间隔）
  *   聚合：window.__streamPerf.report() 打各环节 p50/p95/max + 多维诊断
  *
  * 关闭时所有函数空操作，零开销。
@@ -20,6 +22,8 @@ const DELTA_WARN_MS = 12
 const SINGLE_ROW_DELTA_WARN_MS = 30
 const WINDOW_SIZE = 200
 const MEM_SAMPLE_INTERVAL = 50
+const HEARTBEAT_MS = 2000
+const REASONING_PAINT_WARN_MS = 8
 
 function now(): number {
   return typeof performance !== 'undefined' ? performance.now() : Date.now()
@@ -43,6 +47,24 @@ function detectEnabled(): boolean {
 }
 
 let enabled = detectEnabled()
+
+export type StreamPerfLiveContext = {
+  historyRows?: number
+  reasoningChars?: number
+  textChars?: number
+  toolCount?: number
+  segmentCount?: number
+  bumpScore?: number
+  bumpIntervalMs?: number
+  streamActive?: boolean
+}
+
+let liveContext: StreamPerfLiveContext = {}
+let lastHeartbeatAt = 0
+let deltasSinceHeartbeat = 0
+let reasoningPaintSamples = 0
+let reasoningPaintMaxMs = 0
+let reasoningPaintSumMs = 0
 
 type PhaseStats = {
   samples: number[]
@@ -81,6 +103,44 @@ let memSampleCounter = 0
 const renderCountStats = { samples: [] as number[], max: 0 }
 const memoHitRateStats = { samples: [] as number[], max: 0 }
 
+export function streamPerfSetEnabled(next: boolean): void {
+  enabled = !!next
+  try {
+    localStorage.setItem('evoflow_streamperf', enabled ? '1' : '0')
+  } catch {
+    /* ignore */
+  }
+  if (enabled) {
+    installLongTaskMonitor()
+    lastHeartbeatAt = 0
+    console.info(
+      '[streamperf] ON（热开）— filter console by "[streamperf]"; report: __streamPerf.report(); off: __streamPerf.disable()',
+    )
+  } else {
+    console.info('[streamperf] OFF')
+  }
+}
+
+/** 每帧由 MessageVirtualList 写入：历史长度 / 思考体量 / bump 节流，便于对照「越聊越卡」。 */
+export function streamPerfNoteContext(partial: StreamPerfLiveContext): void {
+  if (!enabled) return
+  liveContext = { ...liveContext, ...partial }
+}
+
+/** 思考行渲染耗时（ReasoningInlineBlock / RunningScanText 路径）。 */
+export function streamPerfNoteReasoningPaint(ms: number, chars: number): void {
+  if (!enabled) return
+  reasoningPaintSamples += 1
+  reasoningPaintSumMs += ms
+  if (ms > reasoningPaintMaxMs) reasoningPaintMaxMs = ms
+  liveContext = { ...liveContext, reasoningChars: chars }
+  if (ms > REASONING_PAINT_WARN_MS) {
+    console.warn(
+      `[streamperf] reasoning paint ${ms.toFixed(1)}ms · chars=${chars}`,
+    )
+  }
+}
+
 export function streamPerfBeginDelta(seq: number): void {
   if (!enabled) return
   if (seq === lastDeltaSeq) {
@@ -93,6 +153,7 @@ export function streamPerfBeginDelta(seq: number): void {
   currentDeltaSeq = seq
   renderCountThisDelta = 0
   visibleRowCountThisDelta = 0
+  deltasSinceHeartbeat += 1
 }
 
 export function streamPerfTime<T>(phase: string, fn: () => T): T {
@@ -204,8 +265,39 @@ export function streamPerfEndDelta(): void {
     memoHitRate: +memoHitRate.toFixed(2),
     degradation: +degradation.toFixed(1),
     phases: Object.fromEntries(currentDeltaPhases),
+    context: { ...liveContext },
   }
   currentDeltaPhases = null
+
+  const tNow = now()
+  if (tNow - lastHeartbeatAt >= HEARTBEAT_MS) {
+    const mem = (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory
+    const heapMb = mem ? +(mem.usedJSHeapSize / 1048576).toFixed(1) : null
+    const reasoningAvg =
+      reasoningPaintSamples > 0 ? reasoningPaintSumMs / reasoningPaintSamples : 0
+    console.log('[streamperf] heartbeat', {
+      seq: currentDeltaSeq,
+      deltas: deltasSinceHeartbeat,
+      lastDeltaMs: +total.toFixed(1),
+      render: `${renderCountThisDelta}/${visibleRowCountThisDelta}`,
+      degradation: +degradation.toFixed(1),
+      heapMb,
+      historyRows: liveContext.historyRows ?? null,
+      reasoningChars: liveContext.reasoningChars ?? null,
+      textChars: liveContext.textChars ?? null,
+      tools: liveContext.toolCount ?? null,
+      segs: liveContext.segmentCount ?? null,
+      bumpMs: liveContext.bumpIntervalMs ?? null,
+      bumpScore: liveContext.bumpScore ?? null,
+      reasoningPaintAvgMs: +reasoningAvg.toFixed(2),
+      reasoningPaintMaxMs: +reasoningPaintMaxMs.toFixed(1),
+    })
+    lastHeartbeatAt = tNow
+    deltasSinceHeartbeat = 0
+    reasoningPaintSamples = 0
+    reasoningPaintSumMs = 0
+    reasoningPaintMaxMs = 0
+  }
 }
 
 let lastDeltaSnapshot: {
@@ -216,6 +308,7 @@ let lastDeltaSnapshot: {
   memoHitRate: number
   degradation: number
   phases: Record<string, number>
+  context: StreamPerfLiveContext
 } | null = null
 
 let longTaskObserver: PerformanceObserver | null = null
@@ -306,11 +399,17 @@ export function streamPerfReset(): void {
   baselineDeltaTotal = 0
   baselineDeltaSeq = -1
   memSamples = []
+  liveContext = {}
+  lastHeartbeatAt = 0
+  deltasSinceHeartbeat = 0
+  reasoningPaintSamples = 0
+  reasoningPaintSumMs = 0
+  reasoningPaintMaxMs = 0
 }
 
 export function installStreamPerfGlobal(): void {
   if (typeof window === 'undefined') return
-  installLongTaskMonitor()
+  if (enabled) installLongTaskMonitor()
   const g = window as unknown as Record<string, unknown>
   g.__streamPerf = {
     report: () => {
@@ -322,11 +421,15 @@ export function installStreamPerfGlobal(): void {
         deltaRate: r.deltaRate,
         baseline: r.baseline,
         memTrend: r.memTrend,
+        liveContext,
       })
       return r
     },
     reset: streamPerfReset,
+    enable: () => streamPerfSetEnabled(true),
+    disable: () => streamPerfSetEnabled(false),
     enabled: () => enabled,
     lastDelta: () => lastDeltaSnapshot,
+    context: () => ({ ...liveContext }),
   }
 }

@@ -755,7 +755,15 @@ export function MessageRow({
   liveTurnElapsedSec?: number
   /** 整段对话的最后一条助手回合：带工具过程结束后不默认折叠 */
   isLatestTurn?: boolean
-  onOpenFile?: (rawUrl: string, name?: string) => void
+  onOpenFile?: (
+    rawUrl: string,
+    name?: string,
+    opts?: {
+      line?: number
+      endLine?: number
+      annotation?: { title?: string; body?: string; priority?: number }
+    },
+  ) => void
   onOpenKnowledgeMap?: () => void
   onToolApproval?: (
     action: 'approve' | 'approve_all' | 'deny' | 'grant_all' | 'approve_remember',
@@ -1050,7 +1058,11 @@ export function MessageRow({
             </div>
             {closure.md ? (
               <div className="msg-ai-ask-inline-md msg-text react-chat-hosted-closure-md">
-                <MarkdownHtml text={closure.md} onOpenWorkspaceFile={onOpenFile} />
+                <MarkdownHtml
+                  text={closure.md}
+                  onOpenWorkspaceFile={onOpenFile}
+                  enableCodeComments
+                />
               </div>
             ) : null}
           </div>
@@ -1147,7 +1159,15 @@ function AssistantBody({
   liveTurnElapsedSec?: number
   /** 整段对话的最后一条助手回合 */
   isLatestTurn?: boolean
-  onOpenFile?: (rawUrl: string, name?: string) => void
+  onOpenFile?: (
+    rawUrl: string,
+    name?: string,
+    opts?: {
+      line?: number
+      endLine?: number
+      annotation?: { title?: string; body?: string; priority?: number }
+    },
+  ) => void
   onOpenKnowledgeMap?: () => void
   onToolApproval?: (
     action: 'approve' | 'approve_all' | 'deny' | 'grant_all' | 'approve_remember',

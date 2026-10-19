@@ -15,7 +15,7 @@ function locationLabel(card: AssistantCodeCommentCard): string {
   return `${card.displayPath}:${card.startLine}`
 }
 
-/** 助手正文里 `::code-comment{...}` 渲染出的行内评论卡片（默认折叠）。 */
+/** 助手正文里 `::code-comment{...}` 渲染出的行内评论卡片（默认展开，对齐 ZCode 可见性）。 */
 function AssistantCodeCommentCardsInner({
   cards,
   onOpenWorkspaceFile,
@@ -32,7 +32,7 @@ function AssistantCodeCommentCardsInner({
     },
   ) => void
 }) {
-  const [isOpen, setIsOpen] = useState(false)
+  const [isOpen, setIsOpen] = useState(true)
   if (cards.length === 0) return null
 
   const openCard = (card: AssistantCodeCommentCard) => {
@@ -70,7 +70,6 @@ function AssistantCodeCommentCardsInner({
                   tabIndex={0}
                   className="evf-code-comment-row"
                   data-code-comment-path={card.displayPath}
-                  title={card.body}
                   onClick={(event) => {
                     // 用户在卡片里选中文本时不要误触打开文件
                     const selection = window.getSelection()
@@ -94,8 +93,15 @@ function AssistantCodeCommentCardsInner({
                       P{card.priority}
                     </span>
                   ) : null}
-                  <span className="evf-code-comment-title">{title}</span>
-                  <span className="evf-code-comment-location">{locationLabel(card)}</span>
+                  <div className="evf-code-comment-main">
+                    <div className="evf-code-comment-meta">
+                      <span className="evf-code-comment-title">{title}</span>
+                      <span className="evf-code-comment-location">{locationLabel(card)}</span>
+                    </div>
+                    {card.body ? (
+                      <p className="evf-code-comment-body">{card.body}</p>
+                    ) : null}
+                  </div>
                 </div>
               </div>
             )

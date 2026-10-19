@@ -45,8 +45,14 @@ import {
   streamPerfTime,
   streamPerfCountRender,
   streamPerfSetVisibleRows,
+  streamPerfNoteContext,
+  streamPerfEnabled,
   installStreamPerfGlobal,
 } from '../lib/stream-perf-trace.js'
+import {
+  estimateStreamBumpScore,
+  resolveStreamBumpMinIntervalMs,
+} from '../lib/stream-bump-interval.js'
 
 /**
  * AI 回复流式贴底时，在真正底部上方留一点余量，让最新内容「吸附」在底部偏上，
@@ -78,7 +84,15 @@ type SharedHistoryProps = {
   toolApprovalUiDisabled: boolean
   suppressPlanExecPromptNoise: boolean
   hideSubagentInnerTools: boolean
-  onOpenFile?: (rawUrl: string, name?: string) => void
+  onOpenFile?: (
+    rawUrl: string,
+    name?: string,
+    opts?: {
+      line?: number
+      endLine?: number
+      annotation?: { title?: string; body?: string; priority?: number }
+    },
+  ) => void
   onOpenKnowledgeMap?: () => void
   onToolApproval?: (
     action: 'approve' | 'approve_all' | 'deny' | 'grant_all' | 'approve_remember',
@@ -706,7 +720,15 @@ export const MessageVirtualList = memo(function MessageVirtualList({
   toolApprovalUiDisabled?: boolean
   suppressStreamFiles?: boolean
   hideSubagentInnerTools?: boolean
-  onOpenFile?: (rawUrl: string, name?: string) => void
+  onOpenFile?: (
+    rawUrl: string,
+    name?: string,
+    opts?: {
+      line?: number
+      endLine?: number
+      annotation?: { title?: string; body?: string; priority?: number }
+    },
+  ) => void
   onOpenKnowledgeMap?: () => void
   recentArtifacts?: ChatArtifact[]
   onOpenArtifact?: (item: ChatArtifact) => void
@@ -1095,6 +1117,28 @@ export const MessageVirtualList = memo(function MessageVirtualList({
 
   const historyItems = baseHistoryItems
   streamPerfSetVisibleRows(historyItems.length)
+  if (streamPerfEnabled()) {
+    const live = streamRef.current
+    const segs = streamRow?.segments
+    let reasoningChars = String(streamRow?.reasoningPreview || '').length
+    let textChars = String(streamRow?.text || '').length
+    if (Array.isArray(segs)) {
+      for (const seg of segs) {
+        if (seg?.kind === 'reasoning') reasoningChars += String(seg.text || '').length
+        else if (seg?.kind === 'text') textChars += String(seg.text || '').length
+      }
+    }
+    streamPerfNoteContext({
+      historyRows: historyItems.length,
+      reasoningChars,
+      textChars,
+      toolCount: Array.isArray(streamRow?.tools) ? streamRow.tools.length : live?.turn?.tools?.length || 0,
+      segmentCount: Array.isArray(segs) ? segs.length : 0,
+      bumpScore: estimateStreamBumpScore(live),
+      bumpIntervalMs: resolveStreamBumpMinIntervalMs(live),
+      streamActive,
+    })
+  }
 
   const streamContinuedRowIndex =
     streamContinuesAssistant && streamRow ? continuationTargetIndex : -1
