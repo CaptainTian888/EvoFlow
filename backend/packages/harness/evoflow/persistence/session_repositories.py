@@ -139,7 +139,7 @@ _SESSION_SELECT_BASE = """
     local_workspace_root, use_virtual_paths, model_name, primary_model_name, session_mode,
     thinking_enabled, reasoning_effort, is_plan_mode, subagent_enabled, include_search,
     memory_enabled, use_claude_code_chat, collab_phase, collab_task_id, agent_id,
-    session_status, tool_approval_policy,
+    session_status, tool_approval_policy, permission_preset,
     active_tools_json, pending_tools_json,
     run_status, current_run_id, current_turn_started_at, current_turn_ended_at,
     input_tokens, output_tokens, total_tokens,
@@ -941,6 +941,7 @@ def _upsert_session_row_impl(
     from evoflow.persistence.tool_approval_policy import normalize_policy, policy_for_new_session
 
     update_policy = "tool_approval_policy" in flat_overrides
+    update_preset = "permission_preset" in flat_overrides
     if not existing:
         policy_val = policy_for_new_session(flat_overrides.get("tool_approval_policy"))
         # Align with create_new_session / EvoPanel「新建对话」→ Agent（非 Ask）
@@ -953,6 +954,23 @@ def _upsert_session_row_impl(
         raw_existing = (existing or {}).get("tool_approval_policy")
         policy_val = normalize_policy(str(raw_existing)) if raw_existing is not None and str(raw_existing).strip() else None
 
+    if update_preset:
+        raw_pp = flat_overrides.get("permission_preset")
+        preset_val: str | None = (
+            str(raw_pp).strip().lower() if raw_pp is not None and str(raw_pp).strip() else None
+        )
+    else:
+        # Preserve existing permission_preset on existing rows; only newly inserted
+        # rows get a non-null value when an explicit override is supplied via
+        # flat_overrides. This avoids accidentally nulling the runtime preset
+        # when an unrelated upsert_session_row() call hits the same row.
+        raw_pp_existing = (existing or {}).get("permission_preset")
+        preset_val = (
+            str(raw_pp_existing).strip().lower()
+            if raw_pp_existing is not None and str(raw_pp_existing).strip()
+            else None
+        )
+
     db.execute(
         """
         INSERT INTO evoflow_chat_sessions (
@@ -962,8 +980,8 @@ def _upsert_session_row_impl(
             session_mode, thinking_enabled, reasoning_effort, is_plan_mode,
             subagent_enabled, include_search, memory_enabled, use_claude_code_chat,
             collab_phase, collab_task_id, agent_id, session_status,
-            tool_approval_policy
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            tool_approval_policy, permission_preset
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(session_key) DO UPDATE SET
             thread_id = COALESCE(excluded.thread_id, evoflow_chat_sessions.thread_id),
             title = CASE
@@ -1011,6 +1029,10 @@ def _upsert_session_row_impl(
                 WHEN ? = 1 THEN excluded.tool_approval_policy
                 ELSE evoflow_chat_sessions.tool_approval_policy
             END,
+            permission_preset = CASE
+                WHEN ? = 1 THEN excluded.permission_preset
+                ELSE evoflow_chat_sessions.permission_preset
+            END,
             is_deleted = 0
         """,
         (
@@ -1038,8 +1060,10 @@ def _upsert_session_row_impl(
             flat.get("agent_id"),
             status_for_row,
             policy_val,
+            preset_val,
             1 if clear_model_name else 0,
             1 if (not existing or update_policy) else 0,
+            1 if (not existing or update_preset) else 0,
         ),
     )
 

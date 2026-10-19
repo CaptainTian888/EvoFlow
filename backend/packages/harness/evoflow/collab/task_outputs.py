@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -554,6 +555,129 @@ def absolutize_file_path(
     return _path_as_str(candidates[0]) if candidates else raw
 
 
+@dataclass
+class PathResolution:
+    """Resolution metadata for one output file path.
+
+    Persisted as ``outputs[i]._resolve_meta`` so the UI can render
+    「已生成/未生成」 badges and open the right workspace root without
+    having to re-probe the filesystem.
+    """
+
+    absolute: str
+    """Resolved absolute path (best effort; may not exist on disk)."""
+
+    root_used: str
+    """Which root won: ``""`` for host-abs, ``"role_workspace:<path>"``,
+    ``"cwd"``, ``"cwd/outputs"``, ``"demos"``, ``"demos_local"`` or
+    ``"unresolved"`` when nothing was tried."""
+
+    strategy: str
+    """Same as ``root_used`` but stable identifier for telemetry."""
+
+    found: bool
+    """True iff the candidate file actually existed on disk at resolve time."""
+
+
+def resolve_output_path_ex(
+    value: str,
+    workspace_root: str | None,
+    *,
+    agent_code: str | None = None,
+) -> PathResolution:
+    """Resolve a single file-output value, returning a :class:`PathResolution`.
+
+    Behavioural contract:
+
+    * Host-absolute paths / URLs are passed through; ``root_used=""`` and
+      ``strategy="host_abs"``. ``found`` reflects ``os.path.exists``.
+    * Relative paths are tried in this order: role workspace → ``cwd`` →
+      ``cwd/outputs/<basename>`` → ``<cwd>/../demos/ops-copy-workflows/runs/workspace`` →
+      ``<cwd>/demos/ops-copy-workflows/runs/workspace``. The first candidate that
+      exists on disk wins; otherwise the role-workspace join is returned so the
+      UI can still show a stable string.
+    * The result is **never** raised — even when nothing was probed, a
+      :class:`PathResolution` is returned with ``strategy="unresolved"``.
+    """
+    raw = str(value or "").strip().strip("'\"")
+    root = str(workspace_root or "").strip().strip("'\"")
+
+    if not raw:
+        return PathResolution(absolute="", root_used="", strategy="unresolved", found=False)
+
+    if is_absolute_output_path(raw):
+        abs_path = raw.replace("\\", "/")
+        try:
+            found = Path(abs_path).exists()
+        except OSError:
+            found = False
+        return PathResolution(
+            absolute=abs_path,
+            root_used="",
+            strategy="host_abs",
+            found=found,
+        )
+
+    rel = raw.replace("\\", "/")
+
+    def _try(candidate: Path, strategy: str) -> PathResolution | None:
+        try:
+            if candidate.exists():
+                return PathResolution(
+                    absolute=_path_as_str(candidate),
+                    root_used=strategy,
+                    strategy=strategy,
+                    found=True,
+                )
+        except OSError:
+            return None
+        return None
+
+    if root:
+        try:
+            joined = Path(root).joinpath(rel)
+        except Exception:
+            joined = Path(os.path.normpath(os.path.join(root, rel.replace("/", os.sep))))
+        res = _try(joined, f"role_workspace:{root}")
+        if res is not None:
+            return res
+
+    cwd = Path.cwd()
+    fallback_candidates: list[tuple[Path, str]] = [
+        (cwd / rel, "cwd"),
+        (cwd / "outputs" / Path(rel).name, "cwd/outputs"),
+        (cwd.parent / "demos" / "ops-copy-workflows" / "runs" / "workspace" / rel, "demos"),
+        (cwd / "demos" / "ops-copy-workflows" / "runs" / "workspace" / rel, "demos_local"),
+    ]
+    for cand, strategy in fallback_candidates:
+        res = _try(cand, strategy)
+        if res is not None:
+            return res
+
+    # Nothing on disk — fall back to the role-workspace join so the UI can
+    # still show a stable string (matches legacy absolutize_file_path).
+    if root:
+        try:
+            joined = Path(root).joinpath(rel)
+        except Exception:
+            joined = Path(os.path.normpath(os.path.join(root, rel.replace("/", os.sep))))
+        return PathResolution(
+            absolute=_path_as_str(joined),
+            root_used=f"role_workspace:{root}",
+            strategy=f"role_workspace:{root}",
+            found=False,
+        )
+    if fallback_candidates:
+        cand, strategy = fallback_candidates[0]
+        return PathResolution(
+            absolute=_path_as_str(cand),
+            root_used=strategy,
+            strategy=strategy,
+            found=False,
+        )
+    return PathResolution(absolute=raw, root_used="", strategy="unresolved", found=False)
+
+
 def absolutize_task_outputs(
     raw: Any,
     workspace_root: str | None,
@@ -576,6 +700,43 @@ def absolutize_task_outputs(
                 workspace_root,
                 agent_code=agent_code,
             )[:_VALUE_MAX]
+        out.append(row)
+    return out
+
+
+def absolutize_task_outputs_ex(
+    raw: Any,
+    workspace_root: str | None,
+    *,
+    types: frozenset[str] | None = None,
+    agent_code: str | None = None,
+) -> list[dict[str, str]]:
+    """Like :func:`absolutize_task_outputs` but each file item carries a
+    ``_resolve_meta`` sub-dict (``absolute`` / ``root_used`` / ``strategy`` /
+    ``found``) so downstream UIs can render existence badges and open the
+    right workspace root without re-probing the filesystem.
+    """
+    items = normalize_task_outputs(raw)
+    if not items:
+        return items
+    want = types or frozenset({"file", "other"})
+    out: list[dict[str, str]] = []
+    for item in items:
+        row = dict(item)
+        typ = normalize_output_type(row.get("type"))
+        if typ in want:
+            res = resolve_output_path_ex(
+                str(row.get("value") or ""),
+                workspace_root,
+                agent_code=agent_code,
+            )
+            row["value"] = res.absolute[:_VALUE_MAX]
+            row["_resolve_meta"] = {
+                "absolute": res.absolute,
+                "root_used": res.root_used,
+                "strategy": res.strategy,
+                "found": res.found,
+            }
         out.append(row)
     return out
 
@@ -851,7 +1012,10 @@ __all__ = [
     "is_absolute_output_path",
     "absolutize_file_path",
     "absolutize_task_outputs",
+    "absolutize_task_outputs_ex",
     "absolutize_handlers_paths",
+    "PathResolution",
+    "resolve_output_path_ex",
     "workspace_root_for_agent",
     "workspace_root_for_task_row",
     "agent_code_for_task_row",

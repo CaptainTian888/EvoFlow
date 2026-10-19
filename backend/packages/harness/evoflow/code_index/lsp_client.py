@@ -86,12 +86,15 @@ class LspClient:
         self._timeout = timeout_seconds
         self._lock = threading.Lock()
         self._next_id = 1
+        from evoflow.utils.subprocess_platform import subprocess_hide_window_kwargs
+
         self._proc = subprocess.Popen(
             command,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             bufsize=0,
+            **subprocess_hide_window_kwargs(),
         )
         if self._proc.stdin is None or self._proc.stdout is None:
             raise RuntimeError("LSP process missing stdio pipes")

@@ -232,7 +232,7 @@ def set_loaded_deferred_for_scenario(
     thread_id: str | None = None,
 ) -> list[str]:
     existing = get_scenario_binding(session_key, scenario_key)
-    eager = list(existing.get("eager_tools") or []) if existing else []
+    eager = (list(existing.get("eager_tools") or []) if existing else [])
     result = upsert_scenario_binding(
         session_key,
         scenario_key,
@@ -274,11 +274,18 @@ def _derive_tool_fields_for_mode(session_key: str, mode: str) -> dict[str, list[
 
     sk = str(session_key or "").strip()
     m = normalize_session_mode(mode)
-    row = get_scenario_binding(sk, m) or {} if sk else {}
-    bound = bound_tools_for_session_agent(sk, m) if sk else list(row.get("eager_tools") or [])
-    loaded = filter_loaded_for_agent_mode(sk, m, list(row.get("loaded_deferred") or [])) if sk else list(row.get("loaded_deferred") or [])
-    pending = pending_activation_for_session_agent(sk, m, loaded_deferred=loaded) if sk else []
-    effective = effective_bound_tools_for_session_agent(sk, m, loaded_deferred=loaded) if sk else sorted({*bound, *loaded})
+    if sk:
+        row = get_scenario_binding(sk, m) or {}
+        bound = bound_tools_for_session_agent(sk, m)
+        loaded = filter_loaded_for_agent_mode(sk, m, list(row.get("loaded_deferred") or []))
+        pending = pending_activation_for_session_agent(sk, m, loaded_deferred=loaded)
+        effective = effective_bound_tools_for_session_agent(sk, m, loaded_deferred=loaded)
+    else:
+        row = {}
+        bound = list(row.get("eager_tools") or [])
+        loaded = list(row.get("loaded_deferred") or [])
+        pending = []
+        effective = sorted({*bound, *loaded})
     return {
         "bound_tools": bound,
         "loaded_deferred": loaded,
@@ -382,7 +389,7 @@ def append_binding_event(
     ``upsert_scenario_binding`` directly with the snapshot fields.
     """
     existing = get_scenario_binding(session_key, scenario_key)
-    eager = list(existing.get("eager_tools") or []) if existing else []
+    eager = (list(existing.get("eager_tools") or []) if existing else [])
     payload = dict(detail or {})
     if tool_names:
         payload["event_tool_names"] = _normalize_tool_names(tool_names)

@@ -462,6 +462,39 @@ const simpleMathIdentifierPattern = /^(?:[A-Za-z]|[a-z][A-Za-z0-9]{1,2}|\d+(?:\.
 const compactCurrencyRangePrefixPattern = /^(?:\d[\d,]*(?:\.\d+)?|\.\d+)[+\-*/]$/;
 const compactCurrencyAmountStartPattern = /^(?:\d|\.\d)/;
 
+/**
+ * Fix fragmented Markdown blocks in streaming mode.
+ * 
+ * When Markdown arrives as character-by-character deltas, block elements like
+ * `#hashtag` may be interpreted as headings by the parser before the preceding
+ * context (like `（`) arrives.
+ * 
+ * This function detects and fixes cases where a line starts with `#` followed
+ * by non-space characters, which indicates either:
+ * 1. A hashtag that should NOT be a heading (should be escaped)
+ * 2. A malformed heading that was split across deltas
+ * 
+ * The fix escapes `#` in these cases if it's NOT a proper heading
+ * (proper headings have space after `#` or are multiple `#` like `##`).
+ */
+function fixStreamingMarkdownFragments(markdown: string): string {
+  // Match lines that start with `#` followed immediately by non-space, non-`#`
+  // character (e.g., `#tag`, `#ai新星计划`). These are likely hashtags in
+  // streaming that were misinterpreted as headings, not real headings.
+  //
+  // Real headings have the form:
+  // - `# heading` (space after single #)
+  // - `## heading` (multiple # or space after)
+  // - `# ` (# followed by space)
+  //
+  // So we escape `#` when followed by a non-space, non-`#` character at line start.
+  return markdown.replace(/^(#+)(?![\s#])/gm, (match) => {
+    // Remove the Markdown heading marker entirely; retaining the first `#`
+    // would still make the line a heading (e.g. `#&#35;tag`).
+    return "&#35;" + match.slice(1);
+  });
+}
+
 type MarkdownCodeProps = ComponentProps<"code"> & {
   node?: unknown;
   "data-block"?: unknown;
@@ -1342,9 +1375,11 @@ export const MessageResponse = memo(
     );
     const targetMarkdown = useMemo(
       () =>
-        rewriteMarkdownArtifactImageSources(
-          normalizeMessageSingleDollarMath(
-            normalizeConsecutiveMarkdownImageBlocks(projectedCitationMarkdown),
+        fixStreamingMarkdownFragments(
+          rewriteMarkdownArtifactImageSources(
+            normalizeMessageSingleDollarMath(
+              normalizeConsecutiveMarkdownImageBlocks(projectedCitationMarkdown),
+            ),
           ),
         ),
       [projectedCitationMarkdown],

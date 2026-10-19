@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { useGlobalOverlayWhen } from '../hooks/useGlobalOverlayWhen.js'
 import { api, getGatewayBaseUrl } from '../../lib/tauri-api.js'
 import { getAccessUrls, getWebuiStatus } from '../../lib/webui-remote.js'
 import { toast } from '../../components/toast.js'
@@ -93,6 +94,7 @@ export function ShareSessionModal({
 
   const sk = String(sessionKey || '').trim()
   const title = String(sessionTitle || '').trim() || '未命名会话'
+  useGlobalOverlayWhen(open, 'share-session')
 
   useEffect(() => {
     if (!open) return

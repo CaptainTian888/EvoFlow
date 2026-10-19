@@ -2780,6 +2780,44 @@ class FeishuChannel(Channel):
         lock = self._send_card_locks.setdefault(lock_key, asyncio.Lock())
         async with lock:
             await self._send_card_message_locked(msg, source_message_id)
+        # Audit log: every outbound card (running patch, final reply, new thread)
+        # must leave a trail so we can later reconstruct the full agent stream.
+        # Failures here must never break the send path — wrap in suppress.
+        with contextlib.suppress(Exception):
+            from evoflow.persistence.channel_push_repositories import safe_record_push
+
+            outbound_text = str(msg.text or "")
+            summary = outbound_text[:800]
+            event = "sent" if msg.is_final else "card_patched"
+            kind = "stream_card"
+            title = ""
+            try:
+                if msg.is_final and not outbound_text:
+                    kind = "stream_empty"
+                    title = "(空消息)"
+            except Exception:
+                pass
+            safe_record_push(
+                direction="outbound",
+                channel="feishu",
+                kind=kind,
+                event=event,
+                transport="interactive_card",
+                sender_account_id=str(msg.account_id or ""),
+                receive_id=str(msg.chat_id or ""),
+                receive_id_type="chat_id",
+                external_message_id=str(msg.thread_ts or ""),
+                title=title,
+                content_summary=summary,
+                payload={
+                    "thread_id": str(msg.thread_id or ""),
+                    "is_final": bool(msg.is_final),
+                    "topic_id": str(msg.topic_id or ""),
+                    "text_len": len(outbound_text),
+                },
+                status="ok",
+                triggered_by="system",
+            )
 
     def _touch_stream_state(self, source_message_id: str) -> None:
         self._stream_state_ts[source_message_id] = time.monotonic()
@@ -3197,6 +3235,35 @@ class FeishuChannel(Channel):
                 chat_type or "?",
                 len(raw) if raw else 0,
             )
+
+            # Audit log: every accepted inbound IM message must leave a trail so we
+            # can later reconstruct who said what to which bot. Failures here must
+            # never block the message path, so we go through safe_record_push.
+            with contextlib.suppress(Exception):
+                from evoflow.persistence.channel_push_repositories import safe_record_push
+
+                safe_record_push(
+                    direction="inbound",
+                    channel="feishu",
+                    kind="im_message",
+                    event="callback",
+                    transport="im_event",
+                    sender_account_id=str(sender_id or ""),
+                    external_message_id=str(msg_id or ""),
+                    receive_id=str(chat_id or ""),
+                    receive_id_type="chat_id",
+                    title="",
+                    content_summary=str(raw or "")[:800],
+                    payload={
+                        "chat_type": chat_type,
+                        "root_id": str(root_id or ""),
+                        "reply_anchor": reply_anchor_message_id,
+                        "msg_type": str(getattr(msg_type, "value", msg_type) or ""),
+                        "account_id": account_id,
+                    },
+                    status="ok",
+                    triggered_by="user",
+                )
 
             inbound = self._make_inbound(
                 chat_id=chat_id,

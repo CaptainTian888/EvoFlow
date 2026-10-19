@@ -533,13 +533,83 @@ export function isUserToolApprovalMessage(text) {
   return false
 }
 
-function pendingApprovalResolvedAfterRow(rows, pendingRowIndex) {
-  if (!Array.isArray(rows) || pendingRowIndex < 0) return false
+/**
+ * Scan user rows after pendingRowIndex and return which pending ids remain
+ * unresolved by approval evidence (hidden markers resolve only their own ids;
+ * visible approval messages resolve all).
+ */
+function unresolvedPendingIdsAfterRow(rows, pendingRowIndex, pendingIds) {
+  const unresolved = new Set(
+    (Array.isArray(pendingIds) ? pendingIds : [])
+      .map((x) => String(x || '').trim())
+      .filter(Boolean),
+  )
+  let sawApprovalEvidence = false
   for (let j = pendingRowIndex + 1; j < rows.length; j++) {
     const row = rows[j]
-    if (row?.role === 'user' && isUserToolApprovalMessage(row.text)) return true
+    if (row?.role !== 'user') continue
+    const text = String(row.text || '')
+    if (isHiddenToolApprovalUserMessage(text)) {
+      // 内部标记行只解决其声明的 tool_call_ids（replay = 本轮续流继续的载体）。
+      // 不能整行视为「已解决」——多轮审批时同一回合内后续工具的授权
+      // 仍须以该行为宿主继续展示，否则第二次及以后的审批面板会在
+      // seal 后消失、折叠头收起。
+      const res = approvalMarkerResolution(text)
+      if (!res) continue
+      sawApprovalEvidence = true
+      if (res.all) {
+        unresolved.clear()
+        continue
+      }
+      for (const id of res.ids) unresolved.delete(id)
+      continue
+    }
+    if (isUserToolApprovalMessage(text)) {
+      unresolved.clear()
+      sawApprovalEvidence = true
+      break
+    }
   }
-  return false
+  return { sawEvidence: sawApprovalEvidence, unresolved }
+}
+
+/** Parse a hidden approval/replay marker user row → which tool ids it resolved. */
+function approvalMarkerResolution(text) {
+  const s = String(text || '').trim()
+  const lower = s.toLowerCase()
+  try {
+    if (lower.startsWith(TOOL_APPROVAL_MARKER.toLowerCase())) {
+      const data = JSON.parse(s.slice(TOOL_APPROVAL_MARKER.length).trim())
+      if (String(data?.action || '').trim().toLowerCase() === 'grant_all') {
+        return { all: true, ids: [] }
+      }
+      const id = String(data?.tool_call_id || '').trim()
+      return { all: false, ids: id ? [id] : [] }
+    }
+    if (lower.startsWith(TOOL_APPROVAL_REPLAY_MARKER.toLowerCase())) {
+      const data = JSON.parse(s.slice(TOOL_APPROVAL_REPLAY_MARKER.length).trim())
+      const ids = (Array.isArray(data?.tool_call_ids) ? data.tool_call_ids : [])
+        .map((x) => String(x || '').trim())
+        .filter(Boolean)
+      return { all: false, ids }
+    }
+  } catch {
+    /* malformed marker — not resolution evidence */
+  }
+  return null
+}
+
+/** Collect tool_call_ids of pending-approval tools in one row. */
+function collectPendingToolIds(tools) {
+  const ids = []
+  if (!Array.isArray(tools)) return ids
+  for (const t of tools) {
+    if (!t || typeof t !== 'object') continue
+    if (!isToolPendingApproval(t)) continue
+    const id = resolveToolRowId(t)
+    if (id) ids.push(id)
+  }
+  return ids
 }
 
 function findLastPendingAssistantRowIndex(rows) {
@@ -563,6 +633,24 @@ export function resolveToolApprovalHost({ rows, streamTools, isSending }) {
   const streamPending = rowHasPendingApprovalTools(streamTools)
 
   if (lastIsUser) {
+    // 隐藏标记行（replay / 授权回执）只解决其声明的 tool_call_ids——
+    // 多轮审批时同回合内未被覆盖的 pending 仍要继续宿主（seal 后 row 宿主，
+    // 续流进行中 stream 宿主），不能因最后一行是标记就整体判 none。
+    if (isHiddenToolApprovalUserMessage(last.text)) {
+      const idx = findLastPendingAssistantRowIndex(list)
+      if (idx >= 0) {
+        const { unresolved } = unresolvedPendingIdsAfterRow(
+          list,
+          idx,
+          collectPendingToolIds(list[idx]?.tools),
+        )
+        if (unresolved.size > 0) {
+          if (isSending || streamPending) return { kind: 'stream' }
+          return { kind: 'row', index: idx }
+        }
+      }
+      return { kind: 'none' }
+    }
     if (isUserToolApprovalMessage(last.text)) {
       return { kind: 'none' }
     }
@@ -572,8 +660,15 @@ export function resolveToolApprovalHost({ rows, streamTools, isSending }) {
   }
 
   const idx = findLastPendingAssistantRowIndex(list)
-  if (idx >= 0 && !pendingApprovalResolvedAfterRow(list, idx)) {
-    return { kind: 'row', index: idx }
+  if (idx >= 0) {
+    const { sawEvidence, unresolved } = unresolvedPendingIdsAfterRow(
+      list,
+      idx,
+      collectPendingToolIds(list[idx]?.tools),
+    )
+    if (!sawEvidence || unresolved.size > 0) {
+      return { kind: 'row', index: idx }
+    }
   }
 
   // Same SSE paused at approval: pending may live only in the live stream buffer.

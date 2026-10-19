@@ -46,8 +46,12 @@ export type RightPanelLayoutKind = 'half' | 'wide' | 'narrow' | 'workspace-brows
 
 export {
   defaultRightPanelWidth,
+  defaultNarrowRightPanelWidth,
+  defaultWideRightPanelWidth,
   clampRightPanelWidth,
+  isStaleNarrowRightPanelWidth,
   rightStageLayoutToPanelKind,
+  RIGHT_PANEL_NARROW_LEGACY_PX,
 } from './right-stage/right-stage-layout.js'
 
 export function clampBottomDockHeight(

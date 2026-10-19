@@ -219,6 +219,41 @@ async def requeue_orphan_docs(request: Request, kb_id: str) -> dict[str, Any]:
     return owned_service.requeue_orphan_parse_docs(kb_id)
 
 
+@router.post("/bases/{kb_id}/documents/{doc_id}/retry")
+async def retry_document(request: Request, kb_id: str, doc_id: str) -> dict[str, Any]:
+    """Re-enqueue ``parse_index`` for a single failed/stuck document.
+
+    Used by the index-status banner's per-row "重试" button. The document
+    must still exist in the KB; otherwise the call returns 404.
+    """
+    require_kb_visible(request, kb_id)
+    try:
+        return owned_service.retry_document_parse(kb_id, doc_id)
+    except ValueError as exc:
+        msg = str(exc)
+        code = 404 if "not found" in msg.lower() else 400
+        raise HTTPException(code, msg) from exc
+
+
+@router.post("/bases/{kb_id}/purge-orphans")
+async def purge_orphan_jobs(request: Request, kb_id: str) -> dict[str, Any]:
+    """Cancel jobs whose owning KB or document was soft-deleted.
+
+    Stops the long tail of ``knowledge base or document not found`` errors
+    that show up in the index banner after a KB is rebuilt or a doc is
+    deleted. The action is idempotent and never deletes user data — it
+    only flips queued/running/error jobs whose target row no longer exists
+    into the ``cancelled`` state.
+    """
+    require_kb_visible(request, kb_id)
+    from evoflow.knowledge.owned import jobs as owned_jobs
+
+    # Only purge jobs that belong to this KB; the global reconcile already
+    # covers cross-KB cases on the worker tick.
+    purged = owned_jobs.purge_failed_orphan_jobs(limit=500)
+    return {"kbId": kb_id, "purged": int(purged or 0)}
+
+
 @router.delete("/bases/{kb_id}")
 async def delete_base(request: Request, kb_id: str) -> dict[str, Any]:
     require_kb_visible(request, kb_id)

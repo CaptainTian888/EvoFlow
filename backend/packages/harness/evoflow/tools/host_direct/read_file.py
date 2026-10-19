@@ -190,6 +190,15 @@ def _resolve_read_target(path: str, *, runtime: ToolRuntime) -> Path | str:
     return target
 
 
+def _note_model_read(path: Path) -> None:
+    try:
+        from evoflow.tools.zcode_port.read_file_state import note_read
+
+        note_read(str(path))
+    except Exception:
+        return
+
+
 @tool("read", description=READ_TOOL_DESCRIPTION, parse_docstring=False)
 def read_file_hd(
     path: str,
@@ -223,5 +232,10 @@ def read_file_hd(
             remaining = total - _SYMBOL_MAX_LINES
             text += f"\n\n… [symbol '{symbol}' body is {total} lines; showing first {_SYMBOL_MAX_LINES}. Read the rest with offset={start + _SYMBOL_MAX_LINES}, limit={min(_SYMBOL_MAX_LINES, remaining)}]"
             return text
-        return "\n".join(f"{start + i}: {line}" for i, line in enumerate(body_lines))
-    return read_file_content(str(resolved), offset=offset, limit=limit, use_cache=True)
+        text = "\n".join(f"{start + i}: {line}" for i, line in enumerate(body_lines))
+        _note_model_read(resolved)
+        return text
+    text = read_file_content(str(resolved), offset=offset, limit=limit, use_cache=True)
+    if not str(text).startswith("Error:"):
+        _note_model_read(resolved)
+    return text

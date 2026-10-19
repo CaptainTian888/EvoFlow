@@ -127,6 +127,9 @@ def resolve_active_scenario_keys_for_display(
 # 基础 chat 工具（ask_clarification 不在默认集中，由员工自行绑定）
 # 读文件、rg、terminal、worker、subagent、todo 等随 session_mode / 白名单绑定
 CORE_TOOL_NAMES: tuple[str, ...] = (
+    # ZCode 插件运行时内核工具：browser-use / computer-use 启用时才真实存在
+    # （build_node_repl_js_tool 条件返回），存在即 eager 绑定，未启用时自动缺席。
+    "mcp__node_repl__js",
     # "mode_set",  # 暂不常驻：用户在界面切 plan/agent；逻辑保留在 scenario_activation
 )
 
@@ -160,11 +163,12 @@ PLAN_SCENARIO_EAGER_TOOL_NAMES: tuple[str, ...] = (
 SCENARIO_EAGER_TOOL_NAMES: dict[str, tuple[str, ...]] = {
     "agent": (
         "read",
-        "rg",
+        "bash",
+        "taskoutput",
+        "taskstop",
         "replace",
         "write",
         "delete",
-        "terminal",
         "search_code_index",
     ),
     "plan": PLAN_SCENARIO_EAGER_TOOL_NAMES,
@@ -202,13 +206,13 @@ def _agent_mode_deferred_tool_names() -> tuple[str, ...]:
     return _dedupe_tool_names(
         (
             # "worker",  # temporarily unregistered (code retained)
-            "process",
+            # "process",  # retired — Bash run_in_background + TaskOutput/TaskStop
             # "browser",  # unregistered — use the agent-browser skill (CLI/MCP) instead
             "web_search",
             "fetch_url",
             "subagent",
             "todo",
-            "find",
+            # "find",  # retired — embedded search via Bash
             "view_image",
             "read_lints",
             "assets",
@@ -230,11 +234,9 @@ SESSION_MODE_DEFERRED_CATALOG: dict[str, tuple[str, ...]] = {
     "plan": _dedupe_tool_names(
         (
             "propose_goal",
-            "terminal",
             "bash",
-            "process",
-            "rg",
-            "find",
+            "taskoutput",
+            "taskstop",
             # "worker",  # temporarily unregistered (code retained)
             "todo",
             "knowledge",
@@ -365,12 +367,12 @@ def build_scenario_tools_payload(
 # 说明：这里只放"除基础能力之外"的工具。
 NON_CORE_TOOL_GROUPS: dict[str, dict[str, tuple[str, ...] | str]] = {
     "workspace_baseline": {
-        "zh_description": "工作区基础：read/rg/find/terminal/todo/subagent/tasks（须 activate workspace）",
+        "zh_description": "工作区基础：read/Bash/todo/subagent/tasks（须 activate workspace）",
         "tools": (
             "read",
-            "rg",
-            "find",
-            "terminal",
+            "bash",
+            "taskoutput",
+            "taskstop",
             # "worker",  # temporarily unregistered (code retained)
             "todo",
             "subagent",
@@ -388,7 +390,6 @@ NON_CORE_TOOL_GROUPS: dict[str, dict[str, tuple[str, ...] | str]] = {
             "delete",
             "search_code_index",
             "read_lints",
-            "process",
         ),
     },
     "file_ops_read_present": {

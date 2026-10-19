@@ -38,7 +38,7 @@ foreach ($c in $exeCandidates) {
 }
 
 function Get-Sha256Hex([string]$Path) {
-  # Prefer .NET — GitHub Actions / constrained hosts may lack Get-FileHash cmdlet.
+  # Prefer .NET -- GitHub Actions / constrained hosts may lack Get-FileHash cmdlet.
   $sha = [System.Security.Cryptography.SHA256]::Create()
   try {
     $fs = [System.IO.File]::OpenRead($Path)

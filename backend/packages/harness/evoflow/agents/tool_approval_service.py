@@ -560,6 +560,37 @@ def apply_user_approval(
                 args=hit.get("args") if isinstance(hit.get("args"), dict) else {},
                 action="approve_remember" if force_remember else "approve",
             )
+            # 会话级授权（「始终允许本项目」等）落库后，同批登记的兄弟 pending
+            # 若已被授权覆盖（同名工具 / 命中签名），一并批准。兄弟是在用户批准
+            # 之前就登记的（_register_sibling_pending_approvals），不追溯放行
+            # 会让「本会话内同类操作不再询问」落空——下边的工具仍逐个要求批准。
+            grants = ta_repo.load_grants(sk)
+            for p in ta_repo.list_pending_for_thread(tid):
+                p_id = str(p.get("tool_call_id") or "").strip()
+                if not p_id or p_id == tc_id:
+                    continue
+                p_name = str(p.get("tool_name") or "").strip()
+                p_args = p.get("args") if isinstance(p.get("args"), dict) else {}
+                if not p_name:
+                    continue
+                if not is_granted_for_thread(tid, p_name, p_args, workspace_root=workspace_root):
+                    continue
+                _approve_pending_row(sk, tid, p, grants, workspace_root=workspace_root)
+                grants = ta_repo.load_grants(sk)
+                ta_repo.write_audit_log(
+                    session_key=sk,
+                    thread_id=tid,
+                    tool_call_id=p_id,
+                    tool_name=p_name,
+                    args=p_args,
+                    action="approve_grant_sweep",
+                )
+                log_tool_approval_trace(
+                    "数据层·会话授权覆盖兄弟pending",
+                    thread_id=tid,
+                    side="数据层",
+                    event_data={"tool_call_id": p_id, "tool_name": p_name},
+                )
             name = str(hit.get("tool_name") or "")
             replay_ids = _replay_ids_when_no_pending(tid)
             remaining = ta_repo.list_pending_for_thread(tid)

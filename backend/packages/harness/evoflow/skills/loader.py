@@ -3,8 +3,10 @@ import os
 import sys
 import threading
 from pathlib import Path
+from typing import Any
 
 from .parser import parse_skill_file
+from .skill_scope import SkillScope
 from .types import Skill
 
 logger = logging.getLogger(__name__)
@@ -14,6 +16,7 @@ logger = logging.getLogger(__name__)
 # mtime_map: {relative_skill_path: (mtime_ns, file_size)}
 _skills_cache: tuple[dict[str, tuple[int, int]], list[Skill], float] | None = None
 _skills_cache_ttl: float = 300  # seconds before re-checking mtimes
+_plugin_state_sig: str | None = None
 # Rendered <skill_system> section cache (avoids rebuild on every turn).
 _skills_prompt_section_cache: dict[tuple, str] = {}
 _skills_prompt_section_lock = threading.Lock()
@@ -158,6 +161,112 @@ def get_skills_root_path() -> Path:
     return (backend_dir.parent / "skills").resolve()
 
 
+def _count_custom_skills(skills_root: Path) -> int:
+    """Count ``custom/<dir>/SKILL.md`` entries under one skills root (best-effort)."""
+    custom = skills_root / "custom"
+    if not custom.is_dir():
+        return 0
+    try:
+        return sum(1 for d in custom.iterdir() if d.is_dir() and (d / "SKILL.md").is_file())
+    except OSError:
+        return 0
+
+
+def _candidate_profile_roots() -> list[Path]:
+    """``~/.evoflow{,-dev}/profiles/<id>/skills`` for every existing profile."""
+    home = Path.home()
+    out: list[Path] = []
+    for base in (home / ".evoflow", home / ".evoflow-dev"):
+        profiles = base / "profiles"
+        if not profiles.is_dir():
+            continue
+        try:
+            for profile in sorted(profiles.iterdir()):
+                if profile.is_dir():
+                    out.append(profile / "skills")
+        except OSError:
+            continue
+    return out
+
+
+def describe_skills_root_context() -> dict[str, Any]:
+    """Describe which skills root is active and which other candidate roots exist.
+
+    背景：面板拉起的 gateway 经 ``EVOFLOW_HOME`` → ``bootstrap_user_skills_path``
+    把 ``EVOFLOW_SKILLS_PATH`` 指向 ``~/.evoflow[-dev]/profiles/<id>/skills``，而
+    裸跑 CLI 在无环境变量时回退 ``~/.evoflow/skills``。两个根不同时，「把技能复制
+    到另一个 skills/custom」表现为装了但不生效。此处枚举机器上真实存在的候选根，
+    供 ``evoflow doctor`` 与 ``skills list`` 直接给出可行动的告警。
+    """
+    active = get_skills_root_path()
+    env_skills = os.getenv("EVOFLOW_SKILLS_PATH", "").strip()
+    evoflow_home = os.getenv("EVOFLOW_HOME", "").strip()
+    home = Path.home()
+
+    try:
+        active_resolved = active.resolve()
+    except OSError:
+        active_resolved = active
+
+    candidates: dict[str, dict[str, Any]] = {}
+
+    def _add(path: Path, source: str) -> None:
+        try:
+            resolved = path.expanduser().resolve()
+        except OSError:
+            resolved = path
+        key = str(resolved)
+        if key in candidates:
+            candidates[key]["sources"].append(source)
+            return
+        candidates[key] = {
+            "path": key,
+            "sources": [source],
+            "exists": resolved.is_dir(),
+            "custom_skills": _count_custom_skills(resolved),
+            "active": resolved == active_resolved,
+        }
+
+    if env_skills:
+        _add(Path(env_skills), "EVOFLOW_SKILLS_PATH")
+    if evoflow_home:
+        _add(Path(evoflow_home) / "skills", "EVOFLOW_HOME/skills")
+    _add(home / ".evoflow" / "skills", "默认 ~/.evoflow/skills（CLI 裸跑回退）")
+    _add(home / ".evoflow-dev" / "skills", "~/.evoflow-dev/skills（debug 构建 / 开发隔离）")
+    for profile_root in _candidate_profile_roots():
+        _add(profile_root, "profiles/<id>/skills（面板 profile）")
+    src_skills = _skills_root_from_source_tree()
+    if src_skills is not None:
+        _add(src_skills, "仓库 checkout skills/")
+
+    if env_skills:
+        source = "EVOFLOW_SKILLS_PATH"
+    elif evoflow_home:
+        source = "EVOFLOW_HOME"
+    else:
+        source = (
+            "默认回退 ~/.evoflow/skills（未设置 EVOFLOW_SKILLS_PATH / EVOFLOW_HOME；"
+            "面板拉起的 gateway 走 profiles/<id>/skills，两者可能不是同一目录）"
+        )
+
+    warnings: list[str] = []
+    for cand in candidates.values():
+        if cand["active"] or not cand["exists"] or not cand["custom_skills"]:
+            continue
+        warnings.append(
+            f"发现非生效技能根 {cand['path']}（{'/'.join(cand['sources'])}）含 "
+            f"{cand['custom_skills']} 个 custom 技能；当前生效根是 {active_resolved}，"
+            "装在非生效根的技能不会被加载"
+        )
+
+    return {
+        "active": str(active_resolved),
+        "active_source": source,
+        "candidates": list(candidates.values()),
+        "warnings": warnings,
+    }
+
+
 def _dedupe_skills_by_name(skills: list[Skill]) -> list[Skill]:
     """Keep one Skill per frontmatter ``name`` when the repo has duplicate trees (e.g. ``public/x`` and ``public/mbb-skills/x``).
 
@@ -247,10 +356,39 @@ def load_skills(
     if extra_roots is None:
         extra_roots = cfg_extra_roots
 
+    # Plugin contributed skills (ZCode parity): enabled plugins' skills/ roots
+    # join discovery so their skills flow through the same directory / $mention /
+    # skill:<name> URI machinery. Merge happens before the cache key is built,
+    # so installing/uninstalling a plugin invalidates the scan cache.
+    try:
+        from evoflow.plugins.runtime import plugin_skill_roots
+
+        plugin_roots = plugin_skill_roots()
+        if plugin_roots:
+            extra_roots = [*(extra_roots or []), *plugin_roots]
+    except Exception:
+        logger.debug("Plugin skill roots unavailable", exc_info=True)
+
     if not skills_path.exists() and not scope_skill_roots and not extra_roots:
         return []
 
     use_simple_cache = not scope_skill_roots
+
+    # Plugin enable/disable toggles don't touch skill files, so the mtime cache
+    # can't see them; invalidate on installed-plugins state signature change.
+    if use_simple_cache:
+        try:
+            from evoflow.plugins.runtime import plugin_state_signature
+
+            global _plugin_state_sig
+            sig = plugin_state_signature()
+            if sig != _plugin_state_sig:
+                if _plugin_state_sig is not None:
+                    logger.info("Plugin enablement changed, invalidating skills cache")
+                _plugin_state_sig = sig
+                _skills_cache = None
+        except Exception:
+            pass
 
     # ── Check cache: TTL first, then lightweight mtime scan ───────────
     if use_simple_cache and _skills_cache is not None:
@@ -304,9 +442,28 @@ def load_skills(
 
         sync_skills_from_filesystem()
         registry = cfg_repo.list_skill_registry()
+        plugin_root_strings: set[str] = set()
+        try:
+            from evoflow.plugins.runtime import plugin_skill_roots
+
+            plugin_root_strings = {str(p.resolve()) for p in plugin_skill_roots()}
+        except Exception:
+            plugin_root_strings = set()
         for skill in skills:
-            reg = registry.get(skill.name)
-            if reg is not None:
+            from_plugin = (
+                bool(plugin_root_strings)
+                and skill.source_root is not None
+                and str(Path(skill.source_root).resolve()) in plugin_root_strings
+            )
+            if from_plugin:
+                # Plugin-contributed skills: installing + enabling the plugin
+                # (plugin store semantics) is the enablement authority. A stale
+                # registry row for a same-named skill from another root (e.g. a
+                # removed custom skill) must not disable the plugin instance —
+                # otherwise ``skill:<name>`` URIs fail with "exists but is
+                # disabled" while the plugin is switched on.
+                skill.enabled = True
+            elif (reg := registry.get(skill.name)) is not None:
                 skill.enabled = bool(reg.get("enabled", True))
             else:
                 from evoflow.config.extensions_config import ExtensionsConfig
@@ -314,6 +471,17 @@ def load_skills(
                 skill.enabled = ExtensionsConfig.from_db().is_skill_enabled(skill.name, skill.category)
     except Exception as e:
         logger.warning("Failed to load skill enablement from SQLite: %s", e)
+
+    # ── Cross-scope shadowing (after enablement) ──────────────────────
+    # SkillIndex only dedupes within the same scope, so same-named instances
+    # from different scopes (user custom vs plugin vs system) all arrive here.
+    # Resolve each name to ONE instance: the highest-precedence *enabled* one
+    # (user-defined > plugin > system). A disabled user instance must not
+    # permanently hide an enabled plugin instance; when every instance is
+    # disabled, keep the highest-precedence one so existence/errors stay
+    # accurate. Plugin-sourced instances are gated by the plugin switch itself
+    # (see enablement above), not by same-named registry rows.
+    skills = _resolve_scope_shadowing(skills)
 
     # Sort by name for consistent ordering (cache stores the full list).
     skills.sort(key=lambda s: s.name)
@@ -329,6 +497,52 @@ def load_skills(
     if enabled_only:
         return [skill for skill in skills if skill.enabled]
     return skills
+
+
+def _resolve_scope_shadowing(skills: list[Skill]) -> list[Skill]:
+    """Collapse same-named instances across scopes to one survivor per name.
+
+    Precedence (highest first): user-defined scopes (personal/custom/...) >
+    plugin (EXTERNAL) > system (public/system). Within that order an *enabled*
+    instance always beats a disabled one, so a disabled user skill falls
+    through to an enabled plugin instance instead of dead-ending the name.
+    """
+    if not skills:
+        return skills
+    if len(skills) == 1:
+        return skills
+
+    def rank(s: Skill) -> tuple[int, int, int, str]:
+        scope_val = int(getattr(s, "scope", SkillScope.PUBLIC))
+        enabled_rank = 0 if s.enabled else 1
+        depth = len(s.skill_dir.parts)
+        path = str(s.skill_dir.resolve()).replace("\\", "/")
+        return (enabled_rank, -scope_val, depth, path)
+
+    buckets: dict[str, list[Skill]] = {}
+    for skill in skills:
+        buckets.setdefault(skill.name, []).append(skill)
+
+    if all(len(group) == 1 for group in buckets.values()):
+        return skills
+
+    out: list[Skill] = []
+    for _name, group in buckets.items():
+        if len(group) == 1:
+            out.append(group[0])
+            continue
+        chosen = sorted(group, key=rank)[0]
+        dropped = [g.skill_dir for g in group if g is not chosen]
+        if dropped:
+            logger.debug(
+                "Scope shadowing %r: kept %s (enabled=%s) dropped %s",
+                chosen.name,
+                chosen.skill_dir,
+                chosen.enabled,
+                dropped,
+            )
+        out.append(chosen)
+    return out
 
 
 def _legacy_scan_skills(skills_path: Path) -> list[Skill]:
@@ -359,12 +573,20 @@ def find_skill_directory(skill_key: str, *, require_enabled: bool = False) -> Pa
     if not key:
         return None
 
+    # Same-named skills can exist in multiple roots (e.g. a stale custom skill
+    # plus an enabled plugin skill). Prefer an enabled instance; only fall back
+    # to a disabled one when ``require_enabled`` is False (existence checks).
     all_skills = load_skills(enabled_only=False, use_config=True)
+    fallback_dir: Path | None = None
     for skill in all_skills:
-        if skill.name.strip().lower() == key:
-            if require_enabled and not skill.enabled:
-                return None
+        if skill.name.strip().lower() != key:
+            continue
+        if skill.enabled:
             return skill.skill_dir
+        if fallback_dir is None:
+            fallback_dir = skill.skill_dir
+    if fallback_dir is not None and not require_enabled:
+        return fallback_dir
 
     try:
         from evoflow.skills.index import SkillIndex

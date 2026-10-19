@@ -16,12 +16,14 @@ import {
   fmtWorkProcessDuration,
   formatRunIdDisplay,
 } from '../../lib/proactive-work-process.js'
+import type { WorkProcessEvent } from '../../lib/proactive-work-process.js'
 import {
   WorkProcessExportActions,
   WorkProcessSummaryBar,
   WorkProcessEventList,
   WorkProcessLiveNow,
   type StatFilterKey,
+  type WorkProcessEventView,
 } from './ProactiveWorkProcessViews.js'
 
 export type WorkProcessRunMeta = {
@@ -99,7 +101,7 @@ export function ProactiveWorkProcessPage({
     return /执行中|进行中|规划中/.test(zh)
   }, [run?.taskStatus, run?.status, run?.runStatus, run?.taskStatusLabel])
 
-  const events = useMemo(
+  const events = useMemo<WorkProcessEvent[]>(
     () =>
       annotateLiveWorkProcessEvents(
         filterWorkProcessInternalEvents(buildWorkProcessEvents(rows), { showInternals }),
@@ -119,7 +121,7 @@ export function ProactiveWorkProcessPage({
   const timeFromMs = timeFrom ? new Date(timeFrom).getTime() : null
   const timeToMs = timeTo ? new Date(timeTo).getTime() : null
 
-  const filtered = useMemo(
+  const filtered = useMemo<WorkProcessEvent[]>(
     () =>
       filterWorkProcessEvents(events, {
         kind,
@@ -263,7 +265,7 @@ export function ProactiveWorkProcessPage({
         </div>
         <div className="pro-wp-page__head-actions">
           <WorkProcessExportActions
-            events={events}
+            events={events as unknown as WorkProcessEventView[]}
             title={taskName}
             summaryAgent={meta?.executorName || agentCode}
             statusLabel={meta?.status || ''}
@@ -398,7 +400,7 @@ export function ProactiveWorkProcessPage({
 
       <div className="pro-wp-page__body">
         <WorkProcessEventList
-          events={filtered}
+          events={filtered as unknown as WorkProcessEventView[]}
           query={query}
           activeMatchId={activeMatchId}
           emptyText={loading ? '正在加载工作过程…' : '暂无匹配事件'}

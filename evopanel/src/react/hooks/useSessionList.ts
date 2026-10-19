@@ -264,13 +264,16 @@ export function useSessionList(opts: UseSessionListOptions) {
   /** 静默 soft 刷新进行中的 workspace，避免 8s 轮询叠请求 */
   const softReloadInflightRef = useRef<Set<string>>(new Set())
   const refreshSessionsTimerRef = useRef<number | null>(null)
+  /** 节流窗口内的补刷，避免 do-while 在同一轮里连打 sessions。 */
+  const refreshTrailingTimerRef = useRef<number | null>(null)
   /** Singleflight: coalesce overlapping refreshSessions (post-turn title polls flooded stdio). */
   const refreshInflightRef = useRef<Promise<void> | null>(null)
   const refreshDirtyRef = useRef(false)
   const refreshPendingOptRef = useRef<RefreshSessionsOptions | undefined>(undefined)
-  /** 任意来源的 refreshSessions 最短间隔(毫秒) — 抑制 1~2s 一次刷屏风暴。 */
-  const MIN_REFRESH_INTERVAL_MS = 1500
+  /** 用户操作触发的整表刷新最短间隔。流式回合不再走这条路径。 */
+  const MIN_REFRESH_INTERVAL_MS = 2500
   const lastRefreshRunAtRef = useRef(0)
+  const armTrailingRefreshRef = useRef<(delayMs: number) => void>(() => {})
   const refreshSessionsRef = useRef<
     ((opt?: RefreshSessionsOptions) => Promise<void>) | null
   >(null)
@@ -667,21 +670,26 @@ export function useSessionList(opts: UseSessionListOptions) {
 
   const refreshSessions = useCallback(
     async (opt?: RefreshSessionsOptions) => {
-      // 全局最小间隔 — 抑制 shell-sessions-mutated / scheduleRefreshSessions /
-      // onBackendReadyChange 等多源并发触发的 1~2s 一次刷屏风暴。低于间隔
-      // 直接合并到 dirty,等当前 inflight 完成后用 do-while 自然收敛一次。
+      // 全局最小间隔。流式 upsert 会在请求飞行中再触发；补刷排到间隔之后，
+      // 不再在同一次 refresh 里立刻再打一轮 workspace sessions。
+      const mergePending = (incoming?: RefreshSessionsOptions) => {
+        const prev = refreshPendingOptRef.current
+        refreshPendingOptRef.current = {
+          skipAutoReselect: !!(prev?.skipAutoReselect || incoming?.skipAutoReselect),
+          summariesOnly: prev
+            ? !!(prev.summariesOnly && incoming?.summariesOnly)
+            : !!incoming?.summariesOnly,
+          silentReload:
+            prev?.silentReload === false || incoming?.silentReload === false
+              ? false
+              : (incoming?.silentReload ?? prev?.silentReload),
+        }
+      }
       const now = Date.now()
       if (now - lastRefreshRunAtRef.current < MIN_REFRESH_INTERVAL_MS) {
         refreshDirtyRef.current = true
-        const prev = refreshPendingOptRef.current
-        refreshPendingOptRef.current = {
-          skipAutoReselect: !!(prev?.skipAutoReselect || opt?.skipAutoReselect),
-          summariesOnly: !!(prev?.summariesOnly && opt?.summariesOnly),
-          silentReload:
-            prev?.silentReload === false || opt?.silentReload === false
-              ? false
-              : (opt?.silentReload ?? prev?.silentReload),
-        }
+        mergePending(opt)
+        armTrailingRefreshRef.current(MIN_REFRESH_INTERVAL_MS - (now - lastRefreshRunAtRef.current))
         ssLog('refresh.throttled', {
           sinceLastMs: now - lastRefreshRunAtRef.current,
         })
@@ -689,28 +697,22 @@ export function useSessionList(opts: UseSessionListOptions) {
       }
       if (refreshInflightRef.current) {
         refreshDirtyRef.current = true
-        const prev = refreshPendingOptRef.current
-        refreshPendingOptRef.current = {
-          skipAutoReselect: !!(prev?.skipAutoReselect || opt?.skipAutoReselect),
-          // Prefer a full reload if either caller asked for one.
-          summariesOnly: !!(prev?.summariesOnly && opt?.summariesOnly),
-          silentReload:
-            prev?.silentReload === false || opt?.silentReload === false
-              ? false
-              : (opt?.silentReload ?? prev?.silentReload),
-        }
+        mergePending(opt)
         ssLog('refresh.coalesced', {
-          summariesOnly: !!refreshPendingOptRef.current.summariesOnly,
+          summariesOnly: !!refreshPendingOptRef.current?.summariesOnly,
         })
         await refreshInflightRef.current
+        if (refreshDirtyRef.current) {
+          const wait = MIN_REFRESH_INTERVAL_MS - (Date.now() - lastRefreshRunAtRef.current)
+          armTrailingRefreshRef.current(Math.max(50, wait))
+        }
         return
       }
 
       const run = async () => {
-        let currentOpt = opt
-        do {
-          refreshDirtyRef.current = false
-          refreshPendingOptRef.current = undefined
+        const currentOpt = opt
+        refreshDirtyRef.current = false
+        refreshPendingOptRef.current = undefined
 
           // 预热期跳过：后端 liveness 从未通过时（冷启动 UI-first），列表请求必然
           // 失败返回空 → loadGlobalRecentSessions({reset:true}) 空结果只保留置顶/
@@ -722,7 +724,7 @@ export function useSessionList(opts: UseSessionListOptions) {
               if (isGatewayWarming()) {
                 ssLog('refresh.skipped_warming', {})
                 setListLoading(false)
-                break
+                return
               }
             } catch {
               /* 拿不到状态就按原逻辑走 */
@@ -861,10 +863,11 @@ export function useSessionList(opts: UseSessionListOptions) {
           } finally {
             setListLoading(false)
             lastRefreshRunAtRef.current = Date.now()
+            if (refreshDirtyRef.current) {
+              const wait = MIN_REFRESH_INTERVAL_MS - (Date.now() - lastRefreshRunAtRef.current)
+              armTrailingRefreshRef.current(Math.max(50, wait))
+            }
           }
-
-          currentOpt = refreshPendingOptRef.current
-        } while (refreshDirtyRef.current)
       }
 
       const pending = run().finally(() => {
@@ -882,6 +885,34 @@ export function useSessionList(opts: UseSessionListOptions) {
       setSelectedSessionKey,
     ],
   )
+
+  /** 只拉一条会话并合并进侧栏。新会话 / 后台回合用这个，不要重拉 workspace 列表。 */
+  const syncSessionRow = useCallback(async (sessionKey: string) => {
+    const key = String(sessionKey || '').trim()
+    if (!key || isDeletedChatSessionKey(key)) return
+    const data = await wsClient.getChatSession(key)
+    if (!data || typeof data !== 'object') return
+    const cur = String(sessionRef.current || '').trim()
+    setSessions((prev) => {
+      const next = mergeSessionsFromApi(prev, [data as ChatSessionRow], cur)
+      if (sessionListFingerprint(prev) === sessionListFingerprint(next)) return prev
+      sessionsRef.current = next
+      saveSessionSnapshot(next)
+      return next
+    })
+  }, [sessionRef])
+  const syncSessionRowRef = useRef(syncSessionRow)
+  syncSessionRowRef.current = syncSessionRow
+
+  armTrailingRefreshRef.current = (delayMs: number) => {
+    if (refreshTrailingTimerRef.current != null) {
+      window.clearTimeout(refreshTrailingTimerRef.current)
+    }
+    refreshTrailingTimerRef.current = window.setTimeout(() => {
+      refreshTrailingTimerRef.current = null
+      void refreshSessionsRef.current?.(refreshPendingOptRef.current)
+    }, Math.max(50, delayMs)) as unknown as number
+  }
 
   const ensureWorkspaceExpanded = useCallback(
     (workspaceKey: string, opt?: { force?: boolean; silent?: boolean }) => {
@@ -991,6 +1022,9 @@ export function useSessionList(opts: UseSessionListOptions) {
       if (refreshSessionsTimerRef.current != null) {
         window.clearTimeout(refreshSessionsTimerRef.current)
       }
+      if (refreshTrailingTimerRef.current != null) {
+        window.clearTimeout(refreshTrailingTimerRef.current)
+      }
       if (searchTimerRef.current != null) {
         window.clearTimeout(searchTimerRef.current)
       }
@@ -1099,6 +1133,7 @@ export function useSessionList(opts: UseSessionListOptions) {
     refreshSessionsRef,
     scheduleRefreshSessions,
     scheduleRefreshSessionsRef,
+    syncSessionRowRef,
     ensureWorkspaceExpanded,
     loadMoreWorkspaceSessions,
     loadMoreGlobalRecentSessions,

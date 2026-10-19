@@ -1,0 +1,648 @@
+/**
+ * Streamdown 默认组件的主窗口样式接管。
+ *
+ * 背景：主窗口（index.html → boot/0-styles.js）没有编译任何 Tailwind 产物，
+ * 但 Streamdown 默认组件（表格 wrapper、代码块 header/actions/body）输出的是
+ * Tailwind 工具类 + shadcn 主题 token（border-border / bg-sidebar / bg-muted 等）。
+ * 结果是这些类要么完全不存在（元素裸渲染），要么在懒加载过带默认主题的
+ * Tailwind 构建（asset-center.css）后以无 token 状态命中——边框色回落到
+ * currentColor 形成黑框、背景全透明、按钮没有任何布局。
+ * 叠加 chat-redesign.css / sci-fi-theme.css 对裸 pre/code 的旧 ！important 规则
+ * （为旧渲染器单层 <pre> 设计），代码块会被套成无头黑块。
+ *
+ * 这里用 [data-streamdown=...] 属性选择器对 Streamdown 渲染块做最终接管：
+ * - 全部 ！important：同时压过旧 ！important 规则与懒加载进来的无 token 工具类；
+ * - 单元格/代码块观感对齐 chat-redesign.css 的既有设计，聊天内零视觉回归；
+ * - 代码块 token 期间强制单色（--sdm-c/--shiki-dark 双主题变量在主窗口没有
+ *   对应工具类，shiki github-light 的深色 token 会落在深底上不可读）；
+ * - sci-fi 主题对裸 pre/code 的主题化不受影响（只接管 Streamdown 结构内部）。
+ */
+
+/* === 表格 === */
+
+/* 带 controls 的变体有 data-streamdown="table-wrapper"；带内联 max-height 的变体
+ * 只是一个裸 div（类名全是 Tailwind 工具类），只能用 :has() 从表格元素反选。
+ * wrapper 只做圆角滚动容器，不加边框——单元格网格自带外沿，加了就是双重框。 */
+[data-streamdown='table-wrapper'],
+div:has(> [data-streamdown='table']):not([data-streamdown='table-fullscreen'] *) {
+  margin: 12px 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 10px !important;
+  background: transparent !important;
+  /* 默认组件在长表格时会给 wrapper 写内联 max-height:300px，这里只兜底变体 */
+  max-height: 480px;
+  overflow: auto !important;
+}
+
+/* 全屏预览弹层里的 wrapper 是布局容器，不套圆角滚动 */
+[data-streamdown='table-fullscreen'] [data-streamdown='table-wrapper'] {
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  overflow: visible !important;
+  max-height: none !important;
+}
+
+/* 单元格样式值对齐 chat-redesign.css 的 body .msg-ai .msg-bubble th/td（聊天表格
+ * 的现行观感），但用更高特异性统一覆盖，让 .markdown-body（会话面板/右侧行文流）
+ * 等没有旧规则的容器拿到同样外观。变量随主题自动翻转，无需 dark 变体。 */
+body :is(.msg-ai .msg-bubble, .msg-turn-assistant-content, .msg-text, .markdown-body) [data-streamdown='table'],
+[data-streamdown='table'] {
+  width: 100% !important;
+  margin: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  background: transparent !important;
+  border-collapse: collapse !important;
+  table-layout: fixed !important;
+}
+
+/* divide-y 等 Tailwind 行分隔类在主窗口会以 currentColor 落成黑线，统一交给 td/th */
+body :is(.msg-ai .msg-bubble, .msg-turn-assistant-content, .msg-text, .markdown-body) [data-streamdown='table'] :is(thead, tbody, tr),
+[data-streamdown='table'] :is(thead, tbody, tr) {
+  border: 0 !important;
+  background: transparent !important;
+}
+
+body :is(.msg-ai .msg-bubble, .msg-turn-assistant-content, .msg-text, .markdown-body) [data-streamdown='table-header-cell'],
+[data-streamdown='table-header-cell'] {
+  padding: 8px 12px !important;
+  background: var(--bg-tertiary, #ebeef2) !important;
+  color: var(--text-primary, #202124) !important;
+  font-weight: 600 !important;
+  font-size: 13px !important;
+  text-align: left !important;
+  white-space: normal !important;
+  border: 1px solid var(--border-primary, #e6e8ec) !important;
+}
+
+body :is(.msg-ai .msg-bubble, .msg-turn-assistant-content, .msg-text, .markdown-body) [data-streamdown='table-cell'],
+[data-streamdown='table-cell'] {
+  padding: 8px 12px !important;
+  background: transparent !important;
+  color: var(--text-primary, #202124) !important;
+  font-size: 13px !important;
+  text-align: left !important;
+  vertical-align: top !important;
+  line-height: 1.55 !important;
+  word-break: break-word !important;
+  overflow-wrap: break-word !important;
+  white-space: normal !important;
+  border: 1px solid var(--border-primary, #e6e8ec) !important;
+}
+
+/* === 代码块 === */
+
+[data-streamdown='code-block'] {
+  position: relative !important;
+  display: block !important;
+  width: auto !important;
+  margin: 14px 0 !important;
+  padding: 0 !important;
+  border: 1px solid #313244 !important;
+  border-radius: 12px !important;
+  background: #1e1e2e !important;
+  overflow: hidden !important;
+}
+
+[data-streamdown='code-block-header'] {
+  display: flex !important;
+  align-items: center !important;
+  min-height: 34px !important;
+  padding: 4px 92px 0 14px !important;
+  color: #8f95a8 !important;
+  font-size: 12px !important;
+}
+
+/* 语言为空时隐藏整条 header，避免空占一行 */
+[data-streamdown='code-block-header']:has(> span:empty) {
+  display: none !important;
+}
+
+[data-streamdown='code-block-header'] > span {
+  margin: 0 !important;
+  color: #8f95a8 !important;
+  font-family: "JetBrains Mono", Consolas, Monaco, monospace !important;
+  font-size: 11.5px !important;
+  text-transform: lowercase !important;
+}
+
+/* 右上角操作按钮：绝对定位是组件行为，主窗口没有工具类，这里补齐布局与观感 */
+[data-streamdown='code-block-actions'] {
+  position: absolute !important;
+  top: 8px !important;
+  right: 8px !important;
+  z-index: 20 !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  backdrop-filter: none !important;
+  pointer-events: auto !important;
+}
+
+[data-streamdown='code-block-actions'] button {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 26px !important;
+  height: 26px !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  border-radius: 6px !important;
+  background: rgba(255, 255, 255, 0.05) !important;
+  color: #9aa3b5 !important;
+  cursor: pointer !important;
+  opacity: 1 !important;
+  transition: background-color 0.15s ease, color 0.15s ease !important;
+}
+
+[data-streamdown='code-block-actions'] button:hover {
+  color: #e2e8f0 !important;
+  background: rgba(255, 255, 255, 0.14) !important;
+}
+
+[data-streamdown='code-block-actions'] button:disabled {
+  opacity: 0.4 !important;
+  cursor: default !important;
+}
+
+[data-streamdown='code-block-actions'] svg {
+  width: 14px !important;
+  height: 14px !important;
+}
+
+[data-streamdown='code-block-body'] {
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  overflow: auto !important;
+}
+
+/* 需要压过 chat-redesign.css 的 body .msg-ai .msg-bubble pre / .msg-turn-assistant-content pre
+ * 与 sci-fi-theme.css 的同名 ！important 规则（均为裸 <pre> 时代的设计） */
+body :is(.msg-ai .msg-bubble, .msg-turn-assistant-content, .msg-text, .markdown-body) [data-streamdown='code-block'] pre,
+[data-streamdown='code-block'] pre {
+  margin: 0 !important;
+  padding: 14px 16px !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  color: #e2e8f0 !important;
+  overflow: visible !important;
+  font-size: 13px !important;
+  line-height: 1.65 !important;
+  font-family: "JetBrains Mono", Consolas, Monaco, monospace !important;
+}
+
+body :is(.msg-ai .msg-bubble, .msg-turn-assistant-content, .msg-text, .markdown-body) [data-streamdown='code-block'] pre code,
+[data-streamdown='code-block'] pre code {
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  color: inherit !important;
+  font-size: inherit !important;
+  font-family: inherit !important;
+}
+
+/* shiki token 带 --sdm-c（github-light）与 --shiki-dark 双主题变量，但主窗口
+ * 没有消费这些变量的工具类：深色 token 会直接落在深底上不可读。在接好主题前
+ * 统一继承 pre 的单色。 */
+[data-streamdown='code-block'] pre code span {
+  background: transparent !important;
+  color: inherit !important;
+}
+
+/* Streamdown 把代码按行拆进 <code> 的直接子 span，靠 Tailwind 的 display:block
+ * 分行；主窗口没有 Tailwind，行 span 回落 inline，整段 JSON/代码会挤成一行只能
+ * 横向滚动。这里补回分行。行内容不含换行符，空行是独立的 "\n" span —— block +
+ * pre 语义下正好各占一行，无需特殊处理。 */
+[data-streamdown='code-block'] pre code > span {
+  display: block !important;
+  white-space: pre !important;
+}
+
+/* 放大弹层里的克隆代码块同样按行 span 结构，一并补分行 */
+.msg-md-code-modal-pre code > span {
+  display: block !important;
+  white-space: pre !important;
+}
+
+/* === 行内代码 === */
+
+[data-streamdown='inline-code'] {
+  margin: 0 !important;
+  padding: 2px 6px !important;
+  border: 0 !important;
+  border-radius: 6px !important;
+  background: var(--chat-code-inline-bg, #eceef2) !important;
+  color: var(--chat-code-inline-fg, #3d4450) !important;
+  font-size: 12.5px !important;
+  font-family: "JetBrains Mono", Consolas, Monaco, monospace !important;
+}
+
+/* === StreamdownRenderer 自渲染外壳（表格 / 代码块的工具栏与放大弹层） ===
+ *
+ * 自渲染组件透传 [data-streamdown="..."] 属性到内层元素；这里只负责外壳布局
+ * （按钮、浮层），内部单元格/代码块观感由前面的接管规则控制。
+ */
+
+.msg-md-table {
+  position: relative;
+  margin: 12px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.msg-md-table-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  align-self: flex-end;
+  padding: 2px;
+  border-radius: 8px;
+  background: var(--bg-secondary, #f4f5f8);
+  border: 1px solid var(--border-primary, #e6e8ec);
+}
+
+.msg-md-table-action {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 24px;
+  padding: 0 8px;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--text-secondary, #4a5160);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+  user-select: none;
+}
+
+.msg-md-table-action:hover {
+  background: var(--bg-hover, #e9ebf0);
+  color: var(--text-primary, #202124);
+}
+
+.msg-md-table-frame {
+  border-radius: 10px;
+  overflow: auto;
+  max-height: 480px;
+  border: 1px solid var(--border-primary, #e6e8ec);
+}
+
+/* === 表格放大 Dialog === */
+
+.msg-md-table-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 17, 24, 0.55);
+  backdrop-filter: blur(2px);
+}
+
+.msg-md-table-modal-panel {
+  display: flex;
+  flex-direction: column;
+  width: min(90vw, 1100px);
+  max-height: 88vh;
+  background: var(--bg-primary, #ffffff);
+  color: var(--text-primary, #202124);
+  border: 1px solid var(--border-primary, #e6e8ec);
+  border-radius: 14px;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+}
+
+.msg-md-table-modal-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-primary, #e6e8ec);
+  background: var(--bg-secondary, #f7f8fa);
+  font-size: 12.5px;
+}
+
+.msg-md-table-modal-toolbar button {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 26px;
+  padding: 0 8px;
+  font-size: 12.5px;
+  color: var(--text-primary, #202124);
+  background: var(--bg-primary, #ffffff);
+  border: 1px solid var(--border-primary, #e6e8ec);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.msg-md-table-modal-toolbar button:hover {
+  background: var(--bg-hover, #eef0f4);
+}
+
+.msg-md-table-modal-zoom {
+  min-width: 44px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.msg-md-table-modal-spacer {
+  flex: 1;
+}
+
+.msg-md-table-modal-canvas {
+  flex: 1;
+  overflow: auto;
+  padding: 18px 22px;
+  background: var(--bg-primary, #ffffff);
+}
+
+.msg-md-table-modal-stage {
+  display: inline-block;
+  min-width: 100%;
+}
+
+.msg-md-table-modal-table {
+  border-collapse: collapse !important;
+  width: max-content !important;
+  table-layout: auto !important;
+}
+
+.msg-md-table-modal-table :is(th, td) {
+  padding: 8px 12px !important;
+  border: 1px solid var(--border-primary, #e6e8ec) !important;
+  font-size: 13px !important;
+  white-space: nowrap !important;
+}
+
+.msg-md-table-modal-table th {
+  background: var(--bg-tertiary, #ebeef2) !important;
+  font-weight: 600 !important;
+}
+
+.msg-md-table-modal-empty {
+  padding: 24px;
+  text-align: center;
+  color: var(--text-secondary, #6b7280);
+}
+
+/* === 代码块外壳 + 放大 === */
+
+.msg-md-code {
+  position: relative;
+  margin: 14px 0;
+}
+
+.msg-md-code-actions {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 5;
+  display: flex;
+  gap: 4px;
+  padding: 2px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.18);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.msg-md-code:hover .msg-md-code-actions,
+.msg-md-code:focus-within .msg-md-code-actions {
+  opacity: 1;
+}
+
+.msg-md-code-action {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  font-size: 12px;
+  color: #e2e8f0;
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.msg-md-code-action:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.msg-md-code-pre {
+  margin: 0 !important;
+  background: transparent !important;
+}
+
+.msg-md-code-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 17, 24, 0.55);
+  backdrop-filter: blur(2px);
+}
+
+.msg-md-code-modal-panel {
+  display: flex;
+  flex-direction: column;
+  width: min(90vw, 1100px);
+  max-height: 88vh;
+  background: #1e1e2e;
+  color: #e2e8f0;
+  border: 1px solid #313244;
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.msg-md-code-modal-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  font-size: 12.5px;
+  color: #8f95a8;
+  border-bottom: 1px solid #313244;
+}
+
+.msg-md-code-modal-lang {
+  font-family: "JetBrains Mono", Consolas, Monaco, monospace;
+  text-transform: lowercase;
+}
+
+.msg-md-code-modal-spacer {
+  flex: 1;
+}
+
+.msg-md-code-modal-toolbar button {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 24px;
+  padding: 0 8px;
+  font-size: 12.5px;
+  color: #e2e8f0;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.msg-md-code-modal-toolbar button:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.msg-md-code-modal-canvas {
+  flex: 1;
+  overflow: auto;
+  padding: 18px 22px;
+  background: #1e1e2e;
+}
+
+.msg-md-code-modal-pre {
+  margin: 0 !important;
+  padding: 0 !important;
+  font-family: "JetBrains Mono", Consolas, Monaco, monospace !important;
+  font-size: 13px !important;
+  line-height: 1.65 !important;
+  color: #e2e8f0 !important;
+  white-space: pre !important;
+  display: inline-block;
+  min-width: 100%;
+}
+
+.msg-md-code-modal-pre code {
+  font-family: inherit !important;
+  font-size: inherit !important;
+  color: inherit !important;
+  background: transparent !important;
+  padding: 0 !important;
+}
+
+/* === Mermaid 放大 === */
+
+.msg-md-mermaid-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 17, 24, 0.55);
+  backdrop-filter: blur(2px);
+}
+
+.msg-md-mermaid-modal-panel {
+  display: flex;
+  flex-direction: column;
+  width: min(92vw, 1200px);
+  max-height: 90vh;
+  background: var(--bg-primary, #ffffff);
+  border: 1px solid var(--border-primary, #e6e8ec);
+  border-radius: 14px;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+}
+
+.msg-md-mermaid-modal-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  font-size: 12.5px;
+  border-bottom: 1px solid var(--border-primary, #e6e8ec);
+  background: var(--bg-secondary, #f7f8fa);
+}
+
+.msg-md-mermaid-modal-toolbar button {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 26px;
+  padding: 0 8px;
+  font-size: 12.5px;
+  color: var(--text-primary, #202124);
+  background: var(--bg-primary, #ffffff);
+  border: 1px solid var(--border-primary, #e6e8ec);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.msg-md-mermaid-modal-spacer {
+  flex: 1;
+}
+
+.msg-md-mermaid-modal-canvas {
+  flex: 1;
+  overflow: auto;
+  padding: 24px;
+  background: var(--bg-primary, #ffffff);
+}
+
+.msg-md-mermaid-modal-stage {
+  display: inline-block;
+  min-width: 100%;
+}
+
+.msg-md-mermaid-modal-stage svg {
+  max-width: none !important;
+}
+
+/* === 文件链接 / 图片链接按钮 === */
+
+.msg-md-file-link,
+.msg-md-image-link {
+  background: none;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  color: var(--text-link, #2563eb);
+  /* 交付物/文件 chip 不带下划线（hover 用变色反馈） */
+  text-decoration: none;
+  cursor: pointer;
+  font: inherit;
+}
+
+.msg-md-file-link:hover,
+.msg-md-image-link:hover {
+  color: var(--text-link-hover, #1d4ed8);
+  text-decoration: none;
+}
+
+/* === 顶部 action 通用 tooltip 容器（title 属性兜底，避免外加库） === */
+
+.msg-md-action {
+  display: inline-flex;
+}
+

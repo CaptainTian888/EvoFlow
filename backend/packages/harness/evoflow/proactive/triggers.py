@@ -23,11 +23,13 @@ logger = logging.getLogger(__name__)
 # git_push: batch rapid commits into one patrol.
 # ci_failed: immediate – build is red, act now.
 # pr_*: short debounce for rapid pushes to a PR branch.
+# task_assigned: immediate – new task needs to be picked up right now.
 _DEBOUNCE_DELAYS: dict[str, int] = {
     "git_push": 60,
     "ci_failed": 0,  # immediate
     "pr_created": 30,
     "pr_updated": 30,
+    "task_assigned": 0,  # immediate wake-up for new task
 }
 
 _DEFAULT_GOALS: dict[str, str] = {
@@ -35,6 +37,7 @@ _DEFAULT_GOALS: dict[str, str] = {
     "ci_failed": "CI 构建失败，立即排查失败原因并提交修复方案",
     "pr_created": "有新的 Pull Request，进行代码审查并给出反馈建议",
     "pr_updated": "Pull Request 有更新，重新审查变更内容",
+    "task_assigned": "新任务已分配，立即查收并开始执行",
 }
 
 

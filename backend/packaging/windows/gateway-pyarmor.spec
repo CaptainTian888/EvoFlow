@@ -104,6 +104,25 @@ _docs_knowledge = (
 if _docs_knowledge.is_dir():
     datas.append((str(_docs_knowledge), "evoflow/assets/builtin_knowledge_vaults/ops-knowledge"))
 
+# Official product plugins — single in-package copy (same as gateway.spec).
+_official_plugins = backend_root / "packaging" / "official-plugins-bundle"
+_official_plugin_dirs = [
+    p for p in _official_plugins.iterdir() if p.is_dir()
+] if _official_plugins.is_dir() else []
+if not _official_plugin_dirs:
+    raise SystemExit(
+        "[gateway-pyarmor.spec] official-plugins-bundle is empty — run "
+        "packaging/fetch-official-plugins-bundle.sh (or sync-official-plugins-bundle) "
+        "before PyInstaller"
+    )
+datas.append((str(_official_plugins), "evoflow/plugins/bundled_official"))
+
+_plugins_pkg = _harness_evoflow / "plugins"
+for _sidecar_name in ("cua_exec.ps1", "evoflow_node_repl_preload.cjs"):
+    _sidecar = _plugins_pkg / _sidecar_name
+    if _sidecar.is_file():
+        datas.append((str(_sidecar), "evoflow/plugins"))
+
 # langgraph/version.py uses importlib.metadata.version()
 try:
     datas += copy_metadata("langgraph")

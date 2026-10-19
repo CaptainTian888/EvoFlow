@@ -4099,6 +4099,13 @@ html.dark .config-section-title {
   border-color: #fcd34d;
 }
 
+.td-output-badge--final {
+  color: #1d4ed8;
+  background: #eff6ff;
+  border-color: #bfdbfe;
+  font-weight: 650;
+}
+
 .td-output-row.is-missing {
   border-color: #fcd34d;
   background: #fffbeb;
@@ -4108,10 +4115,35 @@ html.dark .config-section-title {
   border-color: #a7f3d0;
 }
 
-.td-output-path {
-  margin-top: 4px;
-  font-size: var(--ef-text-sm) ;
+.td-output-row.is-featured {
+  border-color: color-mix(in srgb, #3b82f6 35%, var(--border, #e5e7eb));
+  background:
+    linear-gradient(
+      165deg,
+      color-mix(in srgb, #3b82f6 8%, var(--bg-elevated, #fafafa)) 0%,
+      var(--bg-elevated, #fafafa) 55%
+    );
+  box-shadow: 0 1px 0 color-mix(in srgb, #3b82f6 12%, transparent);
+}
+
+.td-output-meta {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.td-output-source {
+  font-size: 12px;
+  font-weight: 550;
   color: var(--text-secondary, #64748b);
+  line-height: 1.35;
+}
+
+.td-output-path {
+  font-size: var(--ef-text-sm) ;
+  color: var(--text-tertiary, #94a3b8);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

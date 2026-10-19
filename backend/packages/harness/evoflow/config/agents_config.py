@@ -242,6 +242,10 @@ class AgentConfig(BaseModel):
         model: Model to use (optional).
         tool_groups: Optional tool group whitelist.
         tools: Optional tool whitelist (builtin tool names).
+            Semantics differ by truthiness source: ``None`` = mount ALL configurable
+            tools (inherit), ``[]`` = mount NONE, ``["a","b"]`` = only listed.
+            Callers MUST branch on ``is not None`` — never on ``if cfg.tools:`` —
+            otherwise ``[]`` collapses into ``None`` and silently re-enables every tool.
         mcp_servers: Optional MCP server names.
         skills: Skill names injected into prompt; missing or null means none (see resolve_skill_allowlist_for_lead_prompt).
         agent_type: Type of agent - 'custom', 'subagent', or 'acp'.
@@ -263,6 +267,8 @@ class AgentConfig(BaseModel):
     tool_groups: list[str] | None = None
 
     # Tool / MCP / Skills / Knowledge configuration
+    # ``tools`` tri-state: None = all configurable tools (inherit), [] = none,
+    # ["a","b"] = only listed. Always test with ``is not None`` before filtering.
     tools: list[str] | None = None
     mcp_servers: list[str] | None = None
     skills: list[str] | None = None
@@ -850,6 +856,81 @@ def materialize_builtin_agent_if_missing(agent_code: str) -> bool:
         return False
 
 
+_SHELL_LEGACY_TOOL_NAMES = frozenset(
+    {
+        "terminal",
+        "rg",
+        "find",
+        "find_file",
+        "grep",
+        "ripgrep",
+        "process",
+        "process_start",
+        "process_log",
+        "process_wait",
+        "process_kill",
+        "process_poll",
+    }
+)
+_SHELL_SUITE = ("bash", "taskoutput", "taskstop")
+
+
+def _migrate_shell_tools_onto_agents() -> None:
+    """Rewrite saved role whitelists so Bash / TaskOutput / TaskStop stay mounted.
+
+    ``tools is None`` means every configurable tool (new installs). An explicit
+    list from before the ZCode shell port still names ``terminal`` / ``rg`` /
+    ``find`` and would hide the new tools in the role editor.
+    """
+    from evoflow.persistence import config_repositories as cfg_repo
+    from evoflow.tools.tool_aliases import canonical_tool_name
+
+    try:
+        codes = list(cfg_repo.list_agent_codes())
+    except Exception:
+        logger.debug("shell tool migration: list agents failed", exc_info=True)
+        return
+    for code in codes:
+        if str(code or "").strip().lower() == "xiaomi":
+            continue
+        try:
+            cfg = load_agent_config(code)
+        except Exception:
+            continue
+        if cfg is None or cfg.tools is None:
+            continue
+        out: list[str] = []
+        seen: set[str] = set()
+        had_shell = str(code or "").strip().lower() == "main"
+        for raw in cfg.tools:
+            low = str(raw or "").strip().lower()
+            if not low:
+                continue
+            if low in _SHELL_LEGACY_TOOL_NAMES or low in _SHELL_SUITE:
+                had_shell = True
+            canon = canonical_tool_name(low).strip().lower()
+            if canon and canon not in seen:
+                seen.add(canon)
+                out.append(canon)
+        if not had_shell:
+            continue
+        changed = out != [str(x).strip().lower() for x in cfg.tools]
+        for name in _SHELL_SUITE:
+            if name not in seen:
+                seen.add(name)
+                out.append(name)
+                changed = True
+        if not changed:
+            continue
+        full = cfg.model_dump(exclude_none=True)
+        full["tools"] = out
+        try:
+            save_agent_config(code, full)
+            logger.info("mounted shell suite on agent=%s tools=%s", code, out)
+        except Exception:
+            logger.debug("shell tool migration skipped agent=%s", code, exc_info=True)
+
+
 def ensure_builtin_agents_materialized() -> None:
     """Persist built-in subagent templates under ``agents/{code}/`` when ``config.yaml`` is missing.
 
@@ -958,6 +1039,8 @@ def ensure_builtin_agents_materialized() -> None:
                     save_agent_soul("main", bundled)
             except Exception:
                 logger.debug("main soul backfill skipped", exc_info=True)
+
+    _migrate_shell_tools_onto_agents()
 
     # ``xiaomi`` = system front desk (separate builtin; never overwrite ``main``).
     # Capability surface is fixed: no ordinary tools / MCP / skills (runtime mounts xiaomi_*).

@@ -21,9 +21,22 @@ export type RightStageSnapshot = {
   /** 打开的标签（有序）；标签条 UI 直接消费。 */
   tabs: RightStageSurface[]
   activeKey: string | null
+  /**
+   * ZCode 同构：折叠只藏面板，不丢 tabs。
+   * 展开且 tabs 为空时显示「打开标签」首页。
+   */
+  collapsed: boolean
   rev: number
   streams: Map<string, RightStageStreamSession>
   /** 最近关闭的标签（倒序，最新在前）。 */
+  recentClosed: RecentClosedRightStageTab[]
+}
+
+/** 按会话冻结的侧栏快照（切会话时换出 / 换回）。 */
+export type RightStageSessionMemory = {
+  tabs: RightStageSurface[]
+  activeKey: string | null
+  collapsed: boolean
   recentClosed: RecentClosedRightStageTab[]
 }
 
@@ -39,6 +52,7 @@ function emptySnapshot(): RightStageSnapshot {
     surface: null,
     tabs: [],
     activeKey: null,
+    collapsed: true,
     rev: 0,
     streams: new Map(),
     recentClosed: [],
@@ -58,6 +72,8 @@ export class RightStageStore {
   /** 打开的标签（有序）。ZCode 式：多面板共存，激活者投影为 surface。 */
   private tabs: RightStageSurface[] = []
   private activeKey: string | null = null
+  /** 默认折叠；用户点侧栏按钮或 show() 时展开。 */
+  private collapsed = true
   private rev = 0
   private streams = new Map<string, RightStageStreamSession>()
   private recentClosed: RecentClosedRightStageTab[] = []
@@ -96,9 +112,13 @@ export class RightStageStore {
       surface: active ? { ...active, data: { ...active.data } } : null,
       tabs: this.tabs.map((t) => ({ ...t, data: { ...t.data } })),
       activeKey: this.activeKey,
+      collapsed: this.collapsed,
       rev: this.rev,
       streams,
-      recentClosed: this.recentClosed,
+      recentClosed: this.recentClosed.map((e) => ({
+        ...e,
+        tab: { ...e.tab, data: { ...e.tab.data } },
+      })),
     }
   }
 
@@ -106,8 +126,64 @@ export class RightStageStore {
     return this.cachedSnapshot
   }
 
+  /** 面板是否占布局宽度（与 tabs 是否为空无关）。 */
   get isOpen(): boolean {
-    return this.tabs.length > 0
+    return !this.collapsed
+  }
+
+  setCollapsed(collapsed: boolean) {
+    if (this.collapsed === collapsed) return
+    this.collapsed = collapsed
+    this.bump()
+  }
+
+  expand() {
+    this.setCollapsed(false)
+  }
+
+  collapse() {
+    this.setCollapsed(true)
+  }
+
+  toggleCollapsed() {
+    this.setCollapsed(!this.collapsed)
+  }
+
+  /** 导出当前会话可冻结的侧栏状态（不含 streams）。 */
+  exportSessionMemory(): RightStageSessionMemory {
+    return {
+      tabs: this.tabs.map((t) => ({ ...t, data: { ...t.data } })),
+      activeKey: this.activeKey,
+      collapsed: this.collapsed,
+      recentClosed: this.recentClosed.map((e) => ({
+        ...e,
+        tab: { ...e.tab, data: { ...e.tab.data } },
+      })),
+    }
+  }
+
+  /** 切会话时整表换入；streams 按会话清空以免串台。 */
+  importSessionMemory(memory: RightStageSessionMemory | null | undefined) {
+    if (!memory) {
+      this.tabs = []
+      this.activeKey = null
+      this.collapsed = true
+      this.recentClosed = []
+      this.streams.clear()
+      this.bump()
+      return
+    }
+    this.tabs = memory.tabs.map((t) => ({
+      ...t,
+      kind: normalizeRightStageKind(t.kind),
+      data: { ...(t.data || {}) },
+    }))
+    this.activeKey = memory.activeKey
+    this.collapsed =
+      typeof memory.collapsed === 'boolean' ? memory.collapsed : this.tabs.length === 0
+    this.recentClosed = Array.isArray(memory.recentClosed) ? memory.recentClosed : []
+    this.streams.clear()
+    this.bump()
   }
 
   get currentKind(): RightStageKind | null {
@@ -132,6 +208,7 @@ export class RightStageStore {
     title?: string
     layout?: RightStageSurface['layout']
     data?: Record<string, unknown>
+    sessionKey?: string
   }) {
     const kind = normalizeRightStageKind(String(input.kind || '').trim())
     if (!kind) return
@@ -145,27 +222,33 @@ export class RightStageStore {
       }
       return
     }
+    const sessionKey = String(input.sessionKey || '').trim() || undefined
     const next: RightStageSurface = {
       id: String(input.id || 'primary').trim() || 'primary',
       kind,
       title: input.title?.trim() || defaultTitleForKind(kind),
       layout: input.layout || defaultLayoutForKind(kind),
       data: { ...(input.data || {}) },
+      ...(sessionKey ? { sessionKey } : {}),
     }
     const key = this.tabKeyOf(next)
     const existingIdx = this.tabs.findIndex((t) => this.tabKeyOf(t) === key)
     if (existingIdx >= 0) {
       const prev = this.tabs[existingIdx]
+      // 更新时保留已有 sessionKey（除非显式传入新的）
+      if (!next.sessionKey && prev.sessionKey) next.sessionKey = prev.sessionKey
       const same =
         prev.title === next.title &&
         prev.layout === next.layout &&
+        prev.sessionKey === next.sessionKey &&
         JSON.stringify(prev.data) === JSON.stringify(next.data)
       if (same) {
-        // 仅激活
-        if (this.activeKey !== key) {
-          this.activeKey = key
-          this.bump()
-        }
+        // 仅激活并展开（侧栏可能处于折叠）
+        const needActivate = this.activeKey !== key
+        const needExpand = this.collapsed
+        if (needActivate) this.activeKey = key
+        if (needExpand) this.collapsed = false
+        if (needActivate || needExpand) this.bump()
         return
       }
       this.tabs[existingIdx] = next
@@ -173,13 +256,61 @@ export class RightStageStore {
       this.tabs = [...this.tabs, next]
     }
     this.activeKey = key
+    // 打开/激活任一标签时必须展开侧栏，否则用户看不到新页
+    this.collapsed = false
+    this.bump()
+  }
+
+  findTab(key: string): RightStageSurface | null {
+    const k = String(key || '').trim()
+    const tab = this.tabs.find((t) => this.tabKeyOf(t) === k)
+    return tab ? { ...tab, data: { ...tab.data } } : null
+  }
+
+  /** 只改标题/data，不激活、不展开。用于浏览器页标题和图标回写外层标签。 */
+  patchTab(key: string, patch: { title?: string; data?: Record<string, unknown> }): boolean {
+    const k = String(key || '').trim()
+    const idx = this.tabs.findIndex((t) => this.tabKeyOf(t) === k)
+    if (idx < 0) return false
+    const prev = this.tabs[idx]
+    const title = patch.title !== undefined ? patch.title.trim() || prev.title : prev.title
+    const data = patch.data ? { ...prev.data, ...patch.data } : prev.data
+    if (prev.title === title && JSON.stringify(prev.data) === JSON.stringify(data)) return false
+    const nextTabs = this.tabs.slice()
+    nextTabs[idx] = { ...prev, title, data }
+    this.tabs = nextTabs
+    this.bump()
+    return true
+  }
+
+  /** 关闭除 keepKey 外的全部标签（写入 recentClosed）。 */
+  closeOtherTabs(keepKey: string) {
+    const keep = String(keepKey || '').trim()
+    if (!keep) return
+    const victims = this.tabs.filter((t) => this.tabKeyOf(t) !== keep)
+    if (!victims.length) return
+    for (const tab of victims) this.recordClosed(this.tabKeyOf(tab), tab)
+    this.tabs = this.tabs.filter((t) => this.tabKeyOf(t) === keep)
+    this.activeKey = this.tabs.length ? keep : null
+    this.bump()
+  }
+
+  /** 关闭全部标签（写入 recentClosed），不强制折叠（折叠由外壳按钮负责）。 */
+  closeAllTabs() {
+    if (!this.tabs.length) return
+    for (const tab of this.tabs) this.recordClosed(this.tabKeyOf(tab), tab)
+    this.tabs = []
+    this.activeKey = null
     this.bump()
   }
 
   activateTab(key: string) {
-    if (this.activeKey === key) return
     if (!this.tabs.some((t) => this.tabKeyOf(t) === key)) return
-    this.activeKey = key
+    const needActivate = this.activeKey !== key
+    const needExpand = this.collapsed
+    if (!needActivate && !needExpand) return
+    if (needActivate) this.activeKey = key
+    if (needExpand) this.collapsed = false
     this.bump()
   }
 
@@ -224,7 +355,14 @@ export class RightStageStore {
     const entry = this.recentClosed.find((e) => e.key === key)
     if (!entry) return
     this.recentClosed = this.recentClosed.filter((e) => e.key !== key)
-    this.show({ kind: entry.tab.kind, id: entry.tab.id, title: entry.tab.title, layout: entry.tab.layout, data: entry.tab.data })
+    this.show({
+      kind: entry.tab.kind,
+      id: entry.tab.id,
+      title: entry.tab.title,
+      layout: entry.tab.layout,
+      data: entry.tab.data,
+      sessionKey: entry.tab.sessionKey,
+    })
   }
 
   updateData(patch: Record<string, unknown>, opts?: { id?: string }) {
@@ -245,10 +383,11 @@ export class RightStageStore {
   hide(id = 'primary') {
     const matches = this.tabs.filter((t) => t.id === id)
     if (!matches.length) {
-      // 兼容旧调用：id 默认 'primary' 但激活标签可能用了其他 id——关闭激活者
+      // 兼容旧调用：id 默认 'primary' 但激活标签可能用了其他 id——
+      // 关闭激活者（而不是要求 active.id === id，避免 id 不一致导致静默不关）。
       if (this.activeKey) {
         const active = this.tabs.find((t) => this.tabKeyOf(t) === this.activeKey)
-        if (active && active.id === id) {
+        if (active) {
           this.recordClosed(this.tabKeyOf(active), active)
           this.tabs = this.tabs.filter((t) => t !== active)
           this.activeKey = this.tabs.length ? this.tabKeyOf(this.tabs[this.tabs.length - 1]) : null
@@ -272,6 +411,21 @@ export class RightStageStore {
   clearStreams() {
     if (this.streams.size === 0) return
     this.streams.clear()
+    this.bump()
+  }
+
+  /**
+   * 清空全部标签（写入 recentClosed）并折叠。
+   * 日常「收起侧栏」应走 collapse()，保留 tabs 缓存。
+   */
+  hideAll() {
+    if (this.tabs.length === 0 && this.activeKey === null && this.collapsed) return
+    for (const tab of this.tabs) {
+      this.recordClosed(this.tabKeyOf(tab), tab)
+    }
+    this.tabs = []
+    this.activeKey = null
+    this.collapsed = true
     this.bump()
   }
 
@@ -407,10 +561,14 @@ export class RightStageStore {
 /** Process-wide default store (per-tab). Session scoping stays in ChatApp wiring. */
 export const rightStageStore = new RightStageStore()
 
+/** 只关掉匹配 kind 的标签；不能再 hideAll，否则会把其它 kind 一并清掉。 */
 export function hideRightStageIfKind(...kinds: string[]) {
-  const kindsNorm = kinds.map((k) => normalizeRightStageKind(k))
-  const matching = rightStageStore.getSnapshot().tabs.filter((t) =>
-    kindsNorm.includes(String(t.kind)),
-  )
-  for (const t of matching) rightStageStore.closeTab(`${t.kind}:${t.id}`)
+  const kindsNorm = kinds.map((k) => normalizeRightStageKind(k)).filter(Boolean)
+  if (!kindsNorm.length) return
+  const matching = rightStageStore
+    .getSnapshot()
+    .tabs.filter((t) => kindsNorm.includes(normalizeRightStageKind(String(t.kind))))
+  for (const t of matching) {
+    rightStageStore.closeTab(`${normalizeRightStageKind(t.kind)}:${t.id}`)
+  }
 }

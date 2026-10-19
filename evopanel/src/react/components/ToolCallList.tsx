@@ -3,7 +3,9 @@ import {
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
+  useRef,
   useState,
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
@@ -27,11 +29,17 @@ import {
   isToolRunning,
   parseBrowserStepToolOutput,
   parseMediaImagePreview,
+  resolveEvoflowCuaDisplay,
+  stripEvoflowCuaDisplayMarker,
   toolLabel,
   toolOmitFromChatPanel,
   toolOmitFromStreamingChatPanel,
   isGoalProposalToolName,
 } from '../../lib/chat-normalize.js'
+// 当前产品对话的工具卡（含流式）。电脑控制图标/截图改这里和
+// CuaSummaryLeadingIcon / CuaToolPreview。zcode-ui v4 尚未接入，不要改那边来修可见问题。
+import { CuaToolPreview } from './CuaToolPreview.js'
+import { CuaSummaryLeadingIcon } from './CuaSummaryLeadingIcon.js'
 import {
   toolApprovalHintFromMeta,
 } from '../../lib/tool-approval.js'
@@ -91,7 +99,7 @@ import {
 import { ToolResultDetailModal, type ToolResultMetaBlock } from './ToolResultDetailModal.js'
 import { ViewImageDetailModal } from './ViewImageDetailModal.js'
 import { SubagentTranscriptModal } from './SubagentTranscriptModal.js'
-import { TerminalToolDetailModal } from './TerminalToolDetailModal.js'
+import { ensureTerminalStage } from '../../lib/right-stage/ensure-terminal-stage.js'
 import { SandboxBlockedCard } from './SandboxBlockedCard.js'
 import { hasSandboxBlock } from '../../lib/sandbox-blocked-card.js'
 import {
@@ -295,8 +303,18 @@ function ToolApprovalInline({
 }) {
   const toolName = String(approval.tool_name || '').trim()
   const summary = String(approval.summary || '').trim()
+  // 多工具同时待审批：点击后面板立即切换为决策态（已批准/已拒绝），
+  // 否则用户无法分辨第一次点击是否生效。请求落定后若面板仍在（API 失败或
+  // 状态未回灌），撤回乐观决策态恢复可重试；成功时状态回灌会让面板直接卸载。
+  const [pendingChoice, setPendingChoice] = useState<ToolApprovalChoice | null>(null)
+  const wasBusyRef = useRef(false)
+  useEffect(() => {
+    if (wasBusyRef.current && !busy) setPendingChoice(null)
+    wasBusyRef.current = !!busy
+  }, [busy])
   const onConfirm = (choice: ToolApprovalChoice) => {
     const hint = toolApprovalHintFromMeta(approval, tool)
+    setPendingChoice(choice)
     if (choice === 'deny') {
       void onToolApproval('deny', toolCallId)
       return
@@ -307,6 +325,8 @@ function ToolApprovalInline({
     }
     void onToolApproval('approve', toolCallId, hint)
   }
+  const decided =
+    pendingChoice == null ? null : pendingChoice === 'deny' ? 'denied' : 'approved'
   return (
     <div className="msg-tool-approval-inline">
       <ToolApprovalPanel
@@ -314,6 +334,7 @@ function ToolApprovalInline({
         summary={summary}
         detailExtra={detailExtra}
         busy={busy}
+        decided={decided}
         onConfirm={onConfirm}
       />
     </div>
@@ -668,16 +689,14 @@ function ToolCallCollapsible({
   )
 }
 
-/** ZCode 对齐：工具行内联展开详情（命令 + 输出 + 退出码），弹窗降级为「放大」入口 */
+/** 行内终端：一整块命令行区域（$ 命令 + 输出），不再套多层分区。 */
 function ToolInlineDetailBody({
   command,
   output,
   exitCode = null,
   failed = false,
   running = false,
-  emptyText = '（无输出）',
   onOpenDetail,
-  detailLabel = '放大查看',
 }: {
   command?: string
   output?: string
@@ -688,43 +707,56 @@ function ToolInlineDetailBody({
   onOpenDetail?: () => void
   detailLabel?: string
 }) {
-  const outputText = String(output || '').trim()
+  const cmd = String(command || '').trim()
+  const out = String(output || '').trim()
+  const termRef = useRef<HTMLPreElement>(null)
+  const followingRef = useRef(true)
+  const prevTopRef = useRef(0)
+  const hasStreamedRef = useRef(running)
+
+  const text = (() => {
+    const parts: string[] = []
+    if (cmd) parts.push(`$ ${cmd}`)
+    if (out) parts.push(out)
+    else if (!running && exitCode != null && exitCode !== 0) parts.push(`exit ${exitCode}`)
+    return parts.join('\n')
+  })()
+
+  useLayoutEffect(() => {
+    if (running) hasStreamedRef.current = true
+    if (!hasStreamedRef.current || !followingRef.current || !termRef.current) return
+    termRef.current.scrollTop = termRef.current.scrollHeight
+    prevTopRef.current = termRef.current.scrollTop
+  }, [text, running])
+
+  if (!text && !running) return null
+
   return (
-    <div className="msg-tool-inline-detail">
-      {String(command || '').trim() ? (
-        <div className="msg-tool-inline-detail__section">
-          <div className="msg-tool-inline-detail__label">命令</div>
-          <pre className="msg-tool-inline-detail__cmd">
-            <code>{command}</code>
-          </pre>
-        </div>
-      ) : null}
-      <div className="msg-tool-inline-detail__section">
-        <div className="msg-tool-inline-detail__label">
-          <span>{running ? '输出（实时）' : '输出'}</span>
-          {exitCode != null ? (
-            <span
-              className={`msg-tool-inline-detail__exit${exitCode === 0 ? '' : ' is-failed'}`}
-              aria-label={`退出码 ${exitCode}`}
-            >
-              exit {exitCode}
-            </span>
-          ) : null}
-          {onOpenDetail ? (
-            <button
-              type="button"
-              className="msg-tool-inline-detail__expand"
-              onClick={onOpenDetail}
-            >
-              {detailLabel}
-            </button>
-          ) : null}
-        </div>
-        <pre className={`msg-tool-inline-detail__out${failed ? ' is-failed' : ''}`}>
-          {outputText || (running ? '…' : emptyText)}
-        </pre>
-      </div>
-    </div>
+    <pre
+      ref={termRef}
+      className={`msg-tool-inline-detail${failed ? ' is-failed' : ''}${running ? ' is-running' : ''}`}
+      data-testid="execute-detail"
+      tabIndex={0}
+      title={onOpenDetail ? '双击放大到右侧终端' : undefined}
+      onDoubleClick={onOpenDetail}
+      onScroll={(event) => {
+        const el = event.currentTarget
+        const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= 8
+        if (
+          hasStreamedRef.current &&
+          followingRef.current &&
+          el.scrollTop < prevTopRef.current &&
+          !atBottom
+        ) {
+          followingRef.current = false
+        } else if (!followingRef.current && atBottom) {
+          followingRef.current = true
+        }
+        prevTopRef.current = el.scrollTop
+      }}
+    >
+      {text}
+    </pre>
   )
 }
 
@@ -749,7 +781,7 @@ function ToolCallListInner({
   planExecConfirm,
   onToolApproval,
   toolApprovalBusy,
-  /** 仅当前可操作轮次为 true；历史落库轮次只显示「曾待授权」摘要 */
+  /** 仅当前可操作轮次为 true；历史落库轮次只显示「等待授权」摘要 */
   interactiveToolApproval = true,
   variant = 'default',
   hideSubagentInnerTools = false,
@@ -828,19 +860,11 @@ function ToolCallListInner({
     fallbackTools?: unknown[]
     fallbackStatus?: string
   } | null>(null)
-  /** 终端工具详情弹窗：行只显示命令摘要，点击后弹窗看完整输出（支持运行中实时刷新） */
-  const [terminalModal, setTerminalModal] = useState<{
-    toolCallId: string
-    title: string
-    command: string
-    outputFallback: string
-  } | null>(null)
   // Stable close/approval handlers — prevent memo'd modals from re-rendering on every stream tick (~450ms)
   const handleCloseLazyDetail = useCallback(() => setLazyDetailModal(null), [])
   const handleCloseViewImage = useCallback(() => setViewImageModal(null), [])
   const handleCloseFileEdit = useCallback(() => setFileEditModal(null), [])
   const handleCloseTranscript = useCallback(() => setTranscriptModal(null), [])
-  const handleCloseTerminal = useCallback(() => setTerminalModal(null), [])
   const debugShowTaskIds = (() => {
     try {
       return localStorage.getItem('EVOFLOW_DEBUG_SHOW_TASK_ID') === '1'
@@ -1209,7 +1233,8 @@ function ToolCallListInner({
         const timeTs = parseToolTimeMs(timeValue)
         const isShellTool =
           toolKind === 'bash' || toolKind === 'execute_command' || toolKind === 'terminal'
-        const isTerminalModalTool = isShellTool || isProcessToolKind(toolKind)
+        const isBackgroundTaskTool = toolKind === 'taskoutput' || toolKind === 'taskstop'
+        const isTerminalModalTool = isShellTool || isProcessToolKind(toolKind) || isBackgroundTaskTool
         const isWriteOrEditTool =
           toolKind === 'write' ||
           toolKind === 'replace' ||
@@ -1410,15 +1435,31 @@ function ToolCallListInner({
               (typeof inputObj?.subagentType === 'string' ? String(inputObj.subagentType).trim() : '')
             return formatSubagentTypeLabel(st)
           }
-          return toolShortLabel(toolName)
+          // 终端：对齐 ZCode kind（运行中「正在执行」，否则「终端」）
+          if (isShellTool) return running ? '正在执行' : '终端'
+          // 传完整 tool 对象：title 显示契约工具（mcp__node_repl__js）从入参读模型自述标题
+          return toolShortLabel(toolName, t)
         })()
         const inputJson = formatToolDisplayValue(t.input)
+        // Captain Work CUA（node_repl js）：截图/目标应用展示。优先结构化字段，
+        // 否则从标记或 Screenshot banner 还原（历史回放 / output 精简后）。
+        const isNodeReplTool = toolKind.includes('node_repl')
+        const cuaDisplay = isNodeReplTool
+          ? (t.cua_display && typeof t.cua_display === 'object'
+              ? t.cua_display
+              : resolveEvoflowCuaDisplay(t.output))
+          : null
+        const displayOutput = cuaDisplay
+          ? typeof t.output === 'string'
+            ? stripEvoflowCuaDisplayMarker(t.output)
+            : t.output
+          : t.output
         const outputJson =
           toolKind === 'subtask_outcome_report'
             ? formatSubtaskOutcomeReportOutput(t.output, inputObj)
             : toolKind === 'subtask_work_checklist'
               ? formatSubtaskWorkChecklistOutput(t.output)
-              : formatToolOutputForUserDisplay(t.output, toolName)
+              : formatToolOutputForUserDisplay(displayOutput, toolName)
         const toolFailed = isTerminalToolFailed({
           status: t.status,
           output: t.output ?? t.result,
@@ -1476,14 +1517,19 @@ function ToolCallListInner({
         const toolBrief = (() => {
           // Write tools often get path on `_writeProgress` before args parse finishes —
           // prefer showing the target filename over a generic "生成参数中…".
+          // Shell：流式 JSON 可能已抽出 command；kind 用 shortLabel，brief 只放命令。
           if (aguiPhase === 'args' && !inputObj) {
+            if (isShellTool) {
+              const cmd = bashCommand ? String(bashCommand).replace(/\s+/g, ' ').trim() : ''
+              return cmd
+            }
             if (isWriteOrEditTool && path) return briefFull(fileNameFromPath(path))
             if ((toolKind === 'delete' || toolKind === 'delete_file') && path) {
               return briefFull(fileNameFromPath(path))
             }
             return '生成参数中…'
           }
-          if (pendingApproval && !showInteractiveApproval) return '曾待授权，未执行'
+          if (pendingApproval && !showInteractiveApproval) return '等待授权，未执行'
           if (pendingApproval && showInteractiveApproval) {
             const sum = String(approvalMeta?.summary || '').trim()
             if (sum) return briefFull(sum)
@@ -1646,6 +1692,17 @@ function ToolCallListInner({
                 aria-hidden
                 onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none' }}
               />
+            ) : cuaDisplay?.target_app?.app_key ? (
+              <CuaSummaryLeadingIcon
+                appKey={String(cuaDisplay.target_app.app_key)}
+                appName={
+                  typeof cuaDisplay.target_app.display_name === 'string'
+                    ? cuaDisplay.target_app.display_name
+                    : undefined
+                }
+                toolKind={toolKind}
+                running={running}
+              />
             ) : (
               <ToolCardIcon toolKind={toolKind} running={running} />
             )}
@@ -1656,7 +1713,9 @@ function ToolCallListInner({
                 shortLabel
               )}
             </span>
-            {toolBriefDisplay || showElapsedChip || (running && useActivityFold) ? (
+            {toolBriefDisplay ||
+            showElapsedChip ||
+            (running && useActivityFold && !isShellTool) ? (
               <span className="msg-tool-name-sep" aria-hidden>·</span>
             ) : null}
             {toolBriefDisplay ? (
@@ -1678,25 +1737,27 @@ function ToolCallListInner({
               >
                 {toolBriefDisplay}
               </span>
-            ) : running && useActivityFold ? (
+            ) : running && useActivityFold && !isShellTool ? (
               <span className="msg-tool-brief msg-tool-brief--pending msg-tool-brief--running">
                 <ToolRunningScanText text="…" maxChars={4} />
               </span>
             ) : null}
-            {showElapsedChip ? (
-              <span className="msg-tool-elapsed" aria-label={`耗时 ${elapsedText}`}>
-                {elapsedText}
-              </span>
-            ) : null}
-            <ChevronRight
-              className="msg-tool-chevron"
-              size={16}
-              strokeWidth={1.5}
-              aria-hidden="true"
-            />
-            {displayTimeText && !useActivityFold ? (
-              <span className="msg-tool-time">{displayTimeText}</span>
-            ) : null}
+            <span className="msg-tool-trailing">
+              {showElapsedChip ? (
+                <span className="msg-tool-elapsed" aria-label={`耗时 ${elapsedText}`}>
+                  {elapsedText}
+                </span>
+              ) : null}
+              <ChevronRight
+                className="msg-tool-chevron"
+                size={16}
+                strokeWidth={1.5}
+                aria-hidden="true"
+              />
+              {displayTimeText && !useActivityFold ? (
+                <span className="msg-tool-time">{displayTimeText}</span>
+              ) : null}
+            </span>
           </summary>
         )
         const approvalPanel =
@@ -1819,8 +1880,8 @@ function ToolCallListInner({
         const terminalDetailOpener =
           isTerminalModalTool && (toolCallId || outputJson)
             ? () =>
-                setTerminalModal({
-                  toolCallId,
+                ensureTerminalStage({
+                  toolCallId: toolCallId || `anon-${Date.now().toString(36)}`,
                   title:
                     summaryTitle ||
                     titleText ||
@@ -1829,6 +1890,8 @@ function ToolCallListInner({
                     ? bashCommand || terminalStream?.command || ''
                     : processModalCommand,
                   outputFallback: outputJson || '',
+                  sessionKey,
+                  running: isToolRunning(t as Record<string, unknown>) || terminalStream?.phase === 'running',
                 })
             : undefined
         const viewImageDetailOpener =
@@ -1841,10 +1904,10 @@ function ToolCallListInner({
                   outputText: outputJson || '',
                 })
             : undefined
-        // ZCode 对齐：主聊天（非折叠区）点击行内展开命令+输出；弹窗降级为 body 里的「放大」入口。
-        // 审批 / 平台反馈 / 知识图谱 / 图片 / 折叠区内行保持原弹窗行为。
+        // ZCode 对齐：主聊天点击行内展开命令+输出；「放大」才开右栏终端。
+        // 折叠区内也行内展开，勿把 modalOnExpand 绑到 ensureTerminalStage（否则一点就误开右栏）。
         let inlineDetail: ReactNode = null
-        if (!inFold && !showInteractiveApproval) {
+        if (!showInteractiveApproval) {
           if (isTerminalModalTool && (isShellTool || isProcessStartKind(toolKind, inputObj))) {
             const liveOutput = terminalStream
               ? [String(terminalStream.stdout || ''), String(terminalStream.stderr || '')]
@@ -1863,7 +1926,7 @@ function ToolCallListInner({
                 onOpenDetail={terminalDetailOpener}
               />
             )
-          } else if (outputJson && !running && !isViewImageModalTool && !isMindMapTool) {
+          } else if (!inFold && outputJson && !running && !isViewImageModalTool && !isMindMapTool) {
             inlineDetail = (
               <ToolInlineDetailBody
                 output={outputJson}
@@ -1874,16 +1937,32 @@ function ToolCallListInner({
             )
           }
         }
+        // 截图进工具卡 body（展开后可见），不要挂在 details 外面显得「在工具上面」。
+        if (cuaDisplay) {
+          inlineDetail = (
+            <>
+              <CuaToolPreview display={cuaDisplay} />
+              {inlineDetail}
+            </>
+          )
+        }
         let modalOnExpand: (() => void) | undefined
         if (openApprovalIfPending) modalOnExpand = openApprovalIfPending
         else if (openPlatformFeedbackPanel) modalOnExpand = openPlatformFeedbackPanel
         else if (isMindMapTool && onOpenKnowledgeMap) modalOnExpand = onOpenKnowledgeMap
         else if (inlineDetail) modalOnExpand = undefined
-        else if (terminalDetailOpener) modalOnExpand = terminalDetailOpener
         else if (viewImageDetailOpener) modalOnExpand = viewImageDetailOpener
         else if (isFileEditModalTool) modalOnExpand = openFileEditModal
         else if (canOpenToolDetailModal) modalOnExpand = openToolDetailModal
-        const foldInteractive = inFold && Boolean(modalOnExpand)
+        // 折叠区内有行内详情（终端输出）也可展开；勿仅因 modalOnExpand 才算可交互。
+        const foldInteractive = inFold && Boolean(modalOnExpand || inlineDetail)
+        const cuaDefaultOpen = Boolean(
+          cuaDisplay &&
+            Array.isArray(cuaDisplay.images) &&
+            cuaDisplay.images.some(
+              (img: { url?: string }) => typeof img?.url === 'string' && img.url,
+            ),
+        )
         if (isFileEditModalTool && !inFold) {
           const displayPath =
             fileNameFromPath(String(fileEditPath || path || '').trim()) ||
@@ -2063,7 +2142,7 @@ function ToolCallListInner({
               toolKind={toolKind}
               running={running}
               failed={toolFailed}
-              defaultOpen={false}
+              defaultOpen={cuaDefaultOpen}
               inActivityFold={inFold}
               foldInteractive={foldInteractive}
               summary={summary}
@@ -2241,35 +2320,6 @@ function ToolCallListInner({
           fallbackTools={liveTask?.tools || transcriptModal.fallbackTools}
           fallbackStatus={liveTask?.phase || transcriptModal.fallbackStatus}
           onClose={handleCloseTranscript}
-        />
-      )
-    })() : null}
-    {terminalModal ? (() => {
-      // 运行中也能打开弹窗，从最新 list 里实时找回工具状态 + 流式输出，让 modal 实时刷新
-      const liveTool = list.find((x) => {
-        const xx = x as { id?: string; tool_call_id?: string }
-        // 与 toolCallId 派生逻辑保持一致：优先 tool_call_id，再回退 id；同时双字段匹配以防 LangGraph id(msg_*) ≠ tool_call_id(call_*)
-        const tId = String(xx.tool_call_id || '').trim()
-        const xId = String(xx.id || '').trim()
-        return tId === terminalModal.toolCallId || xId === terminalModal.toolCallId
-      }) as Record<string, unknown> | undefined
-      const liveStream = liveTool ? resolveTerminalStreamTask(terminalStreams, liveTool) : undefined
-      const liveRunning =
-        (liveTool ? isToolRunning(liveTool) : false) || liveStream?.phase === 'running'
-      const liveOutputFallback = liveTool
-        ? String(liveTool.output ?? liveTool.result ?? '') || terminalModal.outputFallback
-        : terminalModal.outputFallback
-      return (
-        <TerminalToolDetailModal
-          open
-          title={terminalModal.title}
-          command={terminalModal.command}
-          sessionKey={sessionKey}
-          toolCallId={terminalModal.toolCallId}
-          outputFallback={liveOutputFallback}
-          stream={liveStream}
-          running={liveRunning}
-          onClose={handleCloseTerminal}
         />
       )
     })() : null}

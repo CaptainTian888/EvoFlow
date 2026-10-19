@@ -370,18 +370,15 @@ async def _dispatch_run(
 ) -> Any:
     """Call a CDP command on the embedded browser.
 
-    Transport selection:
-    - If ``browser-cdp-transport`` marker is ``edge``, the Rust side has
-      crashed its WebView2 and is using system Edge (msedge.exe) as a fallback.
-      In that case we skip the Rust HTTP bridge entirely and speak CDP over
-      WebSocket directly to the Edge debug port (read from
-      ``browser-cdp-http-port-edge``).
-    - Otherwise we use the original WebView2 path: Rust HTTP server forwards
-      the command to its child WebView2.
+    Only the in-app WebView2 panel. A ``browser-cdp-transport=edge`` marker
+    means the desktop previously gave up on that panel; we do not open system
+    Edge. The caller gets a clear error and can remount the panel.
     """
-    transport = _read_transport_marker()
-    if transport == "edge":
-        return await _dispatch_run_edge(tid, method, params)
+    if _read_transport_marker() == "edge":
+        raise RuntimeError(
+            "EvoFlow only drives the in-app WebView2 panel. "
+            "System Edge is not used. Restart the desktop app so the panel browser is available."
+        )
 
     port = await _read_browser_cdp_http_port_async()
     if not port:
@@ -648,12 +645,63 @@ _INTERACTIVE_AT_POINT_JS = r"""
 })()
 """
 
+# Sync only. WebView2 ExecuteScript JSON-serializes a Promise as `{}` and does
+# not wait for it — an async settle looked "instant timeout" with empty value.
 _PAGE_STATE_JS = (
-    "({url: location.href, title: document.title || '', "
-    "sx: window.scrollX || 0, sy: window.scrollY || 0, "
-    "vw: window.innerWidth || 0, vh: window.innerHeight || 0, "
-    "hl: history.length || 0})"
+    "(() => {"
+    "  const nav = window.navigation;"
+    "  let canBack = null;"
+    "  let canForward = null;"
+    "  try {"
+    "    if (nav && typeof nav.canGoBack === 'boolean') canBack = nav.canGoBack;"
+    "    if (nav && typeof nav.canGoForward === 'boolean') canForward = nav.canGoForward;"
+    "  } catch (e) {}"
+    "  return {"
+    "    ready: document.readyState,"
+    "    url: location.href,"
+    "    title: document.title || '',"
+    "    sx: window.scrollX || 0,"
+    "    sy: window.scrollY || 0,"
+    "    vw: window.innerWidth || 0,"
+    "    vh: window.innerHeight || 0,"
+    "    hl: history.length || 0,"
+    "    canBack,"
+    "    canForward"
+    "  };"
+    "})()"
 )
+
+
+def _coerce_navigate_url(raw: Any) -> str:
+    """Flatten nested / stringified URL shapes the agent sometimes emits."""
+    if isinstance(raw, dict):
+        for key in ("url", "href", "uri"):
+            inner = raw.get(key)
+            if inner is not None:
+                return _coerce_navigate_url(inner)
+        return ""
+    if isinstance(raw, (list, tuple)) and raw:
+        return _coerce_navigate_url(raw[0])
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    # Python dict repr leaked through: "{'url': 'https://example.com'}"
+    if text.startswith("{") and ("'url'" in text or '"url"' in text):
+        try:
+            import ast
+
+            parsed = ast.literal_eval(text)
+            if isinstance(parsed, dict):
+                return _coerce_navigate_url(parsed)
+        except Exception:
+            pass
+        try:
+            parsed = json.loads(text.replace("'", '"'))
+            if isinstance(parsed, dict):
+                return _coerce_navigate_url(parsed)
+        except Exception:
+            pass
+    return text
 
 
 # ---------------------------------------------------------------------------
@@ -691,6 +739,9 @@ class _Session:
         self.next_ref_index = 0
         self.last_dialog: dict[str, Any] | None = None
         self.last_url = ""
+        self.last_title = ""
+        self.last_can_back = False
+        self.last_can_forward = False
         self.last_used = time.time()
 
 
@@ -910,8 +961,61 @@ class BrowserEngine:
         except Exception:
             return None
 
+    def _state_from_info(self, session: _Session, info: dict[str, Any]) -> PageState:
+        # Prefer Navigation API (Chromium). Fallback: history.length>1 ⇒ can go back;
+        # forward stack is invisible via length — leave False until back() sets True.
+        if "canBack" in info and info.get("canBack") is not None:
+            can_go_back = bool(info.get("canBack"))
+        else:
+            can_go_back = bool(info.get("hl", 0) > 1)
+        if "canForward" in info and info.get("canForward") is not None:
+            can_go_forward = bool(info.get("canForward"))
+        else:
+            can_go_forward = False
+        raw_url = str(info.get("url") or "")
+        # chrome-error://chromewebdata 是导航失败后的内部页；写进 last_url /
+        # PageState 会让面板反复 upsert 错误页，看起来像「页面一直在报错」。
+        def _is_internal_error_url(u: str) -> bool:
+            low = (u or "").strip().lower()
+            return (
+                low.startswith("chrome-error:")
+                or low.startswith("chrome://")
+                or low.startswith("edge://")
+                or low.startswith("devtools://")
+                or "chromewebdata" in low
+            )
+
+        if raw_url and not _is_internal_error_url(raw_url):
+            session.last_url = raw_url
+            url = raw_url
+        else:
+            url = session.last_url or ""
+        title = str(info.get("title", ""))
+        if title and not _is_internal_error_url(raw_url):
+            session.last_title = title
+        elif not title:
+            title = session.last_title or ""
+        state = PageState(
+            url=url,
+            title=title if not _is_internal_error_url(raw_url) else (session.last_title or title),
+            canGoBack=can_go_back,
+            canGoForward=can_go_forward,
+            scrollX=float(info.get("sx") or 0),
+            scrollY=float(info.get("sy") or 0),
+            viewportWidth=float(info.get("vw") or 0) or None,
+            viewportHeight=float(info.get("vh") or 0) or None,
+        )
+        session.last_can_back = state.canGoBack
+        session.last_can_forward = state.canGoForward
+        return state
+
     async def _page_state(self, session: _Session, tid: str) -> PageState:
-        """Read the page state in one Runtime.evaluate round trip."""
+        """Read page URL/title via Runtime.evaluate (native WebView2 fast-path).
+
+        Do **not** call Page.getNavigationHistory here: on the embed CDP bridge
+        that method goes through CallDevToolsProtocolMethod and can hang, which
+        made toolbar back/forward look broken.
+        """
         try:
             raw = await _dispatch_run(
                 tid,
@@ -919,61 +1023,78 @@ class BrowserEngine:
                 {"expression": _PAGE_STATE_JS, "returnByValue": True},
             )
             info = raw.get("result", {}).get("value", {}) if isinstance(raw, dict) else {}
+            if not isinstance(info, dict):
+                info = {}
         except Exception:
             info = {}
-        return PageState(
-            url=str(info.get("url") or session.last_url or ""),
-            title=str(info.get("title", "")),
-            canGoBack=bool(info.get("hl", 0) > 1),
-            canGoForward=False,
-            scrollX=float(info.get("sx") or 0),
-            scrollY=float(info.get("sy") or 0),
-            viewportWidth=float(info.get("vw") or 0) or None,
-            viewportHeight=float(info.get("vh") or 0) or None,
+        return self._state_from_info(session, info)
+
+    def _ready_from_settle(self, value: Any) -> bool:
+        if isinstance(value, str):
+            return value in ("complete", "interactive")
+        if isinstance(value, dict):
+            if not value:
+                # Promise leaked through ExecuteScript as {}.
+                return False
+            ready = value.get("ready")
+            if isinstance(ready, str):
+                return ready in ("complete", "interactive")
+            # Test bridge / page-state without ready field.
+            return bool(value.get("url"))
+        return False
+
+    async def _read_settle_once(self, tid: str) -> Any:
+        raw = await _dispatch_run(
+            tid,
+            "Runtime.evaluate",
+            {"expression": _PAGE_STATE_JS, "returnByValue": True},
         )
+        if not isinstance(raw, dict):
+            return None
+        return raw.get("result", {}).get("value")
 
-    async def _wait_document_ready(
-        self, tid: str, timeout_ms: int = 5000
-    ) -> bool:
-        """Wait until document.readyState reaches 'complete' or 'interactive'.
+    async def _settle(
+        self, session: _Session, tid: str, timeout_ms: int
+    ) -> tuple[bool, PageState]:
+        """Poll sync page state until ready (or timeout).
 
-        Returns True when the document is ready, False on timeout or dispatch
-        failure. Callers must inspect the return value — silently treating a
-        stuck page as "ok" is what produced the auto-insurance-quoter retry
-        storm (browser navigate reported ok=True, then snapshot came back
-        empty, and the proactive worker kept retrying until the gateway
-        spike detector tripped on /execution/state at 30 hits/60s).
+        COM evaluate is ~ms now; keep the loop so we still wait for load
+        without the dead remote-CDP tax or a broken async Promise path.
         """
         deadline = time.monotonic() + max(0, timeout_ms) / 1000
+        last: Any = None
         attempt = 0
         while True:
             attempt += 1
             try:
-                raw = await _dispatch_run(
-                    tid,
-                    "Runtime.evaluate",
-                    {"expression": "document.readyState", "returnByValue": True},
-                )
-                state = raw.get("result", {}).get("value") if isinstance(raw, dict) else None
-                if state in ("complete", "interactive"):
-                    return True
+                last = await self._read_settle_once(tid)
             except Exception as exc:
-                # Dispatch failure (CDP broker gone / WebView2 stuck) — don't
-                # loop, the next navigate will reconnect the session.
                 logger.warning(
-                    "wait_document_ready dispatch FAILED tid=%s attempt=%s: %s",
-                    tid, attempt, exc,
+                    "settle dispatch FAILED tid=%s attempt=%s: %s", tid, attempt, exc
                 )
-                return False
+                return False, self._state_from_info(session, {})
+            if self._ready_from_settle(last):
+                info = last if isinstance(last, dict) else {}
+                return True, self._state_from_info(session, info)
             if time.monotonic() >= deadline:
                 logger.warning(
-                    "wait_document_ready TIMEOUT tid=%s after %sms — "
-                    "document.readyState never reached complete; page may be "
-                    "blocked by anti-bot, slow CDN, or hanging script",
-                    tid, timeout_ms,
+                    "settle TIMEOUT tid=%s after %sms ready=%s",
+                    tid,
+                    timeout_ms,
+                    last if not isinstance(last, dict) else last.get("ready"),
                 )
-                return False
-            await asyncio.sleep(0.15)
+                info = last if isinstance(last, dict) else {}
+                return False, self._state_from_info(session, info)
+            await asyncio.sleep(0.1)
+
+    async def _wait_document_ready(
+        self, tid: str, timeout_ms: int = 5000
+    ) -> bool:
+        """True when document.readyState is complete or interactive."""
+        ready, _ = await self._settle(
+            self._get_session(tid), tid, timeout_ms
+        )
+        return ready
 
     async def _take_snapshot(
         self,
@@ -1025,7 +1146,7 @@ class BrowserEngine:
     # -- command handlers ----------------------------------------------------
 
     async def _wv2_navigate(self, session: _Session, command: dict[str, Any]) -> CommandResult:
-        url = str(command.get("url") or "").strip()
+        url = _coerce_navigate_url(command.get("url"))
         if not url:
             return fail(ErrorCode.EXECUTION_ERROR, "navigate requires url")
         if not url.startswith(("http://", "https://", "file://", "about:", "data:")):
@@ -1046,12 +1167,7 @@ class BrowserEngine:
                 f"Page.navigate rejected: {exc}",
             )
         session.last_url = url
-        # 8s is enough for CDN-fronted pages and small SPAs; slow sites (esp.
-        # anti-bot gated ones like chuangzhan.com) still surface the timeout
-        # cleanly so the agent can decide to retry/abort rather than hammering
-        # a stuck page.
-        ready = await self._wait_document_ready(session.tid, timeout_ms=8000)
-        state = await self._page_state(session, session.tid)
+        ready, state = await self._settle(session, session.tid, 8000)
         if not ready:
             return CommandResult(
                 ok=False,
@@ -1070,17 +1186,17 @@ class BrowserEngine:
 
     async def _wv2_back(self, session: _Session, command: dict[str, Any]) -> CommandResult:
         tid = session.tid
-        # CDP has no Page.goBack — walk the session history explicitly.
-        history = await _dispatch_run(tid, "Page.getNavigationHistory", {})
-        index = int(history.get("index", 0)) if isinstance(history, dict) else 0
-        entries = history.get("entries") or [] if isinstance(history, dict) else []
-        if index <= 0 or index >= len(entries):
-            return CommandResult(ok=True, state=await self._page_state(session, tid))
+        # Embed bridge: use window.history via Runtime.evaluate (native fast-path).
+        # Page.getNavigationHistory / navigateToHistoryEntry hang or no-op on WebView2.
         await _dispatch_run(
-            tid, "Page.navigateToHistoryEntry", {"entryId": entries[index - 1]["id"]}
+            tid,
+            "Runtime.evaluate",
+            {"expression": "history.back(); true", "returnByValue": True},
         )
-        ready = await self._wait_document_ready(tid, timeout_ms=8000)
-        state = await self._page_state(session, tid)
+        ready, state = await self._settle(session, tid, 8000)
+        # We just left a page, so forward must be available even though
+        # history.length cannot express the forward stack.
+        state = state.model_copy(update={"canGoForward": True})
         if not ready:
             return CommandResult(
                 ok=False,
@@ -1094,16 +1210,12 @@ class BrowserEngine:
 
     async def _wv2_forward(self, session: _Session, command: dict[str, Any]) -> CommandResult:
         tid = session.tid
-        history = await _dispatch_run(tid, "Page.getNavigationHistory", {})
-        index = int(history.get("index", 0)) if isinstance(history, dict) else 0
-        entries = history.get("entries") or [] if isinstance(history, dict) else []
-        if index + 1 >= len(entries) or index < 0:
-            return CommandResult(ok=True, state=await self._page_state(session, tid))
         await _dispatch_run(
-            tid, "Page.navigateToHistoryEntry", {"entryId": entries[index + 1]["id"]}
+            tid,
+            "Runtime.evaluate",
+            {"expression": "history.forward(); true", "returnByValue": True},
         )
-        ready = await self._wait_document_ready(tid, timeout_ms=8000)
-        state = await self._page_state(session, tid)
+        ready, state = await self._settle(session, tid, 8000)
         if not ready:
             return CommandResult(
                 ok=False,
@@ -1116,9 +1228,13 @@ class BrowserEngine:
         return CommandResult(ok=True, state=state)
 
     async def _wv2_reload(self, session: _Session, command: dict[str, Any]) -> CommandResult:
-        await _dispatch_run(session.tid, "Page.reload", {})
-        ready = await self._wait_document_ready(session.tid, timeout_ms=8000)
-        state = await self._page_state(session, session.tid)
+        # Same as back/forward: Page.reload via DevTools can hang; evaluate is native.
+        await _dispatch_run(
+            session.tid,
+            "Runtime.evaluate",
+            {"expression": "location.reload(); true", "returnByValue": True},
+        )
+        ready, state = await self._settle(session, session.tid, 8000)
         if not ready:
             return CommandResult(
                 ok=False,
@@ -1140,7 +1256,12 @@ class BrowserEngine:
         return CommandResult(
             ok=True,
             snapshot=snapshot,
-            state=await self._page_state(session, session.tid),
+            state=PageState(
+                url=snapshot.url or session.last_url,
+                title=snapshot.title or session.last_title,
+                canGoBack=session.last_can_back,
+                canGoForward=session.last_can_forward,
+            ),
         )
 
     async def _wv2_click(self, session: _Session, command: dict[str, Any]) -> CommandResult:
@@ -1336,8 +1457,17 @@ class BrowserEngine:
 
     async def _wv2_evaluate(self, session: _Session, command: dict[str, Any]) -> CommandResult:
         expr = str(command.get("expression") or "")
+        await_promise = bool(command.get("awaitPromise"))
+        logger.info(
+            "browser_engine.evaluate thread=%s awaitPromise=%s expr=%s",
+            session.tid,
+            await_promise,
+            expr.replace("\n", " ")[:180],
+        )
         raw = await _dispatch_run(
-            session.tid, "Runtime.evaluate", {"expression": expr, "returnByValue": True}
+            session.tid,
+            "Runtime.evaluate",
+            {"expression": expr, "returnByValue": True, "awaitPromise": await_promise},
         )
         # Surface both the value and page-side errors (zcode parity: evaluate
         # results reach the model; a throwing page expression is an error, not
@@ -1347,6 +1477,18 @@ class BrowserEngine:
             text = str(details.get("exception", {}).get("description") or details.get("text") or "page evaluate failed")
             return fail(ErrorCode.EXECUTION_ERROR, text)
         value = raw.get("result", {}).get("value") if isinstance(raw, dict) else None
+        preview = ""
+        try:
+            preview = json.dumps(value, ensure_ascii=False)[:200]
+        except (TypeError, ValueError):
+            preview = repr(value)[:200]
+        logger.info(
+            "browser_engine.evaluate DONE thread=%s awaitPromise=%s valueType=%s preview=%s",
+            session.tid,
+            await_promise,
+            type(value).__name__,
+            preview,
+        )
         return CommandResult(
             ok=True,
             value=value,
@@ -1361,20 +1503,21 @@ class BrowserEngine:
         return CommandResult(ok=True)
 
     async def _wv2_open(self, session: _Session, command: dict[str, Any]) -> CommandResult:
-        url = str(command.get("url") or "").strip()
+        url = _coerce_navigate_url(command.get("url"))
         if not url:
             return fail(ErrorCode.EXECUTION_ERROR, "open requires url")
         return await self._wv2_navigate(session, {"url": url})
 
     async def _wv2_list(self, session: _Session, command: dict[str, Any]) -> CommandResult:
-        # WebView2 is a single page per panel — list returns one tab.
-        state = await self._page_state(session, session.tid)
+        # One WebView, one tab. The panel polls this every few seconds to paint
+        # the address bar — do not Runtime.evaluate here. Real navigations
+        # already store last_url / last_title via _page_state.
         return CommandResult(
             ok=True,
             tabs=[TabSummary(
                 tabId="tab-0",
-                url=state.url,
-                title=state.title,
+                url=session.last_url or "",
+                title=session.last_title or "",
                 viewport={},
                 active=True,
             )],

@@ -6,6 +6,197 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-10-18
+
+相对 **1.1.0** 以来的增量发布：浏览器内嵌面板能力补齐 + Computer Use 显示链路打通 + 会话执行停止可靠性修复 + 插件目录与性能优化。
+GitHub Release 正文见 `scripts/maintainer/windows/release-notes/PRODUCT-NOTES-1.1.1.md`；升级横幅见 `scripts/maintainer/update/latest.json`。
+
+### Added
+
+- **node_repl Playwright 命令面**：`__pwHandle` 翻译 Playwright Tab API（domSnapshot / click / fill / type / press / selectOption / textContent / getAttribute / isVisible / count / evaluate / waitFor* 等）为引擎命令；locator 链展开为叶子操作；role/text 定位器不支持时给出可操作错误
+- **node_repl 浏览器意图检测**：`nodeReplArgsTouchBrowser` 正则识别代码中的浏览器 API（agent.browsers / tabs.new / tab.navigate 等）；纯数据处理 JS 不再自动拉起浏览器面板；漏判由后端 browser-panel-request 兜底
+- **CUA display 标记 + 预览卡**：node_repl 结果尾部 `{evoflow-cua-display:...}` 标记 → `parseEvoflowCuaDisplay` 解析目标应用徽标 + 截图灯箱；`CuaToolPreview` / `CuaSummaryLeadingIcon` 组件；AG-UI `tool_cua_displays` 状态 + TOOL_CALL_RESULT.cua_display 事件；ZCode ToolCallBlocks cua / node-repl 渲染器
+- **浏览器内嵌 URL 安全**：`browser-page-url.ts` 检测 chrome-error:// / chrome:// / edge:// / devtools:// / about:neterror / chromewebdata；`sanitizeBrowserPageUrl` / `isNavigableBrowserUrl` 阻止错误页写回 pageUrl 造成死循环；Rust `normalize_target_url` 拒绝内部 URL；`clamp_rect` 钳制 y ≥ 48px 不盖拖拽区
+- **浏览器 tab history + 导航**：`browser-panel-store` 新增 pageTitle / canGoBack / canGoForward / TabHistory(stack+index) / favicon / displayTitle；toolbar 后退/前进/重载按钮；`browser_stream.py` 添加 reload 命令
+- **浏览器 zoom**：embed zoom 预设（fit/50/67/75/100/125/150/200）持久化到 localStorage；`browserEmbedSetZoom` 客户端调用；`zoom_hotkeys_enabled(true)` 开启 Ctrl+滚轮；`ZoomFactorChanged` 事件监听推 `browser-embed-zoom` 到面板更新 toolbar
+- **浏览器 embed 跨平台兼容**：`#[cfg(not(target_os = "windows"))]` 存根（embed_is_ws_child / log_region_diag / nest_embed_into_main / place_embed_client / browser_cdp_server::log_line）使 macOS/Linux CI 可编译
+- **per-session 浏览器面板隔离**：`right-stage-session-memory` 跟踪 currentSessionKey + `upsertBrowserTabInSessionMemory` 按会话保存浏览器 tab；`forceHidden` 选项：后台会话导航只保证 HWND/CDP 可用不贴到当前 UI
+- **zcode_port 工具移植**：background / bash_tool / glob_grep / task_notification / task_tools / notify_continuation / capability / prelude
+- **background bash**：`background_bash.py` REST 接口 + `background-bash-api.ts` / `background-work-merge.ts` 前端 API + 流合并
+- **image staging**：`image_staging.py` 工具截图共享暂存到 `viewed_images`；node_repl / browser 工具统一暂存
+- **scrollbar reveal**：`scrollbar-reveal.ts` macOS overlay 风格滚动条显隐（鼠标靠近右缘/滚动时短暂显现）
+- **ChatSummaryPanel 浮动卡**：三态（隐藏 / 气泡 / 浮动卡）+ 缩放过渡动画 + 与右栏互斥展开
+- **全局插件目录**：`plugin-catalog.js` 统一 `GET /api/plugins/overview` 客户端 + 进程内缓存 + 并发去重 + subscribe/listener；对话与首页预加载
+- **STOP-TRACE 取消补丁**：`langgraph_cancellation_patch.py` 修复 vendor `listen_for_cancellation` 240s 超时退出缺陷（长任务取消消息无人消费 → 协作式取消失效）；改为永久 `await queue.get()` + `[STOP-TRACE]` 全链路日志
+- **bash PowerShell 路由**：检测 PowerShell cmdlet（Select-String / Get-ChildItem / ConvertFrom-Json 等）直接走 `powershell -NoProfile -NonInteractive`，不走 Git Bash（省去多秒登录 shell 启动且找不到 cmdlet）；bash 用 `--noprofile --norc -c`
+- **node_repl 窗口隐藏**：`CREATE_NO_WINDOW` 隐藏 node.exe 黑窗 + preload 脚本 claim `evoflow-node-repl` 进程标题
+- **CUA PNG 归一化**：`_raster_png_and_size` 将 CUA JPEG（存为 .png）转成真 PNG + 宽高元数据，修复 IHDR 读 JPEG 头得到垃圾坐标
+- **统一日志重命名**：`browser-debug.log` → `插件控制日志.log`；MCP CUA / node_repl 全量 I/O 日志
+
+### Changed
+
+- 流式结束后自动折叠执行过程，只留最终正文
+- 首页加载去掉分阶段 loadPhase 文案，保留单一横幅
+- 插件市场暂隐藏尚未迁移的 MCP / Skills 独立 Tab（统一收进插件）；移除 mcpStore 预载 + tab 切换死代码
+- `node_repl_tool` 将 `tool_call_id` 加到 args_schema（InjectedToolCallId）使 LangChain 自动注入；fallback 从 `runtime.tool_call_id` 取
+- `runtime.py` 添加 computer-use 运行时提示（截图自动进入上下文，不要调 view_image，坐标用截图像素）
+- 插件图标 `localizeGatewayIcon` 相对路径改写为 Gateway 绝对地址（桌面 WebView 页面源不是 Gateway）；`trustedImageUrl` 放行 loopback
+- `place_embed_client` 统一 `HWND_TOP`（修复 park→show 落到主 WebView2 下面导致右侧空白）
+- `reportEmbedSlot` 在 setBounds 失败时按 URL 重建 embed 窗口
+- i18n（en-US / zh-CN）与主题样式随上述能力更新
+
+### Fixed
+
+- **CI**：`evopanel/vendor/**/package.json` 被根 `.gitignore` 的 `package.json` 规则排除，导致 CI 无法解析 exports 子路径 → 添加例外 `!evopanel/vendor/**/package.json`
+- **api-client import**：ZCode `@/` 解析到 `src/zcode-ui`，`@/lib/api-client.js` 404 → 直接 import `../../lib/api-client.js` + re-export shim
+- **知识库**：documentCount 对空 storage_dir 的 KB 改用 per-KB 库计数（修复内置知识库灰点）；parse_index 成功后回收同文档旧终态 error 任务行（修复索引状态横幅误报）
+- **模型**：厂商拒绝 `thinking.type=disabled` 返回 400 时实例记忆并剥参重试一次
+- **工具审批**：审批挂起时实时视图保留待授权工具（修复审批卡消失无按钮）；摘要文案「曾待授权」→「等待授权」；折叠头带最后一步 + spinner 文案事件化 + proactive 活动走 `panel:activity` 控制面广播
+- **浏览器嵌入**：embed bridge coords + panel store + desktop notification；overlay + modal z-index；park→show 抬层；setBounds 失败按 URL 重建
+- **CDP**：`Runtime.evaluate` 支持 `awaitPromise` 标志；`native_evaluate` 不再 dial embed debug port（每次 4s 阻塞）；`pump_both_ways` 获取 `out_tx_reader` 使 reader loop 可内联回复
+- **node_repl bridge**：`newTab` 无 url 时不映射成 navigate（会报错）回退 getState；`claimTab` __tab 补 `tabId` 字段；`attachTab` 每个结果附加 primary tab（ZCode BrowsersFacade 契约）；错误回显包含 cmd JSON
+
+### Performance
+
+- **session list**：`refreshSessions` do-while 重跑循环改为 trailing timer 补刷；`MIN_REFRESH_INTERVAL_MS` 1500→2500；`panel:session_upserted` / session-thread-rebound / background final 走 `syncSessionRowRef` 单行同步不刷全表；`watchBackgroundBashRef` 按后台 bash 活动门控列表轮询
+- **file preview**：`WorkspaceFilePreviewPanel` 连续 5 次静默拉取无变化后停轮询（~4s）；`workspaceScopeOpts` 拆为原始字段依赖避免会话轮询重渲染时反复 read-file
+- **stream perf**：移除 `buildRow-diag` console.warn 诊断；`PHASE_WARN_MS` 4→30 减少误报
+
+### Docs
+
+- 新增 `RELEASE.md` 发版清单（VERSION 唯一源 / 三份说明 / tag / CI 自检）
+- `MAINTAINERS.md` / `CONTRIBUTING.md` / `README` / `docs/` / `scripts/maintainer/` 全部交叉引用 `RELEASE.md`
+
+### Notes
+
+- 发版说明与版本线对齐 **1.1.1**
+- 建议从 **1.1.0** 覆盖安装至 **1.1.1**；无数据迁移
+
+## [1.1.0] - 2026-10-16
+
+相对 **1.0.9** 以来主线真实合入（含标签后继续合并、随本包发出的修复）。
+GitHub Release 正文见 `scripts/maintainer/windows/release-notes/PRODUCT-NOTES-1.1.0.md`；升级横幅见 `scripts/maintainer/update/latest.json`。
+
+### Added
+
+- **任务失败步骤重试**：任务列表 / 详情新增「重试失败步骤」（`POST /tasks/{id}/retry`），只补跑 `failed` 子任务；可指定子任务 ID 或重试全部失败步骤；已完成步骤不动；`tauri-api.retryTask`
+- **任务操作术语**：paused「继续」→「恢复执行」；failed 拆成「重试失败步骤」与「重新执行」（整任务克隆）；详情「再跑一次」→「重新执行」
+- **插件系统**：后端 plugins runtime / service / storage / manifest / zip 源；网关 `plugins` 路由；设置页插件管理；聊天侧 PluginPickerModal / PluginQuickPanel；内置 evoflow-guide / skill-kit / hello-command；`bridge_auth` 认证桥接
+- **浏览器桥接与内嵌面板**：网关 `browser_bridge` / `cua_bridge`；Tauri `browser_embed` / `browser_embed_bridge` / CDP HTTP；右侧舞台 BrowserPanel；WebView2 嵌进右侧槽位并跟主窗口缩放移动；`node_repl` Playwright 命令面（domSnapshot / click / fill / type / waitFor* 等）与浏览器意图检测；CUA 结果预览卡（应用图标 + 截图灯箱）
+- **MCP 服务器管理**：设置页 MCP 管理与市场同步；MCP 连接池复用与缓存
+- **右侧舞台标签化**：RightStage 收成 tabs 模型（Terminal / 工作区预览 / 浏览器等），BrowserPanel 不再当整栏外壳；会话级右侧舞台记忆
+- **聊天摘要浮动卡**：ChatSummaryPanel 三态（隐藏 / 气泡 / 浮动卡），与右侧舞台互斥展开
+- **任务完成通知音**：后台通知可播放提示音，设置内可开关
+- **流式追踪调试**：`stream_trace` / `analyze_stream_trace` 与相关文档（排障用）
+- **统一日志**：浏览器 / CDP / CUA / node_repl 写入 `插件控制日志.log`；MCP CUA / node_repl 全量 I/O 日志
+- **文档与许可**：Claude Code Python SDK 集成指南、zcode 许可说明、介绍页；zcode 第三方许可文件
+
+### Changed
+
+- 删除 `experience_tool.py`，旧经验库迁资产中心扁平 MD
+- 知识库 owned 解析 / 嵌入 / pipeline / worker 增强；技能注入中间件与 loader 调整
+- 流式结束后自动折叠执行过程，只留最终正文
+- 首页加载去掉分阶段 loadPhase 文案，保留单一横幅
+- 插件市场暂隐藏尚未迁移的 MCP / Skills 独立 Tab（统一收进插件）
+- i18n（en-US / zh-CN）与主题样式随上述能力更新
+
+### Fixed
+
+**工具审批**
+
+- 审批面板不再被「工作时长」折叠藏掉；授权暂停时折叠头显示「等待授权」并保持展开
+- 多工具待审批时点击后立即显示「已批准 / 已拒绝」回执
+- 多轮审批按 tool_call_id 精确匹配宿主，授权间隙折叠防闪烁（approval latch）
+- 「始终允许本项目」追溯放行同批已登记的兄弟 pending
+- 审批挂起时实时视图保留待授权工具，修复审批卡消失、无按钮
+- 摘要文案「曾待授权」→「等待授权」
+
+**聊天 / 流式**
+
+- 折叠头带最后一步；spinner 文案事件化；proactive 活动走 `panel:activity` 控制面广播
+- 流式显示行 / MessageVirtualList / 行 memo 在流式 tick 下更稳
+- stream-perf 热路径去掉噪音诊断；相位告警阈值上调，减少误报
+
+**浏览器嵌入**
+
+- WebView2 嵌进右侧槽位；CSS 槽位按主窗口客户区缩放；槽位 vs HWND 坐标诊断
+- park 后再 show 时抬到主 WebView 之上，避免右侧槽位空白
+- setBounds 失败（停靠 / 崩溃）时按 URL 重建 embed 窗口，避免恢复时把页面打成 about:blank
+- 嵌入覆盖层与全局弹窗 z-index，避免遮挡错乱
+- macOS / Linux 编译桩补齐（跨平台 CI 可过；嵌入能力仍为 Windows WebView2）
+
+**模型 / MCP / 插件**
+
+- 厂商拒绝 `thinking.type=disabled` 返回 400 时实例记忆并剥参重试一次
+- MCP 连接池与插件 bridge_auth 相关稳定性修复
+- CI 跟踪 `evopanel/vendor/**/package.json`，避免 vendor 包 exports 在 CI 解析失败
+
+**其它**
+
+- 子任务产出 / outcome 判定；流式路由日志与 SSE 归一化；会话仓储与权限预设持久化
+- 桌面通知与浏览器桥接坐标相关边角问题
+
+### Notes
+
+- 发版说明与版本线对齐 **1.1.0**
+- 建议从 **1.0.9** 覆盖安装至 **1.1.0**；无数据迁移
+
+## [1.0.9] - 2026-10-14
+
+### Added
+
+- **扩展注册表 API**：新增 `/api/ui-extensions/*` 网关路由，AI / 脚本可像面板一样注册 / 启停 / 卸载 UI 扩展；面板会即时重读 registry，外部写入面板立即生效
+- **Tauri 端 ui_extensions 命令**：与网关对齐 registry / manifest / suite 三层读写，支持 `link`（不复制只登记路径）安装
+- **`evoflow doctor` 命令**：本机环境自检，排查 SQLite 锁与 WAL 残留、Python 残留进程、技能根目录错位、`EVOFLOW_*` 环境变量、网关运行时信息
+- **技能路由注册后端**：网关侧按角色挂载技能，提供可调用的 HTTP 入口
+- **主窗口 Streamdown 样式接管**：流式 markdown 渲染统一走 Streamdown，文件 chip / 协议白名单 / 表格放大 / 代码块分行等交互一致
+- **流式结束自动折叠执行过程**：流结束后只保留最终正文卡片，长任务不再被中间执行细节占据屏幕
+- **`evoflow log files` 命令**：列出当前 profile 全部日志文件路径与会话 ID，方便取日志
+- **桌面端默认优先直连 API**：与开发环境一致，启动即可用本地网关，免去网关反代握手
+- **会话列表流式探针**：诊断面板里能看到每个会话的 SSE 状态 / 缓冲水位
+- **流式多维性能监控（streamperf）**：默认开启，长任务可看到每 delta 各阶段耗时与全面板卡顿监测
+
+### Changed
+
+- 字体大小令牌体系覆盖主窗口后，1.0.9 继续把 `react-vlist-scroller`、Streamdown 接管区与右侧舞台等剩余界面纳入 `--ef-text-*`，设置中的「字体大小」滑块统一联动
+- 工具调用时间线与流式正文卡片化后，正文分段、合并行齿轮、RUN_FINISHED 收尾状态等生命周期进一步收紧，长对话滚动更稳
+- 桌面端与开发环境共享同一组 API 通道配置（直连模式），减少 profile 间行为漂移
+
+### Fixed
+
+- 修复聊天长思考出现两个思考块：连续 reasoning piece 自动合并
+- 修复折叠态把待授权工具藏掉：审批面板始终可见，不再随自动折叠被吞
+- 修复聊天流式尾窗 / 合并行齿轮熄灭 / 60s 自愈把 live 视图打回 DB 视图（用户看不到最新内容）的三处根因
+- 修复 `RUN_FINISHED` 帧上 reducer 崩溃（`state.timeline` 不存在抛 `TypeError`），流式收尾不再闪退
+- 修复聊天编辑用户消息时图片增删不同步
+- 修复主窗口 markdown 把内联 hashtag / 全角括号行 / 表格行误判为标题 / URL 编码换行 / false-positive heading
+- 修复流式过程卡片化后正文分段与多轮新流一闪而过的两处问题
+- 修复 `platform` / `panel_set` 工具在 agent 模式下被错误移除，右侧面板平台 / 产物入口恢复
+- 修复 Windows `select()` FD 耗尽（`loading_extended` 重试打爆 socket）；`loading_extended` 缺 v4 时不再卡 503
+- 修复 `/runs/stream` 传输失败时的回退路径：自动改走 `/runs/wait`，流式不被截断
+- 修复右侧舞台折叠时浏览器面板等 surface 未干净关闭的残留
+- 修复 `react-vlist-scroller` 滚动不丝滑 + 滚动条 thumb 跳动的两处渲染抖动
+- 修复 `fastdom` / `fastdom-promised` 桩与 mermaid 11.17+ 的 ESM 互操作；新增 `extend()` 让 Vite ESM 不再报 stub 缺方法
+- 修复 Vite 旧 dep 缓存导致 `fastdom` 桩回归的冷启动问题（自动清理）
+- 修复 `mergeSoftHistoryFetch` `curLast` 作用域回退导致的运行时 `ReferenceError`
+- 修复视觉镜像 head 行去重 / 行级 `ui-display-visual.log` 流水
+- 修复 `task_tool` 主动任务中把被禁的 mandatory 协作工具塞进 `disallowed_tools`
+- 修复企业微信接收图文混合消息的端到端通路与回退路径未读最新 DB
+- 修复模型限流等瞬时不可用标记不自动过期
+- 修复 Anthropic 原生模型请求超时参数未映射；未指定 `thinking` 时未跟随模型默认
+- 修复桌面端 health 探测应打网关基址而非页面 origin
+- 修复工作区视图的会话列表漏掉未绑定会话
+- 修复内置 lazy langgraph 请求转发时未剥离挂载前缀
+- 修复主动角色未绑定飞书推送时仍被误发的目标路由错误
+- 修复知识库（owned KB）重建索引期间搜索体验断流；`staged chunk` 分配串行化避免竞争
+- 修复 ui_extensions 兼容 PowerShell 5.1 写出的 UTF-8 BOM 与单对象 registry 历史写法（脚本装了不显示的常见坑）
+
+### Notes
+
+- 发版说明与版本线对齐 **1.0.9**
+- 本版主要修复 1.0.8 启动性能专项之后的 4 天窗口内累积的流式 / 渲染 / 通道 / 知识库回归，并把 ui_extensions + skills 路由注册 + doctor 自检这三块基础能力合并发布
+- 升级方式：覆盖安装即可，无数据迁移
+
 ## [1.0.8] - 2026-10-04
 
 ### Added

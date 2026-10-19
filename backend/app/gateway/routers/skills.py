@@ -34,6 +34,8 @@ class SkillsListResponse(BaseModel):
     """Response model for listing all skills."""
 
     skills: list[SkillResponse]
+    skills_root: str | None = Field(default=None, description="生效的技能根目录（EVOFLOW_SKILLS_PATH > EVOFLOW_HOME > 默认 ~/.evoflow/skills）")
+    warnings: list[str] = Field(default_factory=list, description="多技能根目录错位告警（装在非生效根的 custom 技能不会被加载）")
 
 
 class SkillUpdateRequest(BaseModel):
@@ -155,7 +157,21 @@ def _skill_to_response(skill: Skill) -> SkillResponse:
 async def list_skills(request: Request) -> SkillsListResponse:
     try:
         skills = _load_skills_for_request(request, enabled_only=False)
-        return SkillsListResponse(skills=[_skill_to_response(skill) for skill in skills])
+        skills_root: str | None = None
+        warnings: list[str] = []
+        try:
+            from evoflow.skills.loader import describe_skills_root_context
+
+            ctx = describe_skills_root_context()
+            skills_root = ctx.get("active")
+            warnings = list(ctx.get("warnings") or [])
+        except Exception:
+            logger.debug("describe_skills_root_context failed", exc_info=True)
+        return SkillsListResponse(
+            skills=[_skill_to_response(skill) for skill in skills],
+            skills_root=skills_root,
+            warnings=warnings,
+        )
     except Exception as e:
         logger.error(f"Failed to load skills: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to load skills: {str(e)}")

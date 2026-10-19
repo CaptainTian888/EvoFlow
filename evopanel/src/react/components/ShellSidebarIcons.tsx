@@ -5,6 +5,7 @@
 import { memo } from 'react'
 import type { LucideIcon, LucideProps } from 'lucide-react'
 import {
+  Archive,
   ChevronRight,
   CircleAlert,
   Folder,
@@ -12,8 +13,10 @@ import {
   FolderPlus,
   Info,
   Layers,
+  ListFilter,
   Loader,
   MessageSquare,
+  Minimize2,
   Pin,
   Plus,
   RefreshCw,
@@ -22,7 +25,6 @@ import {
   Users,
   X,
   Hash,
-  ListFilter,
 } from 'lucide-react'
 
 /** 侧栏统一描边（对齐 ChatGPT 细线图标） */

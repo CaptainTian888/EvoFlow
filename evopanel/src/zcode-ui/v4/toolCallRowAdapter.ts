@@ -1,3 +1,5 @@
+// NOT MOUNTED. v4 对话投影尚未接入产品聊天。可见问题改
+// evopanel/src/react/components/ToolCallList.tsx。
 // v4 ToolCallRow → 旧 ToolCallBlocks 输入形态（TaskChatToolCallTreeNode）适配。
 // 纯函数：ToolCallBlock 及其 renderers（execute/read/edit/...）吃的是旧 ZCode Agent 的
 // TaskChatToolCall 形态；v4 row 自包含，字段一一映射即可，不需要看别的行。

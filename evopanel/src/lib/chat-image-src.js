@@ -6,6 +6,25 @@
 import { apiUrl } from './api-client.js'
 import { getChatWorkspaceRoot } from './chat-workspace-context.js'
 
+/**
+ * 截图已在工具卡上。模型若把 browser_snapshots 落盘路径 / 文件名写进正文，
+ * Streamdown 会变成 [Image blocked]。渲染前剥掉这类引用。
+ */
+export function stripBrowserSnapshotFileMentions(text) {
+  return String(text || '')
+    .replace(/@@[^@\r\n]*browser_snapshots[^@\r\n]*@@/gi, '')
+    .replace(/!\[[^\]]*\]\([^)]*browser_snapshots[^)]*\)/gi, '')
+    // 模型偶发把 API 地址也 @@ 进正文
+    .replace(/@@[^@\r\n]*\/browser-snapshots\/[^@\r\n]*@@/gi, '')
+    .replace(/!\[[^\]]*\]\([^)]*\/browser-snapshots\/[^)]*\)/gi, '')
+    // 仅文件名：@@aaa35130e2da4b3f.png@@ / [Image blocked: aaa….png]
+    .replace(/@@\s*[0-9a-f]{12,32}\.png\s*@@/gi, '')
+    .replace(/截图文件：\s*(?:\[Image blocked:[^\]]*\]\s*)?/gi, '')
+    .replace(/\[Image blocked:\s*[0-9a-f]{12,32}\.png\s*\]/gi, '')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+}
+
 const IMAGE_EXT_RE = /\.(jpe?g|png|gif|webp|heic|svg|bmp)(\?|$)/i
 const OUTPUTS_MARKER = 'outputs'
 
@@ -85,8 +104,21 @@ export function resolveChatImageSrc(rawPathOrUrl) {
   if (!u) return ''
   if (u.startsWith('data:image/') || /^https?:\/\//i.test(u)) return u
 
+  // Screenshot tool results use Gateway paths, not workspace files.
+  const snapshot = u.match(/(\/api\/threads\/[^/?#]+\/browser-snapshots\/[0-9a-f]{12,32})/i)
+  if (snapshot) return apiUrl(snapshot[1].slice(4))
+
   const root = getChatWorkspaceRoot() || inferWorkspaceRootFromFilePath(u)
   const norm = u.replace(/\\/g, '/')
+
+  // 模型正文常引用落盘绝对路径（~/.evoflow(-dev)/browser_snapshots/...）；
+  // 转成 Gateway 截图 URL，否则 markdown 安全层会变成 [Image blocked]。
+  const localSnap = norm.match(
+    /(?:^|\/)(?:\.?evoflow(?:-dev)?\/)?(?:profiles\/[^/]+\/)?browser_snapshots\/([^/]+)\/([0-9a-f]{12,32})(?:\.png)?$/i,
+  )
+  if (localSnap) {
+    return apiUrl(`/threads/${localSnap[1]}/browser-snapshots/${localSnap[2]}`)
+  }
 
   if (_isWindowsAbs(u) || /^[a-zA-Z]:\//.test(norm) || _isUnixAbs(u)) {
     const effectiveRoot = root || inferWorkspaceRootFromFilePath(u)

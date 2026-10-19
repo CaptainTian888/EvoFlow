@@ -5,13 +5,16 @@ on the host filesystem. Designed to match 常见 IDE / Agent 宿主 UX.
 """
 
 from evoflow.tools.host_direct.delete_file import delete_file_hd
-from evoflow.tools.host_direct.find_file import find_file_hd
 from evoflow.tools.host_direct.read_file import read_file_hd
-from evoflow.tools.host_direct.rg import rg_hd
 from evoflow.tools.host_direct.search_code_index import search_code_index_hd
 from evoflow.tools.host_direct.str_replace import str_replace_hd
-from evoflow.tools.host_direct.terminal_tool import terminal_tool
 from evoflow.tools.host_direct.write_file import write_file_hd
+from evoflow.tools.zcode_port import zcode_shell_tools
+
+# find / rg / terminal 已由 ZCode Bash（embedded search）取代，实现文件保留但不注册。
+# from evoflow.tools.host_direct.find_file import find_file_hd
+# from evoflow.tools.host_direct.rg import rg_hd
+# from evoflow.tools.host_direct.terminal_tool import terminal_tool
 
 # Complete tool set — can be swapped with sandbox tools via config
 HOST_DIRECT_TOOLS = [
@@ -19,10 +22,11 @@ HOST_DIRECT_TOOLS = [
     write_file_hd,
     str_replace_hd,  # tool name: replace_in_file
     delete_file_hd,
-    find_file_hd,
-    rg_hd,
+    # find_file_hd,
+    # rg_hd,
     search_code_index_hd,
-    terminal_tool,  # git/npm/tests/shell — not primary for file read/write/replace
+    # terminal_tool,
+    *zcode_shell_tools(),
 ]
 
 __all__ = ["HOST_DIRECT_TOOLS"] + [t.name for t in HOST_DIRECT_TOOLS]

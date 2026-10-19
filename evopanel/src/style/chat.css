@@ -2107,7 +2107,8 @@ button.msg-file-card.msg-file-card--button:focus-visible {
 }
 .msg-tool-screenshot-btn {
   display: block;
-  width: 100%;
+  width: fit-content;
+  max-width: min(280px, 100%);
   margin: 0;
   padding: 0;
   border: none;
@@ -2119,12 +2120,21 @@ button.msg-file-card.msg-file-card--button:focus-visible {
 }
 .msg-tool-screenshot-img {
   display: block;
-  width: 100%;
-  max-height: min(420px, 55vh);
+  width: auto;
+  max-width: min(280px, 100%);
+  max-height: min(180px, 32vh);
   object-fit: contain;
   border-radius: 6px;
   border: 1px solid var(--border-primary, var(--border));
   background: var(--bg-secondary, #f8f9fa);
+}
+/* 电脑控制预览：缩略图，点击再放大 */
+.msg-tool-cua .msg-tool-screenshot-btn {
+  max-width: min(240px, 100%);
+}
+.msg-tool-cua .msg-tool-screenshot-img {
+  max-width: min(240px, 100%);
+  max-height: min(160px, 28vh);
 }
 .msg-tool-screenshot-hint {
   position: absolute;
@@ -2141,6 +2151,39 @@ button.msg-file-card.msg-file-card--button:focus-visible {
   margin: 0;
   font-size: 11px;
   color: var(--text-secondary, #666);
+}
+
+/* Captain Work CUA（电脑控制）工具预览卡 —— node_repl js 结果的目标应用徽标 + 截图 */
+.msg-tool-cua {
+  margin: 4px 0;
+}
+.msg-tool-cua-target {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 6px;
+}
+.msg-tool-cua-icon {
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+.msg-tool-cua-app {
+  font-size: var(--ef-text-sm, 13px);
+  font-weight: 500;
+  color: var(--text-primary, #222);
+  word-break: break-all;
+}
+.msg-tool-cua-status {
+  margin-left: auto;
+  font-size: var(--ef-text-xs, 11px);
+  color: var(--text-secondary, #666);
+  flex-shrink: 0;
+}
+.msg-tool-cua-status--failed {
+  color: var(--danger, #c62828);
 }
 .msg-tool-screenshot-error {
   margin: 0;
@@ -2371,6 +2414,15 @@ button.msg-file-card.msg-file-card--button:focus-visible {
   display: none;
 }
 
+/* 尾部簇：耗时 / 箭头 / 时间靠右成组，避免 chevron 单独 margin-left:auto 把摘要和耗时拉开 */
+.react-msg-tool .msg-tool-trailing {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
 /* 箭头指示器：默认隐藏，hover 时显示 */
 .react-msg-tool .msg-tool-chevron {
   display: inline-flex;
@@ -2383,7 +2435,6 @@ button.msg-file-card.msg-file-card--button:focus-visible {
   width: 16px;
   flex-shrink: 0;
   opacity: 0;
-  margin-left: auto;
 }
 
 .react-msg-tool .msg-tool-item:hover .msg-tool-chevron,
@@ -2446,6 +2497,20 @@ button.msg-file-card.msg-file-card--button:focus-visible {
   background: rgba(255, 255, 255, 0.85);
   border-color: rgba(156, 163, 175, 0.15);
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.04);
+}
+
+/* 终端：外层不加卡片，边框只在 execute 详情面板上（避免双框） */
+.react-msg-tool .msg-tool-item--bash[open],
+.react-msg-tool .msg-tool-item--terminal[open],
+.react-msg-tool .msg-tool-item--execute_command[open],
+.react-msg-tool .msg-tool-item--code_execution[open] {
+  width: 100%;
+  max-width: 100%;
+  padding: 2px 0 4px;
+  background: transparent;
+  border: none;
+  border-color: transparent;
+  box-shadow: none;
 }
 
 .react-msg-tool .msg-tool-item--subagent[open] {
@@ -3608,19 +3673,18 @@ button.msg-file-card.msg-file-card--button:focus-visible {
   display: flex;
   width: 100%;
   min-width: 0;
-  min-height: 36px;
-  align-items: center;
+  align-items: flex-start;
   gap: 10px;
-  padding: 6px 16px;
+  padding: 10px 16px;
   cursor: pointer;
   user-select: text;
-  white-space: nowrap;
   transition: background-color 0.12s ease;
 }
 .evf-code-comment-row:hover { background: var(--bg-tertiary, rgba(127, 127, 127, 0.08)); }
 .evf-code-comment-row:focus-visible { outline: 2px solid var(--accent-primary, #2563eb); outline-offset: -2px; }
 .evf-code-comment-badge {
   flex-shrink: 0;
+  margin-top: 2px;
   padding: 1px 6px;
   border: 1px solid var(--border);
   border-radius: 5px;
@@ -3632,6 +3696,20 @@ button.msg-file-card.msg-file-card--button:focus-visible {
   border-color: rgba(239, 68, 68, 0.4);
   background: rgba(239, 68, 68, 0.1);
   color: #ef4444;
+}
+.evf-code-comment-main {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.evf-code-comment-meta {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 10px;
+  white-space: nowrap;
 }
 .evf-code-comment-title {
   min-width: 0;
@@ -3647,6 +3725,14 @@ button.msg-file-card.msg-file-card--button:focus-visible {
   text-overflow: ellipsis;
   color: var(--text-secondary, #888);
   font-size: 0.9em;
+}
+.evf-code-comment-body {
+  margin: 0;
+  color: var(--text-secondary, #888);
+  font-size: 0.92em;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 /* ===== 回合末尾「N 个文件已更改」聚合行 + 撤销 ===== */
@@ -3871,6 +3957,13 @@ button.msg-file-card.msg-file-card--button:focus-visible {
 .evf-tcard-icon--collab { --evf-tc-color: #ec4899; }
 .evf-tcard-icon--media { --evf-tc-color: #14b8a6; }
 .evf-tcard-icon--system { --evf-tc-color: #64748b; }
+.evf-tcard-icon--cua-app {
+  --evf-tc-color: transparent;
+  background: transparent;
+  padding: 0;
+  object-fit: contain;
+  border-radius: 3px;
+}
 [data-theme="dark"] .evf-tcard-icon {
   background: color-mix(in srgb, var(--evf-tc-color) 20%, transparent);
 }

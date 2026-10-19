@@ -16,6 +16,7 @@
 | [CODE_OF_CONDUCT.md](../../CODE_OF_CONDUCT.md) | 行为准则 |
 | [SECURITY.md](../../SECURITY.md) | 漏洞私密报告 |
 | [MAINTAINERS.md](../../MAINTAINERS.md) | 谁负责 Review / 发版 |
+| [RELEASE.md](../../RELEASE.md) | **维护者：升版本必做清单** |
 
 ## 贡献路径（由易到难）
 

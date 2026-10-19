@@ -523,9 +523,9 @@ html[data-theme='dark'] .react-chat-aside-brand-logo {
   background: var(--shell-border, #e9ebf2);
 }
 
-/* 当「更多」组展开时，「扩展应用」会成为一级导航的最后一项，
-   它底下的 .shell-aside-nav-divider 看起来像「扩展应用」自己带了一条线。
-   这种情况下把分隔线藏掉，让扩展应用与「最近」直接相邻，视觉上更干净。 */
+/* 当「更多」组展开时，「Agent应用」会成为一级导航的最后一项，
+   它底下的 .shell-aside-nav-divider 看起来像「Agent应用」自己带了一条线。
+   这种情况下把分隔线藏掉，让Agent应用与「最近」直接相邻，视觉上更干净。 */
 .shell-aside-nav-more.is-expanded ~ .shell-aside-nav-divider {
   display: none;
 }
@@ -616,7 +616,7 @@ html[data-theme='dark'] .react-chat-aside-brand-logo {
   color: var(--text-secondary, #4a4f5a);
 }
 
-/* 「更多」折叠组：默认收起自动化 / 知识库 / 扩展应用 */
+/* 「更多」折叠组：默认收起自动化 / 知识库 / Agent应用 */
 /* 改造成一个紧凑的小箭头按钮（不要左右两条线），点击展开/收起。
    整体高度小，让「员工」与第一个子项之间尽量紧凑。 */
 .shell-aside-nav-more {
@@ -3153,6 +3153,7 @@ html[data-theme='dark'] .react-chat-history-item.active {
 }
 
 .react-chat-conversation-col {
+  position: relative;
   flex: 1;
   min-width: 0;
   min-height: 0;
@@ -3177,10 +3178,37 @@ html[data-theme='dark'] .react-chat-history-item.active {
   min-width: 0;
 }
 
-.react-chat-main-body:not(.is-layout-custom-width):not(.is-info-rail-open):not(.is-right-stage-open):not(.is-right-panel-open) .react-chat-conversation-col {
+.react-chat-main-body:not(.is-layout-custom-width):not(.is-info-rail-open):not(.is-right-stage-open):not(.is-right-panel-open):not(.is-chat-summary-split) .react-chat-conversation-col {
   flex: 1 1 100% !important;
   max-width: 100% !important;
   width: 100%;
+}
+
+/* 对话区 | 状态卡占位：同底色铺满，无中缝/异色侧栏 */
+.react-chat-main-body.is-chat-summary-split {
+  flex-direction: row;
+  align-items: stretch;
+  background: var(--bg-surface, #ffffff);
+}
+
+html[data-theme='dark'] .react-chat-main-body.is-chat-summary-split,
+html.dark .react-chat-main-body.is-chat-summary-split {
+  background: var(--bg-surface, #2a2a2a);
+}
+
+.react-chat-main-body.is-chat-summary-split .react-chat-conversation-col {
+  flex: 1 1 0 !important;
+  max-width: none !important;
+  width: auto !important;
+  min-width: 0;
+  /* 底色改由 main-body 统一承接，避免两栏接缝露异色 */
+  background: transparent;
+}
+
+.react-chat-main-body.is-chat-summary-split .chat-summary-float {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
 }
 
 /* 信息栏打开时分栏：对话列吃掉剩余宽度，避免右侧 info-rail 外再留空带 */
@@ -3202,16 +3230,12 @@ html[data-theme='dark'] .react-chat-history-item.active {
   min-width: 220px;
 }
 
-.react-chat-main-body.is-layout-custom-width.is-collab-exec-open .react-chat-collab-exec-panel,
-.react-chat-main-body.is-layout-custom-width.is-knowledge-map-open .react-chat-knowledge-map-panel,
-.react-chat-main-body.is-layout-custom-width.is-browser-open .react-chat-browser-panel,
-.react-chat-main-body.is-layout-custom-width.is-workspace-open .react-chat-workspace-panel,
-.react-chat-main-body.is-layout-custom-width.is-artifacts-open .react-chat-artifacts-panel,
-.react-chat-main-body.is-layout-custom-width.is-right-stage-open .react-chat-right-stage-panel {
+/* 只有右栏外壳吃自定义宽度；内部 BrowserPanel / 工作流等不再套同一像素宽
+   （否则嵌套时 flex-basis 落到纵轴，浏览器区会被压成窄条）。 */
+.react-chat-main-body.is-layout-custom-width.is-right-stage-open > .react-chat-right-stage-panel {
   flex: 0 0 var(--chat-right-panel-width) !important;
   width: var(--chat-right-panel-width) !important;
   max-width: var(--chat-right-panel-width) !important;
-  /* 覆盖 workspace browse/preview 等模式的固定 min-width，否则拖窄后拉不回来 */
   min-width: 0 !important;
 }
 
@@ -3373,28 +3397,28 @@ html.dark .react-chat-panel-resize-handle.is-dragging::before {
   max-width: 100%;
 }
 
-/* 协作执行面板：与主对话各占一半 */
-.react-chat-main-body.is-collab-exec-open .react-chat-conversation-col {
+/* 旧半栏布局：仅在「面板仍是 main-body 直接子级」时生效。
+   右栏标签外壳路径改走 is-right-stage-open + --chat-right-panel-width。 */
+.react-chat-main-body.is-collab-exec-open:not(.is-right-stage-open) .react-chat-conversation-col {
   flex: 1 1 50%;
   max-width: 50%;
   min-width: 0;
 }
 
-.react-chat-main-body.is-collab-exec-open .react-chat-collab-exec-panel {
+.react-chat-main-body.is-collab-exec-open:not(.is-right-stage-open) > .react-chat-collab-exec-panel {
   flex: 1 1 50%;
   width: 50%;
   max-width: 50%;
   min-width: min(280px, 50%);
 }
 
-/* 知识图面板：与主对话各占一半（布局同工作流） */
-.react-chat-main-body.is-knowledge-map-open .react-chat-conversation-col {
+.react-chat-main-body.is-knowledge-map-open:not(.is-right-stage-open) .react-chat-conversation-col {
   flex: 1 1 50%;
   max-width: 50%;
   min-width: 0;
 }
 
-.react-chat-main-body.is-knowledge-map-open .react-chat-knowledge-map-panel {
+.react-chat-main-body.is-knowledge-map-open:not(.is-right-stage-open) > .react-chat-knowledge-map-panel {
   flex: 1 1 50%;
   width: 50%;
   max-width: 50%;
@@ -3404,8 +3428,7 @@ html.dark .react-chat-panel-resize-handle.is-dragging::before {
   align-self: stretch;
 }
 
-/* 浏览器面板：与主对话各占一半 */
-.react-chat-main-body.is-browser-open .react-chat-conversation-col {
+.react-chat-main-body.is-browser-open:not(.is-right-stage-open) .react-chat-conversation-col {
   flex: 1 1 50%;
   max-width: 50%;
   min-width: 0;
@@ -3426,7 +3449,8 @@ html.dark .react-chat-panel-resize-handle.is-dragging::before {
   padding: 0;
 }
 
-.react-chat-main-body.is-browser-open .react-chat-browser-panel {
+/* 旧路径：浏览器面板仍是 main-body 直接子级时占半栏 */
+.react-chat-main-body.is-browser-open > .react-chat-browser-panel {
   flex: 1 1 50%;
   width: 50%;
   max-width: 50%;
@@ -3650,9 +3674,9 @@ html.dark .browser-panel-url-text {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  padding: 10px 12px 12px;
+  padding: 0;
   overflow: hidden;
-  background: var(--bg-secondary, #f1f5f9);
+  background: var(--bg-primary, #ffffff);
 }
 
 .browser-panel-shared-hint {
@@ -3710,7 +3734,38 @@ html.dark .browser-panel-shared-hint-text {
 
 html[data-theme='dark'] .browser-panel-body-live,
 html.dark .browser-panel-body-live {
-  background: #0a0f16;
+  background: var(--bg-primary, #0b1220);
+}
+
+.browser-panel-iframe-host {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  align-self: stretch;
+  border-radius: 0;
+  overflow: hidden;
+  background: var(--bg-primary, #fff);
+  border: 0;
+}
+
+.browser-panel-iframe {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: var(--bg, #fff);
+}
+
+html[data-theme='dark'] .browser-panel-iframe-host,
+html.dark .browser-panel-iframe-host {
+  background: var(--bg-primary, #0b1220);
+}
+
+html[data-theme='dark'] .browser-panel-iframe,
+html.dark .browser-panel-iframe {
+  background: #0b1220;
 }
 
 .browser-panel-embed-host {
@@ -3723,19 +3778,18 @@ html.dark .browser-panel-body-live {
 
 .browser-panel-embed-slot {
   flex: 1 1 auto;
-  min-height: 240px;
-  border-radius: 10px;
-  border: 1px dashed color-mix(in srgb, var(--accent, #2563eb) 28%, var(--border, #cbd5e1));
-  background: color-mix(in srgb, var(--bg, #fff) 88%, #dbeafe);
+  min-height: 0;
+  border-radius: 0;
+  border: 0;
+  background: transparent;
 }
 
 html[data-theme='dark'] .browser-panel-embed-slot,
 html.dark .browser-panel-embed-slot {
-  background: color-mix(in srgb, #0b1220 90%, #1d4ed8);
-  border-color: color-mix(in srgb, #60a5fa 30%, #334155);
+  background: transparent;
 }
 
-.browser-panel-embed-host .browser-panel-spinner {
+.browser-panel-spinner-anchor {
   position: absolute;
   left: 50%;
   top: 50%;
@@ -3788,6 +3842,50 @@ html.dark .browser-panel-stage {
 .browser-panel-stage-empty {
   align-items: center;
   justify-content: center;
+}
+
+/* ZCode BrowserEmptyState：全幅居中地球 + 标题 + 提示 */
+.browser-panel-empty {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 24px;
+  background: var(--bg-primary, #ffffff);
+}
+html[data-theme='dark'] .browser-panel-empty,
+html.dark .browser-panel-empty {
+  background: var(--bg-primary, #0b1220);
+}
+.browser-panel-empty-inner {
+  display: flex;
+  max-width: 24rem;
+  flex-direction: column;
+  align-items: center;
+  padding-bottom: 2.5rem;
+  text-align: center;
+}
+.browser-panel-empty-icon {
+  width: 64px;
+  height: 64px;
+  margin-bottom: 1.5rem;
+  color: var(--text-primary, #1f2329);
+  opacity: 0.3;
+}
+.browser-panel-empty-title {
+  margin: 0;
+  font-size: var(--ef-text-base, 13.5px);
+  font-weight: 500;
+  color: var(--text-primary, #1f2329);
+}
+.browser-panel-empty-hint {
+  margin: 8px 0 0;
+  font-size: var(--ef-text-base, 13.5px);
+  line-height: 1.45;
+  color: var(--text-secondary, #64748b);
 }
 
 /* ===== Arc 风格浏览器 "首页" (subtabs 下方的入口卡) ===== */
@@ -4152,7 +4250,7 @@ html.dark .browser-panel-debug-pane {
 
 @keyframes browser-panel-spin {
   to {
-    transform: rotate(360deg);
+    rotate: 360deg;
   }
 }
 
@@ -5686,6 +5784,7 @@ html.dark .react-chat-context-ring.is-clickable:hover .react-chat-context-ring-p
 }
 
 .react-chat-messages-body {
+  position: relative;
   flex: 1;
   min-height: 0;
   display: flex;
@@ -5834,6 +5933,8 @@ html.evopanel-tauri .react-chat-main-col .msg-tool-markdown-content code {
   position: relative;
   flex: 1;
   overflow-y: auto;
+  /* 滚到边界时不链式滚动到父级，避免边界处滚动不丝滑 */
+  overscroll-behavior: contain;
   /* 禁用 scroll anchoring：流式时思考/Exploring 折叠会骤降高度，浏览器若锚定折叠块会把视口停在折叠上方，
      并触发 scroll 监听误判「用户上滑」从而关掉贴底跟随。贴底与上拉历史均由 MessageVirtualList 手动管理。 */
   overflow-anchor: none;
@@ -5845,27 +5946,39 @@ html.evopanel-tauri .react-chat-main-col .msg-tool-markdown-content code {
   /* 短对话：内容不足一屏时沉底，与长对话「最新在底部」一致 */
   display: flex;
   flex-direction: column;
+  /* 滚动条：平时完全隐藏（stable 槽位仍保留，不会布局抖动）。
+     比右侧面板更克制：悬停整个对话区不显示，鼠标靠近右缘或滚动时
+     由 JS（scrollbar-reveal.ts）挂 --sb-show 才淡显。 */
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+.react-vlist-scroller.react-vlist-scroller--sb-show {
+  scrollbar-color: color-mix(in srgb, var(--text-tertiary, #9ca3af) 60%, transparent) transparent;
 }
 
 .react-vlist-scroller::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 6px;
+  height: 6px;
 }
 .react-vlist-scroller::-webkit-scrollbar-track {
   background: transparent;
 }
 .react-vlist-scroller::-webkit-scrollbar-thumb {
-  background: var(--border-primary);
-  border-radius: 5px;
+  background: transparent;
+  border-radius: 999px;
   border: 1px solid transparent;
   background-clip: padding-box;
 }
-.react-vlist-scroller::-webkit-scrollbar-thumb:hover {
+.react-vlist-scroller--sb-show::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--text-tertiary, #9ca3af) 60%, transparent);
+}
+.react-vlist-scroller--sb-show::-webkit-scrollbar-thumb:hover {
   background: var(--text-tertiary);
   border: 1px solid transparent;
   background-clip: padding-box;
 }
-.react-vlist-scroller::-webkit-scrollbar-thumb:active {
+.react-vlist-scroller--sb-show::-webkit-scrollbar-thumb:active {
   background: var(--text-secondary);
   border: 1px solid transparent;
   background-clip: padding-box;
@@ -5901,20 +6014,10 @@ html.evopanel-tauri .react-chat-main-col .msg-tool-markdown-content code {
 .react-vlist-inner--flat .react-vlist-item {
   position: static;
   transform: none;
-  /* ★ 性能：flat 模式视口外行跳过 layout/paint/render（大消息节点数万时收益显著）；
-   * 仅限 flat（虚拟模式行需真实布局供 measureElement 测高，不可跳渲染） */
-  content-visibility: auto;
-  contain-intrinsic-size: auto 160px;
-}
-
-/*
- * 流式贴底时 scrollHeight/scrollTop 每 tick 变；最大化全屏视口更高，中间行易被
- * content-visibility 反复标成 off-screen → 用 160px 占位再揭开 → 对话面板中间持续闪白。
- * 流式期间强制可见，结束后恢复 auto。
- */
-.react-vlist-scroller--streaming .react-vlist-inner--flat .react-vlist-item {
-  content-visibility: visible;
-  contain-intrinsic-size: none;
+  /* ★ 不使用 content-visibility: auto：flat 模式 ≤15 行，视口外跳过渲染收益有限，
+   *   但它会在行滚入/滚出视口时切换 占位高度↔真实高度 → scrollHeight 反复跳变 →
+   *   滚动条 thumb 跳来跳去（尤其上滑时旧行首次滚入，占位估计偏差最大）。
+   *   需要跳过视口外行渲染的场景由虚拟列表（>15 行）覆盖，无需 content-visibility。 */
 }
 
 /* 虚拟列表行容器（文档流：用户/AI 同列左齐，见下方 --user 覆盖） */
@@ -10394,7 +10497,7 @@ html.evopanel-tauri .react-chat-main-col .msg-ai-ask-inline-md {
   border: 1px solid var(--input-border, rgba(148, 163, 184, 0.28));
   background: var(--input-bg, rgba(248, 250, 252, 0.85));
   box-sizing: border-box;
-  /* 显示完整候选词菜单，但不允许超出底部区 */
+  overflow: visible;
   max-height: 100%;
   transition:
     border-color 160ms ease,
@@ -12186,8 +12289,8 @@ html[data-theme='dark'] .react-chat-bottom-permission-pill--readonly:hover:not(:
   position: absolute;
   left: 0;
   bottom: calc(100% + 8px);
-  min-width: 260px;
-  max-width: 320px;
+  min-width: 280px;
+  max-width: 340px;
   z-index: 1100;
   background: var(--bg-primary, #fff);
   border: 1px solid var(--border-subtle, #e9ebf2);
@@ -12260,9 +12363,86 @@ html[data-theme='dark'] .react-chat-bottom-permission-pill--readonly:hover:not(:
   line-height: 22px;
   color: #2563eb;
 }
+.react-chat-permission-menu-global {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 4px 8px 2px;
+  padding: 10px 10px 8px;
+  border-top: 1px solid var(--border-subtle, #e9ebf2);
+}
+.react-chat-permission-menu-global-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.react-chat-permission-menu-global-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary, #111827);
+  line-height: 1.35;
+}
+.react-chat-permission-menu-global-desc {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-tertiary, #9aa1b1);
+}
+.react-chat-permission-menu-switch {
+  position: relative;
+  display: inline-block;
+  width: 36px;
+  height: 20px;
+  flex-shrink: 0;
+}
+.react-chat-permission-menu-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+.react-chat-permission-menu-switch-slider {
+  position: absolute;
+  cursor: pointer;
+  inset: 0;
+  background: var(--text-tertiary, #94a3b8);
+  border-radius: 20px;
+  transition: background 0.2s ease;
+}
+.react-chat-permission-menu-switch-slider::before {
+  content: '';
+  position: absolute;
+  height: 14px;
+  width: 14px;
+  left: 3px;
+  bottom: 3px;
+  background: #fff;
+  border-radius: 50%;
+  transition: transform 0.2s ease;
+}
+.react-chat-permission-menu-switch input:checked + .react-chat-permission-menu-switch-slider {
+  background: var(--accent, #2563eb);
+}
+.react-chat-permission-menu-switch input:checked + .react-chat-permission-menu-switch-slider::before {
+  transform: translateX(16px);
+}
+.react-chat-permission-menu-switch input:focus-visible + .react-chat-permission-menu-switch-slider {
+  outline: 2px solid rgba(37, 99, 235, 0.45);
+  outline-offset: 2px;
+}
 html[data-theme='dark'] .react-chat-permission-menu {
   background: var(--bg-secondary, #1f2937);
   border-color: rgba(255, 255, 255, 0.08);
+}
+html[data-theme='dark'] .react-chat-permission-menu-global {
+  border-top-color: rgba(255, 255, 255, 0.08);
+}
+html[data-theme='dark'] .react-chat-permission-menu-global-title {
+  color: var(--text-primary, #f1f5f9);
+}
+html[data-theme='dark'] .react-chat-permission-menu-global-desc {
+  color: var(--text-tertiary, #94a3b8);
 }
 html[data-theme='dark'] .react-chat-permission-menu-item:hover {
   background: rgba(255, 255, 255, 0.05);
@@ -14337,6 +14517,20 @@ html.dark .msg-ai-ask-inline-label,
   cursor: default;
 }
 
+/* 点击后的乐观决策态（多工具审批的点击回执）：面板收起为「已批准/已拒绝」结果条 */
+.tool-approval-panel--decided {
+  border-style: dashed;
+  color: #64748b;
+}
+.tool-approval-panel__decision {
+  font-size: 13px;
+  font-weight: 600;
+  color: #15803d;
+}
+.tool-approval-panel__decision--denied {
+  color: #b91c1c;
+}
+
 :root[data-theme='dark'] .tool-approval-panel,
 html.theme-dark .tool-approval-panel,
 body.theme-dark .tool-approval-panel {
@@ -14380,6 +14574,22 @@ html.theme-dark .tool-approval-panel__confirm,
 body.theme-dark .tool-approval-panel__confirm {
   background: #f8fafc;
   color: #0f172a;
+}
+:root[data-theme='dark'] .tool-approval-panel--decided,
+html.theme-dark .tool-approval-panel--decided,
+body.theme-dark .tool-approval-panel--decided {
+  border-color: rgba(148, 163, 184, 0.28);
+  color: #94a3b8;
+}
+:root[data-theme='dark'] .tool-approval-panel__decision,
+html.theme-dark .tool-approval-panel__decision,
+body.theme-dark .tool-approval-panel__decision {
+  color: #4ade80;
+}
+:root[data-theme='dark'] .tool-approval-panel__decision--denied,
+html.theme-dark .tool-approval-panel__decision--denied,
+body.theme-dark .tool-approval-panel__decision--denied {
+  color: #f87171;
 }
 
 .tool-approval-modal-overlay {
@@ -18582,9 +18792,26 @@ html.dark .msg-tool-activity-fold-steps {
   /* 默认（外层未包折叠）：照常显示，避免无折叠场景被误藏 */
   display: block;
 }
+/* 豁免：piece 内含待授权工具 / 内联审批面板时保持可见。collapseTurnToSingleExploringChunk
+   会把 tools-standalone（待审批工具的独立块）重新合并回 activity piece，全部 piece 都标
+   history —— 祖先 display:none 会让外层 .msg-tool 上的 :has() 豁免失效，审批面板照样被藏。 */
 .msg-turn-history-fold[data-history-open="false"]
   .msg-flat-activity-chunk
-  .msg-tool-activity-piece[data-piece-role="history"] {
+  .msg-tool-activity-piece[data-piece-role="history"]:not(:has(.msg-tool-entry--awaiting-approval)):not(
+    :has(.msg-tool-approval-inline)
+  ) {
+  display: none;
+}
+
+/* 对话结束后折叠态：隐藏思考块和工具列表，只显示正文（plain-body/live-tail/legacy-body）。
+   bodyAlwaysRendered=true 保证 body 在 DOM（展开不闪烁），由 CSS 控制可见性。
+   豁免：待授权工具及其内联审批面板必须始终可见 —— 授权暂停时流已停，自动折叠
+   会把唯一可操作的审批入口一起藏掉，工具永远卡在「等待授权，未执行」。 */
+.msg-turn-history-fold[data-history-open="false"] .react-chat-inline-reasoning,
+.msg-turn-history-fold[data-history-open="false"]
+  .msg-tool.react-msg-tool:not(:has(.msg-tool-entry--awaiting-approval)):not(
+    :has(.msg-tool-approval-inline)
+  ) {
   display: none;
 }
 
@@ -18693,11 +18920,7 @@ html.dark .msg-tool--in-activity-fold {
   max-width: none;
 }
 
-.msg-tool--in-activity-fold .msg-tool-item--in-fold.msg-tool-item--terminal .msg-tool-short-label,
-.msg-tool--in-activity-fold .msg-tool-item--in-fold.msg-tool-item--bash .msg-tool-short-label,
-.msg-tool--in-activity-fold .msg-tool-item--in-fold.msg-tool-item--execute_command .msg-tool-short-label {
-  display: none;
-}
+/* 终端行保留短标签「终端 / 正在执行」（对齐 ZCode：图标 + kind + 命令） */
 
 .react-msg-tool .msg-tool-elapsed,
 .msg-tool--in-activity-fold .msg-tool-item--in-fold .msg-tool-elapsed {
@@ -18713,10 +18936,13 @@ html.dark .msg-tool--in-activity-fold {
   text-align: right;
 }
 
+/* 收起态摘要命令用 sans（对齐 ZCode secondaryText）；展开面板内命令才是 mono */
 .msg-tool--in-activity-fold .msg-tool-item--in-fold.msg-tool-item--terminal .msg-tool-brief,
 .msg-tool--in-activity-fold .msg-tool-item--in-fold.msg-tool-item--bash .msg-tool-brief,
 .msg-tool--in-activity-fold .msg-tool-item--in-fold.msg-tool-item--execute_command .msg-tool-brief {
-  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  font-family: inherit;
+  font-weight: 400;
+  color: var(--text-tertiary, #9ca3af);
 }
 
 .msg-tool--in-activity-fold .msg-tool-item--in-fold .msg-tool-brief--pending {
@@ -18884,8 +19110,40 @@ html.dark .msg-tool--in-activity-fold {
   box-shadow: none;
 }
 
+/* 终端 execute：摘要在面板外，整卡边框只留给内联详情面板（对齐 ZCode，避免双框） */
+.msg-tool--in-activity-fold .msg-tool-item--in-fold.msg-tool-item--bash[open],
+.msg-tool--in-activity-fold .msg-tool-item--in-fold.msg-tool-item--terminal[open],
+.msg-tool--in-activity-fold .msg-tool-item--in-fold.msg-tool-item--execute_command[open],
+.msg-tool--in-activity-fold .msg-tool-item--in-fold.msg-tool-item--code_execution[open] {
+  padding: 2px 0 4px;
+  margin: 0;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+html[data-theme='dark'] .msg-tool--in-activity-fold .msg-tool-item--in-fold.msg-tool-item--bash[open],
+html.dark .msg-tool--in-activity-fold .msg-tool-item--in-fold.msg-tool-item--bash[open],
+html[data-theme='dark'] .msg-tool--in-activity-fold .msg-tool-item--in-fold.msg-tool-item--terminal[open],
+html.dark .msg-tool--in-activity-fold .msg-tool-item--in-fold.msg-tool-item--terminal[open],
+html[data-theme='dark'] .msg-tool--in-activity-fold .msg-tool-item--in-fold.msg-tool-item--execute_command[open],
+html.dark .msg-tool--in-activity-fold .msg-tool-item--in-fold.msg-tool-item--execute_command[open],
+html[data-theme='dark'] .msg-tool--in-activity-fold .msg-tool-item--in-fold.msg-tool-item--code_execution[open],
+html.dark .msg-tool--in-activity-fold .msg-tool-item--in-fold.msg-tool-item--code_execution[open] {
+  background: transparent;
+  border: none;
+}
+
 .msg-tool--in-activity-fold .msg-tool-item--in-fold[open] > .msg-tool-body {
   margin-top: 6px;
+}
+
+.msg-tool--in-activity-fold .msg-tool-item--in-fold.msg-tool-item--bash[open] > .msg-tool-body,
+.msg-tool--in-activity-fold .msg-tool-item--in-fold.msg-tool-item--terminal[open] > .msg-tool-body,
+.msg-tool--in-activity-fold .msg-tool-item--in-fold.msg-tool-item--execute_command[open] > .msg-tool-body,
+.msg-tool--in-activity-fold .msg-tool-item--in-fold.msg-tool-item--code_execution[open] > .msg-tool-body {
+  margin-top: 8px;
 }
 
 /* 折叠内展开的工具详情：输出区不截成内嵌滚动，滚轮交给会话列表 */
@@ -20935,6 +21193,31 @@ html[data-custom-bg='1'] .react-chat-main-col--home {
   /* 继承 .react-vlist-scroller 的 flex/height，保证可滚 */
   min-height: 0;
   height: 100%;
+  /* 平时隐藏滚动条，鼠标进入再淡显（与 .react-vlist-scroller 一致） */
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+.chat-messages-inner--home:hover {
+  scrollbar-color: color-mix(in srgb, var(--text-tertiary, #9ca3af) 60%, transparent) transparent;
+}
+
+.chat-messages-inner--home::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.chat-messages-inner--home::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 999px;
+}
+
+.chat-messages-inner--home:hover::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--text-tertiary, #9ca3af) 60%, transparent);
+}
+
+.chat-messages-inner--home::-webkit-scrollbar-thumb:hover {
+  background: var(--text-tertiary);
 }
 
 /* 首页滚动落在内层 scroller，外层保持裁剪即可 */
@@ -22096,11 +22379,6 @@ html[data-custom-bg='1'] .react-chat-main-col--home {
   font-size: var(--ef-text-sm);
 }
 
-.evo-home-banner--loading {
-  background: var(--info-muted);
-  color: var(--info);
-}
-
 .evo-home-banner--error {
   background: var(--error-muted);
   color: var(--error);
@@ -22972,8 +23250,7 @@ html.dark .kvft-row.is-focused {
   padding: 0;
 }
 
-.react-chat-workspace-tree .kv-browse-refresh,
-.react-chat-workspace-tree .kv-browse-action {
+.react-chat-workspace-tree .kv-browse-refresh {
   flex: 0 0 28px;
   width: 28px;
   height: 28px;
@@ -22988,14 +23265,12 @@ html.dark .kvft-row.is-focused {
   padding: 0;
 }
 
-.react-chat-workspace-tree .kv-browse-refresh:hover,
-.react-chat-workspace-tree .kv-browse-action:hover {
+.react-chat-workspace-tree .kv-browse-refresh:hover {
   background: var(--tree-bg-hover);
   color: var(--tree-fg);
 }
 
-.react-chat-workspace-tree .kv-browse-refresh:disabled,
-.react-chat-workspace-tree .kv-browse-action:disabled {
+.react-chat-workspace-tree .kv-browse-refresh:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
@@ -23317,6 +23592,116 @@ html[data-translucent-ui='1'] .react-chat-workspace-tree .kv-tree-expand {
   flex-direction: column;
 }
 
+/* 右栏 file 标签：铺满侧栏，不再套弹窗卡片尺寸 */
+.react-chat-workspace-preview-stage {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+  background: var(--bg-primary, #ffffff);
+  overflow: hidden;
+}
+.react-chat-workspace-preview-stage > .react-chat-workspace-preview-pane {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+html[data-theme='dark'] .react-chat-workspace-preview-stage,
+html.dark .react-chat-workspace-preview-stage {
+  background: var(--bg-primary, #0b1220);
+}
+
+/* ZCode PreviewPane 顶栏：面包屑 + ··· / 外链 */
+.react-chat-workspace-preview-pane.is-embedded .react-chat-workspace-preview-pane-header {
+  padding: 0 6px 0 0;
+  min-height: 40px;
+  align-items: center;
+  gap: 8px;
+}
+.react-chat-workspace-preview-breadcrumb {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 12px;
+  overflow: hidden;
+  font-size: 12.5px;
+  color: var(--text-secondary, #6b7280);
+  white-space: nowrap;
+}
+.react-chat-workspace-preview-crumb {
+  flex-shrink: 0;
+  max-width: 8rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.react-chat-workspace-preview-crumb.is-file {
+  color: var(--text-primary, #111827);
+  font-weight: 500;
+  max-width: 14rem;
+}
+.react-chat-workspace-preview-crumb-sep {
+  flex-shrink: 0;
+  opacity: 0.45;
+  margin: 0 2px;
+}
+.react-chat-workspace-preview-icon-btn {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary, #6b7280);
+  cursor: pointer;
+}
+.react-chat-workspace-preview-icon-btn:hover {
+  background: var(--bg-hover, rgba(127, 127, 127, 0.1));
+  color: var(--text-primary, inherit);
+}
+.react-chat-workspace-preview-menu-label {
+  padding: 4px 8px 2px;
+  font-size: 11px;
+  color: var(--text-secondary, #6b7280);
+}
+.react-chat-workspace-preview-menu-item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-primary, inherit);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.react-chat-workspace-preview-menu-item:hover,
+.react-chat-workspace-preview-menu-item.is-active {
+  background: var(--bg-hover, rgba(127, 127, 127, 0.1));
+}
+.react-chat-workspace-preview-menu-sep {
+  height: 1px;
+  margin: 4px 0;
+  background: var(--border, rgba(127, 127, 127, 0.2));
+}
+.react-chat-workspace-preview-pane.is-wrap-lines .react-chat-workspace-preview-code,
+.react-chat-workspace-preview-pane.is-wrap-lines .react-chat-workspace-preview-code code {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .react-chat-workspace-preview-zoom-bar {
   flex-shrink: 0;
   display: flex;
@@ -23504,14 +23889,14 @@ html.dark .react-chat-workspace-preview-zoom-bar {
   overflow: hidden;
 }
 
-/* 输入框 @ 工作区文件补全 */
+/* 输入框 @ / # 上拉补全。默认 absolute；portal 版 fixed 到 body，盖住消息区。 */
 .react-chat-mention-menu {
   position: absolute;
   left: 0;
   right: 0;
   bottom: calc(100% + 6px);
   z-index: 40;
-  max-height: min(280px, 40vh);
+  max-height: min(360px, 46vh);
   display: flex;
   flex-direction: column;
   border: 1px solid var(--border, #e5e7eb);
@@ -23521,12 +23906,37 @@ html.dark .react-chat-workspace-preview-zoom-bar {
   overflow: hidden;
 }
 
+.react-chat-mention-menu--portal {
+  position: fixed;
+  right: auto;
+  z-index: 12050;
+  /* left / width / bottom 由 JS 按 composer-shell 定位 */
+}
+
 .react-chat-mention-menu-head {
   padding: 6px 10px;
   font-size: 11px;
   color: var(--text-secondary, #6b7280);
   border-bottom: 1px solid var(--border, #e5e7eb);
   flex-shrink: 0;
+}
+
+.react-chat-mention-menu-section {
+  list-style: none;
+}
+
+.react-chat-mention-menu-section-title {
+  padding: 8px 8px 2px;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  color: var(--text-tertiary, #9ca3af);
+}
+
+.react-chat-mention-menu-section-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
 }
 
 .react-chat-mention-menu-empty {
@@ -23558,6 +23968,61 @@ html.dark .react-chat-workspace-preview-zoom-bar {
   border-radius: 6px;
   cursor: pointer;
   color: inherit;
+}
+
+.react-chat-mention-menu-item--row {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+
+.react-chat-mention-menu-item--row .react-chat-mention-menu-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
+}
+
+.react-chat-mention-menu-item--row .react-chat-mention-menu-path {
+  flex: 0 0 auto;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--bg-secondary, #f3f4f6);
+  color: var(--text-secondary, #6b7280);
+}
+
+.react-chat-mention-menu-item--row .react-chat-mention-menu-desc {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--text-tertiary, #9ca3af);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
+}
+
+.react-chat-mention-menu-icon {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  font-size: 14px;
+  line-height: 1;
+  font-family: 'Apple Color Emoji', 'Segoe UI Emoji', 'Twemoji Mozilla', 'Noto Color Emoji',
+    'Segoe UI Symbol', system-ui, sans-serif;
+}
+
+.react-chat-mention-menu-icon-img {
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
+  display: block;
 }
 
 .react-chat-mention-menu-item.is-active,
@@ -23760,10 +24225,9 @@ html.dark .react-chat-workspace-panel {
   min-width: 240px;
 }
 
-/* BrowserPanel 自带壳：它同时命中 ``react-chat-collab-exec-panel``（flex: 1 1 50%）
-   和 ``react-chat-right-stage-panel``（flex: 0 0 var(--chat-right-panel-width)）。
-   显式收敛到 right-stage 契约，避免双层 flex 抢宽度导致面板缩成小方块。 */
-.react-chat-browser-panel.react-chat-collab-exec-panel {
+/* 仅当 BrowserPanel 仍是 main-body 的直接子级时才当外壳占宽（旧路径兜底）。
+   标签内容路径见下方 ``.react-chat-right-stage-body > …``。 */
+.react-chat-main-body > .react-chat-browser-panel.react-chat-collab-exec-panel {
   flex: 0 0 var(--chat-right-panel-width, 50%);
   width: var(--chat-right-panel-width, 50%);
   max-width: var(--chat-right-panel-width, 50%);
@@ -24413,6 +24877,75 @@ html.dark .react-chat-right-stage-panel {
   border-left-color: var(--border, #374151);
 }
 
+/* ── 右侧面板滚动条：细条 + 平时透明，鼠标进入面板才淡显 ──
+   覆盖：本轮产物 / 工作区 / 工作流 / 思维导图 / 热榜 / 浏览器 / 平台操作等
+   Right Stage 面板，以及右下角悬浮摘要卡（.chat-summary-panel）。 */
+.react-chat-artifacts-panel,
+.react-chat-right-stage-panel,
+.chat-summary-panel-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+.react-chat-artifacts-panel:hover,
+.react-chat-right-stage-panel:hover,
+.chat-summary-panel-scroll:hover {
+  scrollbar-color: color-mix(in srgb, var(--text-tertiary, #9ca3af) 55%, transparent) transparent;
+}
+
+.react-chat-artifacts-panel ::-webkit-scrollbar,
+.react-chat-right-stage-panel ::-webkit-scrollbar,
+.chat-summary-panel-scroll::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.react-chat-artifacts-panel ::-webkit-scrollbar-track,
+.react-chat-right-stage-panel ::-webkit-scrollbar-track,
+.chat-summary-panel-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.react-chat-artifacts-panel ::-webkit-scrollbar-thumb,
+.react-chat-right-stage-panel ::-webkit-scrollbar-thumb,
+.chat-summary-panel-scroll::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background-clip: padding-box;
+}
+
+.react-chat-artifacts-panel:hover ::-webkit-scrollbar-thumb,
+.react-chat-right-stage-panel:hover ::-webkit-scrollbar-thumb,
+.chat-summary-panel-scroll:hover::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--text-tertiary, #9ca3af) 55%, transparent);
+}
+
+.react-chat-artifacts-panel ::-webkit-scrollbar-thumb:hover,
+.react-chat-right-stage-panel ::-webkit-scrollbar-thumb:hover,
+.chat-summary-panel-scroll::-webkit-scrollbar-thumb:hover,
+.chat-summary-panel-scroll::-webkit-scrollbar-thumb:active {
+  background: var(--text-tertiary, #9ca3af);
+}
+
+html[data-theme='dark'] .react-chat-artifacts-panel:hover,
+html.dark .react-chat-artifacts-panel:hover,
+html[data-theme='dark'] .react-chat-right-stage-panel:hover,
+html.dark .react-chat-right-stage-panel:hover,
+html[data-theme='dark'] .chat-summary-panel-scroll:hover,
+html.dark .chat-summary-panel-scroll:hover {
+  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+}
+
+html[data-theme='dark'] .react-chat-artifacts-panel:hover ::-webkit-scrollbar-thumb,
+html.dark .react-chat-artifacts-panel:hover ::-webkit-scrollbar-thumb,
+html[data-theme='dark'] .react-chat-right-stage-panel:hover ::-webkit-scrollbar-thumb,
+html.dark .react-chat-right-stage-panel:hover ::-webkit-scrollbar-thumb,
+html[data-theme='dark'] .chat-summary-panel-scroll:hover::-webkit-scrollbar-thumb,
+html.dark .chat-summary-panel-scroll:hover::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2);
+}
+
 html[data-theme='dark'] .react-chat-news-dashboard-panel,
 html.dark .react-chat-news-dashboard-panel {
   background: var(--bg-secondary, #1c1c1e);
@@ -24776,9 +25309,35 @@ html.dark .react-chat-collab-exec-panel {
 }
 
 .collab-exec-dag-empty {
-  font-size: var(--ef-text-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 8rem;
+  margin: 0;
+  padding: 24px 16px;
+  text-align: center;
+  font-size: 0.875rem;
+  line-height: 1.45;
+  font-weight: 500;
   color: var(--text-secondary, #6b7280);
-  padding: 8px 0;
+}
+
+/* 空白态：正文居中，不画标题栏底线和画布点阵 */
+.react-chat-collab-exec-panel:has(.react-chat-collab-exec-panel-body > .collab-exec-dag-empty:only-child) > .react-chat-collab-exec-panel-header,
+.react-chat-knowledge-map-panel:has(.km-panel-body > .collab-exec-dag-empty:only-child) > .react-chat-collab-exec-panel-header {
+  display: none;
+}
+.react-chat-collab-exec-panel-body:has(> .collab-exec-dag-empty:only-child),
+.km-panel-body:has(> .collab-exec-dag-empty:only-child) {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+  padding: 0;
+  background: transparent;
+  background-image: none;
 }
 
 .collab-wf-panel-body {
@@ -28162,7 +28721,8 @@ html.dark .react-chat-header-win-sep {
 .react-chat-header--tauri-chrome .react-chat-header-product-actions .react-chat-stage-apps-toggle-btn.is-menu-open,
 .react-chat-header--tauri-chrome .react-chat-header-product-actions .react-chat-stage-extensions-toggle-btn.is-active,
 .react-chat-header--tauri-chrome .react-chat-header-product-actions .react-chat-stage-extensions-toggle-btn.is-menu-open,
-.react-chat-header--tauri-chrome .react-chat-header-product-actions .react-chat-workspace-folder-btn.is-active {
+.react-chat-header--tauri-chrome .react-chat-header-product-actions .react-chat-workspace-folder-btn.is-active,
+.react-chat-header--tauri-chrome .react-chat-header-product-actions .react-chat-browser-stage-toggle-btn.is-active {
   background: var(--accent-muted, #eef0ff);
   color: var(--accent);
   border-color: transparent;
@@ -28306,6 +28866,20 @@ html.dark .react-chat-header-win-sep {
   flex-shrink: 0;
   font-size: var(--ef-text-sm);
   line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: 'Apple Color Emoji', 'Segoe UI Emoji', 'Twemoji Mozilla', 'Noto Color Emoji',
+    'Segoe UI Symbol', system-ui, sans-serif;
+  min-width: 14px;
+  min-height: 14px;
+}
+
+.react-chat-skill-composer-pill-icon-img {
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
+  display: block;
 }
 
 .react-chat-skill-composer-pill-label {
@@ -29569,7 +30143,8 @@ html.evopanel-macos-titlebar .react-chat-header {
 .react-chat-header-product-actions .react-chat-stage-apps-toggle-btn.is-menu-open,
 .react-chat-header-product-actions .react-chat-stage-extensions-toggle-btn.is-active,
 .react-chat-header-product-actions .react-chat-stage-extensions-toggle-btn.is-menu-open,
-.react-chat-header-product-actions .react-chat-workspace-folder-btn.is-active {
+.react-chat-header-product-actions .react-chat-workspace-folder-btn.is-active,
+.react-chat-header-product-actions .react-chat-browser-stage-toggle-btn.is-active {
   background: #fff;
   color: var(--accent);
   box-shadow: 0 1px 2px color-mix(in srgb, var(--accent) 18%, transparent);
@@ -29785,7 +30360,9 @@ html.dark .react-chat-header-product-actions .react-chat-stage-extensions-toggle
 html[data-theme='dark'] .react-chat-header-product-actions .react-chat-stage-extensions-toggle-btn.is-menu-open,
 html.dark .react-chat-header-product-actions .react-chat-stage-extensions-toggle-btn.is-menu-open,
 html[data-theme='dark'] .react-chat-header-product-actions .react-chat-workspace-folder-btn.is-active,
-html.dark .react-chat-header-product-actions .react-chat-workspace-folder-btn.is-active {
+html.dark .react-chat-header-product-actions .react-chat-workspace-folder-btn.is-active,
+html[data-theme='dark'] .react-chat-header-product-actions .react-chat-browser-stage-toggle-btn.is-active,
+html.dark .react-chat-header-product-actions .react-chat-browser-stage-toggle-btn.is-active {
   background: var(--accent-muted, rgba(255, 255, 255, 0.1));
   color: var(--accent, #a5b4fc);
 }
@@ -30614,6 +31191,11 @@ html.dark .browser-step-group-header {
   background: transparent;
 }
 
+/* 终端勿用琥珀徽章色；SquareTerminal 与其它工具同为次级灰 */
+.react-msg-tool .evf-tcard-icon--terminal {
+  --evf-tc-color: var(--text-tertiary, #9ca3af);
+}
+
 .react-msg-tool .evf-tcard-icon svg {
   width: 16px;
   height: 16px;
@@ -30855,77 +31437,45 @@ html[data-theme='dark'] .react-chat-browser-panel .browser-panel-chrome {
   box-shadow: 0 1px 6px rgba(0, 0, 0, 0.12);
 }
 
-/* 工具行内联展开详情（ZCode 对齐：命令 + 输出 + 退出码 + 放大入口） */
+/* 行内终端：单块命令行区域（$ 命令 + 输出），无内层分区 */
 .msg-tool-inline-detail {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 8px 12px 10px 0;
-  min-width: 0;
-}
-
-.msg-tool-inline-detail__section {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-}
-
-.msg-tool-inline-detail__label {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 11px;
-  color: var(--text-tertiary, #9ca3af);
-}
-
-.msg-tool-inline-detail__exit {
-  padding: 0 6px;
-  border-radius: 999px;
-  background: color-mix(in srgb, #10b981 12%, transparent);
-  color: #059669;
-  font-size: 10.5px;
-  line-height: 16px;
-}
-
-.msg-tool-inline-detail__exit.is-failed {
-  background: color-mix(in srgb, #ef4444 12%, transparent);
-  color: #dc2626;
-}
-
-.msg-tool-inline-detail__expand {
-  margin-left: auto;
-  border: none;
-  background: transparent;
-  cursor: pointer;
-  color: var(--text-tertiary, #9ca3af);
-  font-size: 11px;
-  padding: 0 2px;
-}
-
-.msg-tool-inline-detail__expand:hover {
-  color: var(--text-secondary, #6b7280);
-  text-decoration: underline;
-}
-
-.msg-tool-inline-detail__cmd,
-.msg-tool-inline-detail__out {
-  margin: 0;
-  padding: 8px 10px;
-  max-height: 280px;
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+  max-height: 12lh;
+  margin: 0 0 8px;
+  padding: 10px 12px;
   overflow: auto;
-  background: var(--code-block-bg, rgba(0, 0, 0, 0.04));
-  border-radius: 6px;
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.08));
+  border-radius: 10px;
+  background: var(--bg-panel, var(--bg-secondary, rgba(127, 127, 127, 0.04)));
+  box-shadow: none;
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
-  font-size: 11.5px;
-  line-height: 1.55;
+  font-size: inherit;
+  line-height: 1.35;
   white-space: pre-wrap;
   word-break: break-word;
   color: var(--text-secondary, #475569);
 }
 
-.msg-tool-inline-detail__out.is-failed {
+.msg-tool-inline-detail.is-failed {
   color: #dc2626;
+}
+
+.msg-tool-inline-detail.is-running {
+  color: var(--text-primary, #111827);
+}
+
+/* 展开后摘要只留图标+「终端」（命令已在面板内，对齐 hideSecondaryTextWhenOpen） */
+.msg-tool-item[data-state='open'] > summary .msg-tool-brief--shell,
+.msg-tool-item[data-state='open'] > summary .msg-tool-brief--shell-fold {
+  display: none;
+}
+
+.msg-tool-item[data-state='open'] > summary .msg-tool-name-sep:has(+ .msg-tool-brief--shell),
+.msg-tool-item[data-state='open'] > summary .msg-tool-name-sep:has(+ .msg-tool-brief--shell-fold) {
+  display: none;
 }
 
 /* ==========================================================================
@@ -31173,22 +31723,23 @@ html[data-theme='dark'] .react-chat-browser-panel .browser-panel-viewport-dim:fo
   color: var(--text-primary, #1f2329);
 }
 
-/* ===== 浏览器工具栏（ZCode browser-use 形态：主 h-12 + 副 h-8） ===== */
+/* ===== 浏览器工具栏（ZCode：主 h-12 无底边；响应式副条 h-8 + border-y） ===== */
 .react-chat-browser-panel .browser-panel-toolbar {
+  position: relative;
   flex-shrink: 0;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   height: 48px;
-  padding: 0 10px;
+  padding: 0 12px;
   background: var(--bg-primary, #ffffff);
-  border-bottom: 1px solid var(--border);
+  border-bottom: 0;
 }
 .react-chat-browser-panel .browser-panel-tb-btn {
   flex-shrink: 0;
   display: inline-flex;
-  width: 28px;
-  height: 28px;
+  width: 32px;
+  height: 32px;
   align-items: center;
   justify-content: center;
   padding: 0;
@@ -31234,12 +31785,56 @@ html[data-theme='dark'] .react-chat-browser-panel .browser-panel-viewport-dim:fo
   flex-shrink: 0;
   display: flex;
   align-items: center;
-  gap: 6px;
-  height: 30px;
-  padding: 0 10px;
-  background: var(--bg-secondary, rgba(127, 127, 127, 0.04));
+  justify-content: center;
+  gap: 4px;
+  height: 32px;
+  padding: 0 8px;
+  background: var(--bg-primary, #ffffff);
+  border-top: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.react-chat-browser-panel .browser-panel-toolbar-sub .browser-panel-viewport-dim {
+  width: 56px;
+  height: 28px;
+  text-align: center;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  font: inherit;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+.react-chat-browser-panel .browser-panel-toolbar-sub .browser-panel-viewport-dim:hover,
+.react-chat-browser-panel .browser-panel-toolbar-sub .browser-panel-viewport-dim:focus {
+  border-color: var(--border);
+  background: var(--bg-hover, rgba(127, 127, 127, 0.06));
+  outline: none;
+}
+.react-chat-browser-panel .browser-panel-toolbar-sub .browser-panel-viewport-dim-x {
+  color: var(--text-secondary, #94a3b8);
+  font-size: 12.5px;
+}
+.react-chat-browser-panel .browser-panel-toolbar-sub .browser-panel-zoom {
+  min-width: 6rem;
+  height: 28px;
+  margin-left: 4px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  font: inherit;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.react-chat-browser-panel .browser-panel-toolbar-sub .browser-panel-zoom:hover,
+.react-chat-browser-panel .browser-panel-toolbar-sub .browser-panel-zoom:focus {
+  border-color: var(--border);
+  background: var(--bg-hover, rgba(127, 127, 127, 0.06));
+  outline: none;
 }
 
 /* ==========================================================================
@@ -31767,8 +32362,9 @@ html[data-theme="dark"] .group\/user-row .msg-user-context-file-pill {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  min-width: 0;
-  max-width: 75%;
+  min-width: 72px;
+  max-width: 180px;
+  flex: 0 1 180px;
   height: 28px;
   padding: 0 6px 0 8px;
   border: 1px solid var(--border);
@@ -31865,7 +32461,6 @@ html[data-theme="dark"] .group\/user-row .msg-user-context-file-pill {
 /* 注：close 按钮的最终 opacity 由下方 Stage 5 段控制（默认 0.8 / active 1 / hover 1），
    这块不再重复声明，避免和 Stage 5 形成顺序耦合的死代码。 */
 .react-chat-browser-panel .browser-panel-tabstrip-spring { flex: 1 1 auto; }
-.react-chat-browser-panel .browser-panel-toolbar { position: relative; }
 
 /* 第 1 行：顶 tab (Cursor 风格) — 4 个固定面板入口全常驻 */
 .react-chat-browser-panel .browser-panel-toptabs {
@@ -32068,6 +32663,12 @@ html[data-theme='dark'] .react-chat-browser-panel .browser-panel-nav-error {
   color: var(--text-primary);
   cursor: pointer;
   text-align: left;
+  text-decoration: none;
+  box-sizing: border-box;
+}
+.react-chat-browser-panel .browser-panel-menu-item:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 .react-chat-browser-panel .browser-panel-menu-item:hover { background: var(--bg-hover, rgba(127, 127, 127, 0.1)); }
 .react-chat-browser-panel .browser-panel-op-float {
@@ -32211,6 +32812,292 @@ html[data-theme='dark'] .react-chat-browser-panel .browser-panel-nav-error {
 /* ===== ZCode 式侧栏标签条（多面板共存） =====
  * 高度对齐 zcode h-12（48px）；tab 走「基准 156px 等宽弹性 → 60px 下限」，
  * 空间不足时平均收缩而非让长标题独占宽度；再不足才出现横向滚动。 */
+/* 右栏外壳：标签条 + 内容区（ZCode side pane 同构） */
+.react-chat-right-stage-shell {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+  background: var(--bg-primary, var(--background, #fff));
+  border-left: 1px solid var(--border, #e5e7eb);
+}
+
+/* 顶部标签条：常显，不再悬停才弹出 */
+.react-chat-stage-chrome {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 30;
+  height: 48px;
+  overflow: visible;
+  pointer-events: auto;
+}
+.react-chat-stage-chrome .react-chat-stage-tabs {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+  background: var(--bg-primary, var(--background, #fff));
+  border-bottom: 1px solid color-mix(in srgb, var(--border, #e5e7eb) 50%, transparent);
+}
+html[data-theme='dark'] .react-chat-stage-chrome .react-chat-stage-tabs,
+html.dark .react-chat-stage-chrome .react-chat-stage-tabs {
+  background: var(--bg-primary, #0b1220);
+}
+
+/* 正文让出标签条高度 */
+.react-chat-right-stage-shell .react-chat-right-stage-bodies {
+  padding-top: 48px;
+}
+
+/* 标签相关弹层：强制实色底，避免半透明叠在正文上 */
+.react-chat-stage-popover {
+  z-index: 90 !important;
+  background: var(--bg-elevated, var(--bg-primary, #ffffff)) !important;
+  color: var(--text-primary, #111827);
+  border: 1px solid var(--border, #e5e7eb);
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.16);
+}
+html[data-theme='dark'] .react-chat-stage-popover,
+html.dark .react-chat-stage-popover {
+  background: var(--bg-elevated, #111827) !important;
+  border-color: color-mix(in srgb, var(--border, #334155) 80%, transparent);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+}
+.react-chat-stage-open-tab-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--bg-primary, var(--background, #fff));
+}
+.react-chat-stage-open-tab-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow-y: auto;
+  padding: 2.5rem 1.25rem;
+}
+.react-chat-stage-open-tab-content {
+  display: flex;
+  width: 100%;
+  max-width: 20rem;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+.react-chat-stage-open-tab-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  text-align: center;
+}
+.react-chat-stage-open-tab-title {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 600;
+  line-height: 1.75rem;
+  color: var(--text-primary, inherit);
+}
+.react-chat-stage-open-tab-desc {
+  margin: 0;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  color: var(--text-secondary, #6b7280);
+}
+.react-chat-stage-open-tab-list {
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.react-chat-stage-open-tab-button,
+.react-chat-stage-add-item {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-width: 0;
+  height: 3rem;
+  padding: 0 0.75rem;
+  border: none;
+  border-radius: 0.75rem;
+  background: var(--bg-secondary, #f1f5f9);
+  color: var(--text-primary, inherit);
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.12s ease;
+}
+.react-chat-stage-add-item {
+  height: 2.25rem;
+  border-radius: 0.5rem;
+  background: transparent;
+}
+.react-chat-stage-open-tab-button:hover,
+.react-chat-stage-add-item:hover {
+  background: var(--bg-hover, rgba(127, 127, 127, 0.12));
+}
+.react-chat-stage-open-tab-button:focus-visible,
+.react-chat-stage-add-item:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--accent, #3b82f6);
+}
+.react-chat-right-stage-bodies {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+}
+.react-chat-right-stage-body {
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+}
+.react-chat-right-stage-body[hidden] {
+  display: none !important;
+}
+.react-chat-right-stage-body > .react-chat-browser-panel-content,
+.react-chat-right-stage-body > .react-chat-right-stage-panel,
+.react-chat-right-stage-body > .react-chat-workspace-panel,
+.react-chat-right-stage-body > .react-chat-collab-exec-panel,
+.react-chat-right-stage-body > .react-chat-knowledge-map-panel,
+.react-chat-right-stage-body > .react-chat-terminal-stage {
+  height: 100%;
+  min-height: 0;
+}
+
+
+/* 嵌进右栏标签后不再套半宽灰底和左边线（外壳已有分隔） */
+.react-chat-right-stage-body > .react-chat-collab-exec-panel,
+.react-chat-right-stage-body > .react-chat-knowledge-map-panel {
+  flex: 1 1 auto;
+  width: 100%;
+  max-width: none;
+  min-width: 0;
+  align-self: stretch;
+  border-left: 0;
+  background: var(--bg-primary, #ffffff);
+}
+html[data-theme='dark'] .react-chat-right-stage-body > .react-chat-collab-exec-panel,
+html.dark .react-chat-right-stage-body > .react-chat-collab-exec-panel,
+html[data-theme='dark'] .react-chat-right-stage-body > .react-chat-knowledge-map-panel,
+html.dark .react-chat-right-stage-body > .react-chat-knowledge-map-panel {
+  background: var(--bg-primary, #0b1220);
+  border-left-color: transparent;
+}
+
+/* 终端标签正文 */
+.react-chat-terminal-stage {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+  background: var(--bg-primary, #ffffff);
+}
+.react-chat-terminal-stage-header {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border, #e5e7eb) 50%, transparent);
+}
+.react-chat-terminal-stage-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary, #111827);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.react-chat-terminal-stage-hint {
+  font-size: 12px;
+  color: var(--text-secondary, #6b7280);
+}
+.react-chat-terminal-stage-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+html[data-theme='dark'] .react-chat-terminal-stage,
+html.dark .react-chat-terminal-stage {
+  background: var(--bg-primary, #0b1220);
+}
+
+/* 右栏标签右键菜单 */
+.react-chat-stage-tab-context-menu {
+  position: fixed;
+  z-index: 80;
+  min-width: 160px;
+  padding: 4px;
+  border-radius: 8px;
+  border: 1px solid var(--border, #e5e7eb);
+  background: var(--bg-primary, #fff);
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.14);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.react-chat-stage-tab-context-menu-item {
+  display: block;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  padding: 7px 10px;
+  border-radius: 6px;
+  font-size: 12.5px;
+  color: var(--text-primary, #111827);
+  cursor: pointer;
+}
+.react-chat-stage-tab-context-menu-item:hover:not(:disabled) {
+  background: var(--bg-hover, rgba(127, 127, 127, 0.12));
+}
+.react-chat-stage-tab-context-menu-item:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+html[data-theme='dark'] .react-chat-stage-tab-context-menu,
+html.dark .react-chat-stage-tab-context-menu {
+  background: var(--bg-elevated, #111827);
+  border-color: color-mix(in srgb, var(--border, #334155) 80%, transparent);
+}
+
+/* BrowserPanel / 预览等是标签内容：铺满外壳，禁止再套 50% / 自定义像素宽 */
+.react-chat-right-stage-body > .react-chat-browser-panel,
+.react-chat-right-stage-body > .react-chat-browser-panel.react-chat-collab-exec-panel,
+.react-chat-right-stage-body > .react-chat-workspace-preview-stage,
+.react-chat-right-stage-body > .react-chat-collab-exec-panel,
+.react-chat-right-stage-body > .react-chat-knowledge-map-panel {
+  flex: 1 1 auto !important;
+  width: 100% !important;
+  max-width: none !important;
+  min-width: 0 !important;
+  height: 100% !important;
+  align-self: stretch !important;
+  border-left: 0 !important;
+  background: var(--bg-primary, #ffffff);
+}
+html[data-theme='dark'] .react-chat-right-stage-body > .react-chat-browser-panel,
+html.dark .react-chat-right-stage-body > .react-chat-browser-panel.react-chat-collab-exec-panel,
+html[data-theme='dark'] .react-chat-right-stage-body > .react-chat-browser-panel.react-chat-collab-exec-panel,
+html.dark .react-chat-right-stage-body > .react-chat-browser-panel,
+html[data-theme='dark'] .react-chat-right-stage-body > .react-chat-collab-exec-panel,
+html.dark .react-chat-right-stage-body > .react-chat-collab-exec-panel,
+html[data-theme='dark'] .react-chat-right-stage-body > .react-chat-knowledge-map-panel,
+html.dark .react-chat-right-stage-body > .react-chat-knowledge-map-panel {
+  background: var(--bg-primary, #0b1220);
+}
+
 .react-chat-stage-tabs {
   flex-shrink: 0;
   display: flex;
@@ -32218,16 +33105,10 @@ html[data-theme='dark'] .react-chat-browser-panel .browser-panel-nav-error {
   height: 48px;
   padding: 0 8px;
   gap: 4px;
-  background: var(--bg-secondary, #f8fafc);
-  border-bottom: 1px solid var(--border, #e5e7eb);
   overflow: hidden;
   /* Tauri 无边框：标签条兼作窗口拖拽区，可交互子节点各自打 data-tauri-no-drag */
   user-select: none;
   -webkit-user-select: none;
-}
-html[data-theme='dark'] .react-chat-stage-tabs,
-html.dark .react-chat-stage-tabs {
-  background: var(--bg-secondary, #111827);
 }
 .react-chat-stage-tabs-viewport {
   display: flex;
@@ -32262,13 +33143,13 @@ html.dark .react-chat-stage-tabs {
 }
 .react-chat-stage-tab:hover { color: var(--text-primary, inherit); }
 .react-chat-stage-tab.is-active {
-  background: var(--bg-selected, var(--bg-secondary, rgba(127, 127, 127, 0.1)));
+  background: var(--bg-selected, rgba(127, 127, 127, 0.1));
   color: var(--text-primary, inherit);
-  border-color: var(--border);
+  border-color: transparent;
 }
 html.dark .react-chat-stage-tab.is-active,
 html[data-theme='dark'] .react-chat-stage-tab.is-active {
-  border-color: var(--border-default, var(--border));
+  border-color: transparent;
   background: var(--bg-active, rgba(255, 255, 255, 0.08));
 }
 .react-chat-stage-tab-icon {
@@ -32276,6 +33157,12 @@ html[data-theme='dark'] .react-chat-stage-tab.is-active {
   flex-shrink: 0;
   align-items: center;
   justify-content: center;
+}
+.react-chat-stage-tab-favicon {
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  object-fit: contain;
 }
 /* 标题层：不做硬省略，改用 mask 渐隐；
  * --tab-fade-offset 由 active/hover 抬到 1.25rem，给右侧关闭按钮让出淡出带。 */

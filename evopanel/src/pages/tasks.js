@@ -2230,14 +2230,28 @@ async function loadTasks(page, state, opts = {}) {
     if (container) renderSkeleton(container)
   }
 
-  try {
-    if (isGatewayWarming()) {
-      if (!silent && countEl) countEl.textContent = '引擎启动中…'
-      const ready = await waitForBackendReady(90_000)
-      if (!ready && isGatewayWarming()) {
-        throw new Error('引擎仍在启动，请稍后重试')
+  // 引擎预热/reload 期间不再同步阻塞 90s：先让骨架屏可见，
+  // 后台等 ready 成功后自动重拉一次；失败（超时）给出行内重试入口。
+  if (isGatewayWarming()) {
+    if (!silent && countEl) countEl.textContent = '引擎启动中…'
+    const ready = await waitForBackendReady(90_000)
+    if (!ready && isGatewayWarming()) {
+      if (silent) return
+      if (container) {
+        container.innerHTML = `
+          <div style="padding:24px;text-align:center;color:var(--text-tertiary)">
+            <div style="margin-bottom:12px">引擎仍在启动（已等待 90 秒），可在启动完成后手动刷新</div>
+            <button id="tasks-retry-load" type="button" style="padding:6px 18px;border-radius:6px;border:1px solid var(--border);background:var(--bg-secondary);color:var(--text-primary);cursor:pointer;font-size:13px">重试加载</button>
+          </div>`
+        container.querySelector('#tasks-retry-load')?.addEventListener('click', () => {
+          void loadTasks(page, state)
+        })
       }
+      return
     }
+    // ready 恢复后原地继续走正常加载（此时骨架已在位，不闪屏）。
+  }
+  try {
     const mapsPromise = ensureDisplayMaps(state)
     const { takeNavWarm } = await import('../lib/nav-panel-prefetch.js')
     const warmList = takeNavWarm('tasks:list')
@@ -2449,7 +2463,8 @@ function renderStatusPrimaryActions(t) {
   if (u === 'failed') {
     return `
       <button type="button" class="btn btn-sm btn-secondary" data-action="view-reason" data-id="${id}">查看原因</button>
-      <button type="button" class="btn btn-sm btn-primary" data-action="retry" data-id="${id}">重试</button>`
+      <button type="button" class="btn btn-sm btn-primary" data-action="retry-failed" data-id="${id}">重试失败步骤</button>
+      <button type="button" class="btn btn-sm btn-secondary" data-action="restart" data-id="${id}">重新执行</button>`
   }
   // completed：查看产出统一靠点击任务行/卡片进入详情
   if (u === 'completed') {
@@ -2738,7 +2753,8 @@ function attachTaskEvents(page, state) {
       action === 'view-progress' ||
       action === 'open-work-process' ||
       action === 'view-reason' ||
-      action === 'retry'
+      action === 'retry-failed' ||
+      action === 'restart'
     ) {
       e.stopPropagation()
       await handleTaskPrimaryAction(page, state, action, id)
@@ -3180,7 +3196,18 @@ async function handleTaskPrimaryAction(page, state, action, taskId) {
     openTaskDetail(id, state, page)
     return
   }
-  if (action === 'retry') {
+  if (action === 'retry-failed') {
+    try {
+      await api.retryTask(id, { retryAllFailed: true })
+      toast('失败步骤已重新排队', 'success')
+      invalidate('tasks_list')
+      await loadTasks(page, state)
+      openTaskDetail(id, state, page)
+    } catch (e) {
+      toast('重试失败步骤出错：' + e, 'error')
+    }
+  }
+  if (action === 'restart') {
     try {
       await api.restartTask(id)
       toast('已重新排队执行', 'success')
@@ -3188,7 +3215,7 @@ async function handleTaskPrimaryAction(page, state, action, taskId) {
       await loadTasks(page, state)
       openTaskDetail(id, state, page)
     } catch (e) {
-      toast('重试失败：' + e, 'error')
+      toast('重新执行失败：' + e, 'error')
     }
   }
 }

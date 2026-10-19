@@ -463,6 +463,7 @@ describe('TurnHistoryFold v5.2（外层状态条 = 唯一折叠入口，工作�
         interactiveToolApproval={false}
         durationLabel="30s"
         messageId="msg_sticky_1"
+        isLatestTurn
       />,
     )
     const triggerAfterStream = screen.queryByTestId('chat-assistant-history-trigger-msg_sticky_1')
@@ -483,6 +484,7 @@ describe('TurnHistoryFold v5.2（外层状态条 = 唯一折叠入口，工作�
         interactiveToolApproval={false}
         durationLabel="30s"
         messageId="msg_sticky_1"
+        isLatestTurn
       />,
     )
     const triggerDone = screen.queryByTestId('chat-assistant-history-trigger-msg_sticky_1')
@@ -534,5 +536,206 @@ describe('TurnHistoryFold v5.2（外层状态条 = 唯一折叠入口，工作�
     fireEvent.click(trigger as HTMLElement)
     expect(trigger?.getAttribute('aria-expanded')).toBe('true')
     expect(screen.queryByText(/echo hi/)).toBeTruthy()
+  })
+
+  it('授权暂停（本行为审批宿主）：折叠头显示「等待授权」且默认展开，审批面板可见', () => {
+    const now = Date.now()
+    const pendingTool = {
+      id: 't1',
+      name: 'terminal',
+      input: { command: 'rm -rf tmp' },
+      status: 'pending_approval',
+      output: JSON.stringify({
+        approval: { tool_call_id: 't1', tool_name: 'terminal', summary: 'rm -rf tmp' },
+      }),
+      time: now - 10_000,
+    }
+    const input = buildInput({
+      isStreaming: false,
+      interactiveToolApproval: true,
+      displaySegments: [{ kind: 'tools', ids: ['t1'], seq: 1 }],
+      tools: [pendingTool],
+      durationLabel: '40s',
+    })
+    const plan = buildAssistantBubbleDisplayPlan(input as never)
+    render(
+      <AssistantBubbleSlotView
+        plan={plan}
+        displaySegments={input.displaySegments as never}
+        tools={input.tools as never}
+        rawText=""
+        reasoningPreview=""
+        isStreaming={false}
+        askInline={null}
+        suppressPlanExecPromptNoise={false}
+        interactiveToolApproval
+        onToolApproval={() => {}}
+        durationLabel="40s"
+        messageId="msg_appr_1"
+      />,
+    )
+    const trigger = screen.queryByTestId('chat-assistant-history-trigger-msg_appr_1')
+    // 折叠头不再误导为「已工作」——回合并未结束，正在等待授权
+    expect(trigger?.textContent).toContain('等待授权')
+    // 授权暂停时保持展开，审批入口可见
+    expect(trigger?.getAttribute('aria-expanded')).toBe('true')
+    expect(screen.getByText('需要权限')).toBeTruthy()
+    expect(screen.getByRole('button', { name: '确认' })).toBeTruthy()
+  })
+
+
+  it('多轮审批：批准后的授权间隙折叠头不收起（approval latch），下一轮待授权仍可见', () => {
+    const now = Date.now()
+    const toolOf = (id: string, status: string) => ({
+      id,
+      name: 'terminal',
+      input: { command: `run ${id}` },
+      status,
+      output: JSON.stringify({
+        approval: { tool_call_id: id, tool_name: 'terminal', summary: `run ${id}` },
+      }),
+      time: now - 10_000,
+    })
+    const buildUi = (opts: { toolId: string; status: string; interactive: boolean }) => {
+      const input = buildInput({
+        isStreaming: false,
+        interactiveToolApproval: opts.interactive,
+        displaySegments: [{ kind: 'tools', ids: [opts.toolId], seq: 1 }],
+        tools: [toolOf(opts.toolId, opts.status)],
+        durationLabel: '40s',
+      })
+      const plan = buildAssistantBubbleDisplayPlan(input as never)
+      return (
+        <AssistantBubbleSlotView
+          plan={plan}
+          displaySegments={input.displaySegments as never}
+          tools={input.tools as never}
+          rawText=""
+          reasoningPreview=""
+          isStreaming={false}
+          askInline={null}
+          suppressPlanExecPromptNoise={false}
+          interactiveToolApproval={opts.interactive}
+          onToolApproval={() => {}}
+          durationLabel="40s"
+          messageId="msg_appr_cycle"
+        />
+      )
+    }
+
+    // 第 1 轮：tc_1 待授权 → 展开显示「等待授权」
+    const { rerender } = render(buildUi({ toolId: 'tc_1', status: 'pending_approval', interactive: true }))
+    const trigger = () => screen.queryByTestId('chat-assistant-history-trigger-msg_appr_cycle')
+    expect(trigger()?.getAttribute('aria-expanded')).toBe('true')
+    expect(screen.getByRole('button', { name: '确认' })).toBeTruthy()
+
+    // 授权间隙：tc_1 已批准、下一轮 pending 还没出现（interactive 翻 false）
+    // → 折叠头必须保持展开（approval latch），不收起、不闪烁
+    rerender(buildUi({ toolId: 'tc_1', status: 'approved', interactive: false }))
+    expect(trigger()?.getAttribute('aria-expanded')).toBe('true')
+
+    // 第 2 轮：tc_2 待授权 → 仍展开、审批面板可见
+    rerender(buildUi({ toolId: 'tc_2', status: 'pending_approval', interactive: true }))
+    expect(trigger()?.getAttribute('aria-expanded')).toBe('true')
+    expect(screen.getByRole('button', { name: '确认' })).toBeTruthy()
+  })
+
+  it('最后一轮带工具过程：结束后保持展开；更早一轮仍折叠', () => {
+    const now = Date.now()
+    const input = buildInput({
+      isStreaming: false,
+      durationLabel: '20s',
+      displaySegments: [
+        { kind: 'tools', ids: ['t1'], seq: 1 },
+        { kind: 'text', text: '最终回复', seq: 2 },
+      ],
+      tools: [
+        { id: 't1', name: 'bash', input: { command: 'echo hi' }, status: 'ok', output: 'hi', time: now },
+      ],
+    })
+    const plan = buildAssistantBubbleDisplayPlan(input as never)
+    const view = (latest: boolean, id: string) => (
+      <AssistantBubbleSlotView
+        plan={plan}
+        displaySegments={input.displaySegments as never}
+        tools={input.tools as never}
+        rawText=""
+        reasoningPreview=""
+        isStreaming={false}
+        askInline={null}
+        suppressPlanExecPromptNoise={false}
+        interactiveToolApproval={false}
+        durationLabel="20s"
+        messageId={id}
+        isLatestTurn={latest}
+      />
+    )
+    const { rerender } = render(view(true, 'msg_latest_tools'))
+    const latest = screen.getByTestId('chat-assistant-history-trigger-msg_latest_tools')
+    expect(latest.getAttribute('aria-expanded')).toBe('true')
+    expect(screen.queryByText(/echo hi/)).toBeTruthy()
+
+    rerender(view(false, 'msg_older_tools'))
+    const older = screen.getByTestId('chat-assistant-history-trigger-msg_older_tools')
+    expect(older.getAttribute('aria-expanded')).toBe('false')
+  })
+
+  it('最后一轮只有正文，或只有一段思考加正文：结束后折叠', () => {
+    const body = buildInput({
+      isStreaming: false,
+      displaySegments: [{ kind: 'text', text: '只有正文。' }],
+      tools: [],
+      hasToolsInTurnEarly: false,
+      legacyHasTools: false,
+    })
+    const bodyPlan = buildAssistantBubbleDisplayPlan(body as never)
+    render(
+      <AssistantBubbleSlotView
+        plan={bodyPlan}
+        displaySegments={body.displaySegments as never}
+        tools={[]}
+        rawText=""
+        reasoningPreview=""
+        isStreaming={false}
+        askInline={null}
+        suppressPlanExecPromptNoise={false}
+        interactiveToolApproval={false}
+        durationLabel="8s"
+        messageId="msg_latest_body"
+        isLatestTurn
+      />,
+    )
+    expect(screen.getByTestId('chat-assistant-history-trigger-msg_latest_body').getAttribute('aria-expanded')).toBe('false')
+
+    cleanup()
+    const think = buildInput({
+      isStreaming: false,
+      displaySegments: [
+        { kind: 'reasoning', text: '想一下', seq: 1 },
+        { kind: 'text', text: '想完了。', seq: 2 },
+      ],
+      tools: [],
+      hasToolsInTurnEarly: false,
+      legacyHasTools: false,
+      reasoningPreview: '想一下',
+    })
+    const thinkPlan = buildAssistantBubbleDisplayPlan(think as never)
+    render(
+      <AssistantBubbleSlotView
+        plan={thinkPlan}
+        displaySegments={think.displaySegments as never}
+        tools={[]}
+        rawText=""
+        reasoningPreview="想一下"
+        isStreaming={false}
+        askInline={null}
+        suppressPlanExecPromptNoise={false}
+        interactiveToolApproval={false}
+        durationLabel="8s"
+        messageId="msg_latest_think"
+        isLatestTurn
+      />,
+    )
+    expect(screen.getByTestId('chat-assistant-history-trigger-msg_latest_think').getAttribute('aria-expanded')).toBe('false')
   })
 })

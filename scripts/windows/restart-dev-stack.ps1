@@ -8,7 +8,9 @@ param(
     [switch] $InstallEvoPanel,
     [switch] $ExternalGateway,
     [switch] $ShowBackendLog,
-    [int] $FrontendPort = 1421,
+    [switch] $CleanViteCache,
+    [switch] $KeepViteCache,
+    [int] $FrontendPort = 1521,
     [switch] $AutoFrontendPort = $true,
     [int] $GatewayPort = 0
 )

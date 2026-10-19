@@ -41,6 +41,71 @@ if (isTauri) initDesktopNotifications()
 if (isTauri) initDesktopContextMenu()
 if (isTauri) initDesktopDevtoolsHotkey()
 
+// Register ASAP — agent CDP can emit before boot() finishes mounting ChatApp.
+// Directly upsert a WebView2 so ensure_webview_for_cdp finds a healthy HWND
+// without waiting on React layout.
+if (isTauri) {
+  void import('@tauri-apps/api/event')
+    .then(({ listen }) =>
+      // IMPORTANT: do not make this handler `async` / return a Promise.
+      // Rust ensure_webview emits and waits for the HWND; if emit awaits the
+      // listener while the listener awaits browser_embed_upsert → create, the
+      // UI pump deadlocks and Page.navigate hangs with 0 HTTP bytes.
+      listen('browser-panel-request', (ev) => {
+        void (async () => {
+          try {
+            const payload = ev?.payload || {}
+            const tid = String(payload.threadId || 'evoflow-node-repl-bridge').trim()
+            const url = String(payload.url || '').trim()
+            const { blog } = await import('./lib/browser-unified-log.js')
+            console.log('[browser-panel-request:early]', tid, url || '(none)')
+            blog('info', `[early] panel-request tid=${tid} url=${url || '(none)'}`)
+            const {
+              applyBrowserCommandResponse,
+              ensureBrowserStage,
+              setBrowserPanelThreadId,
+              NODE_REPL_BRIDGE_THREAD_ID,
+            } = await import('./lib/browser-panel-store.js')
+            const { registerBrowserEmbedCdp } = await import('./lib/browser-embed-client.js')
+            const { ensureNativeEmbed, estimateEmbedSlot } = await import(
+              './lib/browser-embed-surface.js'
+            )
+            const bridgeTid = tid || NODE_REPL_BRIDGE_THREAD_ID
+            setBrowserPanelThreadId(bridgeTid)
+            if (!String(window.location.hash || '').includes('/chat')) {
+              navigate('/chat')
+            }
+            const navUrl = url && /^https?:\/\//i.test(url) ? url : 'about:blank'
+            const info = await ensureNativeEmbed({
+              url: navUrl,
+              slot: estimateEmbedSlot(),
+              reason: 'early',
+            })
+            if (info?.cdpUrl) {
+              await registerBrowserEmbedCdp(bridgeTid, info.cdpUrl)
+              console.log('[browser-panel-request:early] upsert ok', info.webviewLabel || bridgeTid)
+              blog('info', `[early] upsert ok label=${info.webviewLabel || bridgeTid}`)
+            } else {
+              console.warn('[browser-panel-request:early] upsert returned no cdpUrl', info)
+              blog('warn', '[early] upsert returned no cdpUrl')
+            }
+            if (navUrl !== 'about:blank') {
+              applyBrowserCommandResponse({ threadId: bridgeTid, pageUrl: navUrl })
+            } else {
+              ensureBrowserStage()
+            }
+          } catch (err) {
+            console.warn('[browser-panel-request:early] failed', err)
+            import('./lib/browser-unified-log.js')
+              .then(({ blog }) => blog('warn', `[early] failed ${err}`))
+              .catch(() => {})
+          }
+        })()
+      }),
+    )
+    .catch((err) => console.warn('[browser-panel-request:early] listen failed', err))
+}
+
 // 样式（v3.5 阶段 F1 commit 1: 抽到 ./boot/0-styles.js,顺序敏感)
 // import './style/variables.css' ... 33 个 import 已抽到 0-styles.js
 import './boot/0-styles.js'
@@ -52,7 +117,7 @@ import './boot/3-recovery.js'
 // v3.5 阶段 F1 commit 3: 后端就绪轮询 + 离线兜底(backend-warming banner /
 // backend-down overlay) 抽到 ./boot/backend-warm.js,只 export
 // startBackendReadyPoll 给下面 IIFE 调
-import { startBackendReadyPoll } from './boot/backend-warm.js'
+import { startBackendReadyPoll, showBackendDownOverlay } from './boot/backend-warm.js'
 
 // v3.5 阶段 F1 commit 4: 全局服务健康 banner(vanilla DOM,跟 ChatApp banner
 // 并存不冲突) 抽到 ./boot/service-banner.js,export installGlobalServiceBanner
@@ -462,7 +527,14 @@ async function boot() {
     // License entitlements before shell nav (tasks/apps/proactive)
     try {
       const { refreshLicenseStatus } = await import('./lib/license.js')
-      await refreshLicenseStatus()
+      // Cap wait — a hung license fetch used to stall boot after "routes registered"
+      // and left the splash up forever (panel CDP still worked via early listener).
+      await Promise.race([
+        refreshLicenseStatus(),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('license status timeout')), 5000),
+        ),
+      ])
     } catch (e) {
       console.warn('[boot] license status unavailable', e)
     }
@@ -612,6 +684,63 @@ async function boot() {
         }
         await listen('upgrade-done', refreshAfterTask)
         await listen('upgrade-error', refreshAfterTask)
+
+        // Agent CDP arrives before AG-UI TOOL_CALL_START can open the panel.
+        // Rust emits this so we mount the bridge WebView2 immediately.
+        // Same as early listener: never return a Promise from the handler —
+        // emit+await-upsert deadlocks the UI pump with ensure_webview.
+        await listen('browser-panel-request', (ev) => {
+          void (async () => {
+            try {
+              const payload = ev?.payload || {}
+              const tid = String(payload.threadId || 'evoflow-node-repl-bridge').trim()
+              const url = String(payload.url || '').trim()
+              const { blog } = await import('./lib/browser-unified-log.js')
+              console.log('[browser-panel-request]', tid, url || '(none)')
+              blog('info', `[boot] panel-request tid=${tid} url=${url || '(none)'}`)
+              const {
+                applyBrowserCommandResponse,
+                ensureBrowserStage,
+                setBrowserPanelThreadId,
+                NODE_REPL_BRIDGE_THREAD_ID,
+              } = await import('./lib/browser-panel-store.js')
+              const { registerBrowserEmbedCdp } = await import('./lib/browser-embed-client.js')
+              const { ensureNativeEmbed, estimateEmbedSlot } = await import(
+                './lib/browser-embed-surface.js'
+              )
+              const bridgeTid = tid || NODE_REPL_BRIDGE_THREAD_ID
+              setBrowserPanelThreadId(bridgeTid)
+              if (!String(window.location.hash || '').includes('/chat')) {
+                navigate('/chat')
+              }
+              // 不等面板布局。窗口是否显示由 browser-embed-surface 决定。
+              const navUrl = url && /^https?:\/\//i.test(url) ? url : 'about:blank'
+              const info = await ensureNativeEmbed({
+                url: navUrl,
+                slot: estimateEmbedSlot(),
+                reason: 'boot',
+              })
+              if (info?.cdpUrl) {
+                await registerBrowserEmbedCdp(bridgeTid, info.cdpUrl)
+                console.log('[browser-panel-request] upsert ok', info.webviewLabel || bridgeTid)
+                blog('info', `[boot] upsert ok label=${info.webviewLabel || bridgeTid}`)
+              } else {
+                console.warn('[browser-panel-request] upsert returned no cdpUrl')
+                blog('warn', '[boot] upsert returned no cdpUrl')
+              }
+              if (navUrl !== 'about:blank') {
+                applyBrowserCommandResponse({ threadId: bridgeTid, pageUrl: navUrl })
+              } else {
+                ensureBrowserStage()
+              }
+            } catch (err) {
+              console.warn('[browser-panel-request] handler failed', err)
+              import('./lib/browser-unified-log.js')
+                .then(({ blog }) => blog('warn', `[boot] handler failed ${err}`))
+                .catch(() => {})
+            }
+          })()
+        })
       }).catch(() => {})
     }
   })
@@ -906,9 +1035,23 @@ async function checkWebuiRemoteAuth() {
         .catch(() => {})
       startBackendReadyPoll()
       startGatewayPoll()
+      // External Gateway (8070) died: guardian no longer fake-reloads; tell the user once.
+      window.addEventListener('evoflow:gateway-external-down', () => {
+        void import('./components/toast.js')
+          .then((m) =>
+            m.toast?.(
+              '本地 Gateway（8070）暂时无响应。对话可能中断；请确认 uvicorn 仍在运行，就绪后会自动恢复。',
+              'warning',
+              8000,
+            ),
+          )
+          .catch(() => {})
+      })
       bootMark('ui-first boot (immediate, liveness async)')
       await boot()
       bootMark('boot() done')
+      // 运行期 latch 提示窗口开启：boot 完成后的重扣（reload/自愈）才提示用户。
+      window.__EVOFLOW_BOOT_DONE__ = true
     } else {
       backendOk = await healthPromise
       if (!backendOk) {
@@ -928,6 +1071,7 @@ async function checkWebuiRemoteAuth() {
       await checkWebuiRemoteAuth()
       await boot()
       bootMark('boot() done')
+      window.__EVOFLOW_BOOT_DONE__ = true
       const webuiReady = await checkWebuiRemoteAuth()
       if (!webuiReady) return
     }
@@ -944,6 +1088,11 @@ async function checkWebuiRemoteAuth() {
 
     if (backendOk || isTauri) {
       import('./lib/skill-catalog.js').then((m) => m.prefetchSkillCatalog()).catch(() => {})
+      import('./lib/plugin-catalog.js').then((m) => m.prefetchPluginCatalog()).catch(() => {})
+      // boot 完成：空闲时预热高频菜单模块 chunk，首次点击免冷加载
+      import('./boot/idle-nav-warm.js')
+        .then((m) => m.warmFrequentMenuModules())
+        .catch(() => {})
       const warmSettings = () => {
         import('./components/settings-modal.js')
           .then((m) => m.prefetchSettingsModal?.())

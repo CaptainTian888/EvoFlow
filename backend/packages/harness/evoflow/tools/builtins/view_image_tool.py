@@ -11,6 +11,7 @@ from langgraph.typing import ContextT
 from evoflow.agents.image_routing import decide_view_image_route
 from evoflow.agents.thread_state import ThreadState, ViewedImageData
 from evoflow.sandbox.tools import get_thread_data, replace_virtual_path
+from evoflow.tools.builtins.browser_screenshot_store import resolve_browser_snapshot_ref
 from evoflow.tools.builtins.vision_analysis_core import (
     analyze_image_bytes,
     download_image_from_url,
@@ -233,6 +234,19 @@ def view_image_tool(
     """Load or analyze an image for the main model."""
     ref = str(image_path or "").strip()
     logger.info("[视觉识图:view_image] 收到请求 path=%r", ref)
+
+    snapshot = resolve_browser_snapshot_ref(ref)
+    if snapshot is not None:
+        logger.info("[视觉识图:view_image] browser-snapshot 解析为 %s", snapshot)
+        return _analyze_local_image(
+            runtime=runtime,
+            tool_call_id=tool_call_id,
+            image_path=ref,
+            actual_path=str(snapshot),
+        )
+    if "/browser-snapshots/" in ref.replace("\\", "/"):
+        logger.warning("[视觉识图:view_image] browser-snapshot 未找到 path=%r", ref)
+        return f"Error: Browser snapshot not found: {ref}"
 
     if is_http_image_ref(ref):
         return _analyze_remote_image(runtime=runtime, tool_call_id=tool_call_id, image_url=ref)

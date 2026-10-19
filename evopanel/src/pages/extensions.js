@@ -1,5 +1,5 @@
 /**
- * 扩展应用页 — 应用商店式入口
+ * Agent应用页 — 应用商店式入口
  * 路由：/extensions
  */
 import { toast } from '../components/toast.js'
@@ -83,11 +83,11 @@ export async function render() {
   page.innerHTML = `
     <div class="page-header ext-page-header">
       <div>
-        <h1 class="page-title">扩展应用</h1>
+        <h1 class="page-title">Agent应用</h1>
         <p class="page-desc">把网页应用挂进 Captain Work：可以是线上网址，也可以是带清单的本地目录 / zip（源码工程需写明启动方式）。</p>
       </div>
       <div class="ext-page-actions">
-        <button type="button" class="btn btn-primary btn-sm" data-act="folder">安装本地扩展</button>
+        <button type="button" class="btn btn-primary btn-sm" data-act="folder">安装本地Agent应用</button>
         <button type="button" class="btn btn-secondary btn-sm" data-act="zip">导入 zip</button>
         <button type="button" class="btn btn-secondary btn-sm" data-act="remote" id="ext-remote-toggle">添加远程入口</button>
         <button type="button" class="btn btn-ghost btn-sm" id="ext-guide-toggle">使用指南</button>
@@ -96,10 +96,10 @@ export async function render() {
     </div>
 
     <div class="ext-remote-form" id="ext-remote-form" hidden>
-      <div class="ext-remote-form-title">添加远程扩展入口</div>
+      <div class="ext-remote-form-title">添加远程Agent应用入口</div>
       <div class="ext-remote-form-fields">
         <div class="ext-remote-field">
-          <label for="uiext-rid">扩展 ID</label>
+          <label for="uiext-rid">Agent应用 ID</label>
           <input class="form-input" id="uiext-rid" placeholder="my-ops" />
         </div>
         <div class="ext-remote-field">
@@ -202,13 +202,13 @@ function bindEvents(page) {
       }
       if (act === 'folder') {
         await installUiExtensionFromFolder()
-        toast('已安装扩展', 'success')
+        toast('已安装Agent应用', 'success')
         await refreshList(page)
         return
       }
       if (act === 'zip') {
         await installUiExtensionFromZip()
-        toast('已导入扩展', 'success')
+        toast('已导入Agent应用', 'success')
         await refreshList(page)
         return
       }
@@ -227,7 +227,7 @@ function bindEvents(page) {
         const rname = page.querySelector('#uiext-rname')?.value?.trim()
         const rentry = page.querySelector('#uiext-rentry')?.value?.trim()
         await installUiExtensionRemote({ id: rid, name: rname, entry: rentry })
-        toast('已添加远程扩展', 'success')
+        toast('已添加远程Agent应用', 'success')
         const box = page.querySelector('#ext-remote-form')
         if (box) box.hidden = true
         await refreshList(page)
@@ -243,7 +243,7 @@ function bindEvents(page) {
           const { getUiExtension } = await import('../lib/ui-extensions.js')
           const row = await getUiExtension(id)
           if (manifestHasSensitivePermissions(row?.manifest)) {
-            const ok = await showConfirm('该扩展申请了任务派发/打开权限，确认启用？')
+            const ok = await showConfirm('该Agent应用申请了任务派发/打开权限，确认启用？')
             if (!ok) return
           }
         }
@@ -328,14 +328,14 @@ async function refreshList(page) {
       if (countEl) countEl.textContent = ''
       el.innerHTML = `<div class="ext-empty-state">
         <div class="ext-empty-icon" aria-hidden="true">◇</div>
-        <h3 class="ext-empty-title">还没有扩展应用</h3>
+        <h3 class="ext-empty-title">还没有Agent应用</h3>
         <p class="ext-empty-text">选择本地文件夹安装，或导入 zip / 添加远程入口。</p>
-        <button type="button" class="btn btn-primary" data-act="folder">安装本地扩展</button>
+        <button type="button" class="btn btn-primary" data-act="folder">安装本地Agent应用</button>
       </div>`
       return
     }
 
-    // 先按名称出卡片，状态灯后台补齐（避免每个扩展 TCP 探测拖住整页）
+    // 先按名称出卡片，状态灯后台补齐（避免每个Agent应用 TCP 探测拖住整页）
     rows.sort((a, b) => {
       const na = a.manifest?.nav?.title || a.manifest?.name || a.id || ''
       const nb = b.manifest?.nav?.title || b.manifest?.name || b.id || ''

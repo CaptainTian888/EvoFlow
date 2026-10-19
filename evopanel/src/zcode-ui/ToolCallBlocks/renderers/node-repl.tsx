@@ -1,4 +1,6 @@
-import { useCallback, useMemo } from "react";
+// NOT MOUNTED. 产品聊天里的 mcp__node_repl__js 卡片在
+// evopanel/src/react/components/ToolCallList.tsx，不在本文件。
+import { useCallback, useEffect, useMemo } from "react";
 import { ChevronRightIcon, ExternalLinkIcon, SquareMousePointerIcon } from "lucide-react";
 import { Button } from "@/components/ui/button.js";
 import {
@@ -187,6 +189,36 @@ export function NodeReplToolCallBlock(context: ToolCallBlockRenderContext) {
       />
     );
   }, [model.app]);
+  useEffect(() => {
+    if (context.isRunning || toolCall.status === "pending" || toolCall.status === "in_progress") {
+      return;
+    }
+    if (!model.app && model.images.length === 0) return;
+    const imageUrls = model.images
+      .map((image) => image.url || (image.base64 ? "inline" : ""))
+      .filter(Boolean)
+      .join(",");
+    const line = [
+      `tool=${toolCall.toolId}`,
+      `title=${model.userTitle || "-"}`,
+      `app=${model.app?.displayName || "-"}`,
+      `key=${model.app?.appKey || "-"}`,
+      `images=${model.images.length}`,
+      imageUrls ? `urls=${imageUrls}` : "",
+    ]
+      .filter(Boolean)
+      .join(" ");
+    void import("../../../react/lib/stream-compare-file-log.js")
+      .then((mod) => mod.logCuaPanelDisplay(line))
+      .catch(() => undefined);
+  }, [
+    context.isRunning,
+    model.app,
+    model.images,
+    model.userTitle,
+    toolCall.status,
+    toolCall.toolId,
+  ]);
   const resultLabel = formatMessage("chat.toolCall.nodeRepl.result");
   const noResultLabel = formatMessage("chat.toolCall.nodeRepl.noResult");
   const detailsLabel = formatMessage("chat.toolCall.nodeRepl.details");

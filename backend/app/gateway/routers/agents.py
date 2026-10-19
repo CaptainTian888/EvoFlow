@@ -1126,6 +1126,8 @@ async def delete_agent(request: Request, name: str):
     Raises:
         HTTPException: 404 if agent not found.
     """
+    import asyncio
+
     from evoflow.authz.http_guard import require_agent_visible
 
     _validate_agent_name(name)
@@ -1138,7 +1140,9 @@ async def delete_agent(request: Request, name: str):
     try:
         from evoflow.admin.agents import delete_agent as admin_delete_agent
 
-        admin_delete_agent(name, confirm_cascade=True)
+        # 级联删除含 shutil.rmtree / SQLite 写 / LG 会话清理列举，全部是阻塞调用；
+        # 放 to_thread 避免事件循环被卡住拖慢同进程其它请求（删除后列表刷新）。
+        await asyncio.to_thread(admin_delete_agent, name, confirm_cascade=True)
         logger.info("Deleted agent '%s' from SQLite", name)
     except Exception as e:
         logger.error(f"Failed to delete agent '{name}': {e}", exc_info=True)
@@ -1221,7 +1225,9 @@ _TOOL_UI_DISPLAY: dict[str, dict] = {
         "group": "hosted_panel",
         "description": "打开/关闭 EvoPanel 右侧面板（资讯、网页内嵌、写入内容等）；与 mode_set 对话模式无关；Agent 模式系统必带（非角色可选）",
     },
-    "bash": {"label": "终端命令", "icon": "⌨️", "description": "沙箱内执行 shell 命令"},
+    "bash": {"label": "终端命令", "icon": "⌨️", "description": "执行 shell 命令（find/grep/rg 走内置搜索；可后台运行）"},
+    "taskoutput": {"label": "读取后台任务", "icon": "📄", "description": "读取后台 Bash 任务输出"},
+    "taskstop": {"label": "停止后台任务", "icon": "⏹", "description": "停止正在运行的后台 Bash 任务"},
     "ls": {"label": "列出目录", "icon": "📂", "description": "沙箱内列出目录（树形）"},
     "write_file": {"label": "写入文件", "icon": "✍️", "description": "沙箱内写入或追加文件"},
     "str_replace": {"label": "编辑文件", "icon": "🔧", "description": "沙箱内字符串替换编辑"},

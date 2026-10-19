@@ -1,5 +1,11 @@
 """H3-B-2: AG-UI event-list -> v4 conversationDeltas translator.
 
+NOT MOUNTED. 当前产品对话（含流式、工具卡、电脑控制图标/截图）走旧链路：
+``sse_ui_normalize`` + ``evopanel/src/react/components/ToolCallList.tsx``。
+本文件和 ``EvoFlowV4SessionPane`` 尚未接入。可见的聊天问题不要改这里。
+
+
+
 This module is intentionally **stateless**: all per-session state lives in
 ``ConversationProjectionWriter`` via the registry, so multiple producers
 (H1 demo + LangGraph main path) can share a single writer instance.
@@ -32,6 +38,7 @@ render main conversation sessions in addition to the H1 demo.
 
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -47,6 +54,93 @@ _AGUI_TO_TOOL_STATUS: dict[str, str] = {
     "error": "error",
     "cancelled": "cancelled",
 }
+
+# node_repl js 工具结果尾部的展示标记（见 plugins/node_repl_tool.py）。
+_CUA_DISPLAY_MARKER_PREFIX = "{evoflow-cua-display:"
+# ZCode appKey scheme → 面板 ApplicationIconLocator kind。
+_CUA_APP_KEY_LOCATOR_KINDS = {
+    "darwin": "darwin-bundle-id",
+    "windows-aumid": "windows-aumid",
+    "windows-exe": "windows-executable-path",
+}
+
+
+def _split_evoflow_cua_display(content: str) -> tuple[str, dict[str, Any] | None]:
+    """Strip the trailing ``{evoflow-cua-display:...}`` marker line from a js result.
+
+    返回 ``(正文, display 载荷)``；无标记或载荷不合法时原样返回正文与 None。
+    """
+    for line in reversed(content.splitlines()):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if not stripped.startswith(_CUA_DISPLAY_MARKER_PREFIX):
+            return content, None
+        # 标记行 = 前缀（含开括号）+ 单行 JSON + 收尾大括号。
+        payload_text = stripped[len(_CUA_DISPLAY_MARKER_PREFIX) : -1]
+        try:
+            payload = json.loads(payload_text)
+        except ValueError:
+            return content, None
+        if not isinstance(payload, dict):
+            return content, None
+        cleaned = "\n".join(
+            l for l in content.splitlines() if l.strip() != stripped
+        ).rstrip()
+        return cleaned, payload
+    return content, None
+
+
+def _cua_display_block(payload: dict[str, Any], body_text: str) -> dict[str, Any] | None:
+    """Build a panel-compatible ``kind:"cua"`` tool result display block."""
+    status = "failed" if payload.get("status") == "failed" else "success"
+    block: dict[str, Any] = {
+        "kind": "cua",
+        "schemaVersion": 1,
+        "toolName": "computer_use",
+        "status": status,
+    }
+    text = (body_text or "").strip()
+    if text:
+        block["text"] = text[:32_000]
+    media: list[dict[str, str]] = []
+    for image in (payload.get("images") or [])[:4]:
+        if not isinstance(image, dict):
+            continue
+        url = str(image.get("url") or "").strip()
+        if not url:
+            continue
+        media.append({"mimeType": "image/png", "artifactUri": url})
+    if media:
+        block["media"] = media
+    target = payload.get("target_app")
+    if isinstance(target, dict):
+        app_key = str(target.get("app_key") or "").strip()
+        display_name = str(target.get("display_name") or "").strip()
+        locators: list[dict[str, str]] = []
+        if app_key:
+            scheme, _, value = app_key.partition(":")
+            kind = _CUA_APP_KEY_LOCATOR_KINDS.get(scheme.strip().lower())
+            value = value.strip()
+            if kind and value:
+                locators.append(
+                    {
+                        "kind": kind,
+                        # windows-executable-path 允许 32K，其余 512。
+                        "value": value[:32_768] if kind == "windows-executable-path" else value[:512],
+                    }
+                )
+        if display_name or locators:
+            # 面板 parseCuaTargetApp 要求 iconLocators 为数组；仅有 displayName
+            # 时也带空数组，避免整块 kind:"cua" display 被拒收。
+            target_app: dict[str, Any] = {
+                "schemaVersion": 1,
+                "iconLocators": locators,
+            }
+            if display_name:
+                target_app["displayName"] = display_name[:512]
+            block["targetApp"] = target_app
+    return block
 
 
 def _now_ms() -> int:
@@ -360,12 +454,23 @@ def translate_agui_events(
             existing = writer._state.rows_by_id.get(rid, {})  # type: ignore[attr-defined]
             agui_status = str(ev.get("status") or "success").strip().lower()
             v4_status = _AGUI_TO_TOOL_STATUS.get(agui_status, "success")
+            tool_name = str(existing.get("toolName") or "")
             content = str(ev.get("content") or "")
+            cua_display = None
+            if "node_repl" in tool_name:
+                content, cua_display = _split_evoflow_cua_display(content)
             tool_output: dict[str, Any]
             if v4_status == "error":
                 tool_output = {"kind": "error", "error": {"code": "tool_error", "message": content}}
             else:
                 tool_output = {"kind": "text", "text": content}
+            if cua_display is not None:
+                # 面板 readToolResultDisplay 从 output.display 取结构化展示块；
+                # kind:"cua" 让 ToolCallBlock 走 ZCode 同款 CUA 卡片（targetApp 徽标 +
+                # media 截图），普通文本渲染保留为正文兜底。
+                block = _cua_display_block(cua_display, content)
+                if block is not None:
+                    tool_output["display"] = block
             out.append(
                 writer.emit_row_upserted(
                     subscription_id,

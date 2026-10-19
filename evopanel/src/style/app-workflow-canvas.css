@@ -4326,27 +4326,6 @@ body:has(.app-wf-canvas-host) .react-chat-skill-modal-list {
   text-overflow: ellipsis;
 }
 
-.wf-debug-dock-bar::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 2px;
-  background: var(--accent);
-  opacity: 0.9;
-  pointer-events: none;
-  z-index: 2;
-}
-
-.wf-debug-dock.is-done .wf-debug-dock-bar::before {
-  background: var(--success, #16a34a);
-}
-
-.wf-debug-dock.is-failed .wf-debug-dock-bar::before {
-  background: var(--danger, #e5484d);
-}
-
 .wf-debug-hero-row {
   display: flex;
   align-items: center;

@@ -36,7 +36,7 @@ Captain Work 把长任务交给可协作的 Agent Teams：先澄清与规划，�
 - **工作空间 · 代码索引** — 项目目录边界；符号/引用图谱供 Agent 检索
 - **自我进化** — 资产中心：经验沉淀、反思过程、画像与记忆
 - **治理套件** — 多账号/SSO、费用统计、运维观测、安全中心
-- **资源市场** — 资源包与扩展应用安装；技能与 MCP 扩展能力
+- **资源市场** — 资源包与Agent应用安装；技能与 MCP 扩展能力
 - **沙箱与可观测** — 隔离执行；任务、工具调用与用量可见
 
 ---
@@ -106,6 +106,8 @@ Windows：`.\scripts\windows\dev-stack-isolated.bat`
 
 中文导读：[docs/contribute/](docs/contribute/index.md) · 支持渠道：[SUPPORT.md](SUPPORT.md)
 
+维护者升版本：**[RELEASE.md](RELEASE.md)**（VERSION / CHANGELOG / PRODUCT-NOTES / latest.json / tag）
+
 ---
 
 ## 支持项目
@@ -122,13 +124,13 @@ Windows：`.\scripts\windows\dev-stack-isolated.bat`
 
 ## 授权
 
-版权所有 © 2026 **景银泰（EvovexAI）**。[PolyForm Noncommercial License 1.0.0](LICENSE)：源码可见（source-available），允许个人学习、研究与非商业使用；**商业使用须书面授权**（[cloud@evovexai.com](mailto:cloud@evovexai.com)）。**本许可证并非 OSI「开源」许可证。**第三方组件见 [NOTICE](NOTICE)；作者与贡献者权利见 [AUTHORS.md](AUTHORS.md)、[CLA.md](CLA.md)。
+版权所有 © 2026 **景银泰（EvovexAI）**。[PolyForm Noncommercial License 1.0.0](LICENSE)：源码可见（source-available），允许个人学习、研究与非商业使用；**商业使用须书面授权**（[cloud@evovexai.com](mailto:cloud@evovexai.com)）。**本许可证并非 OSI「开源」许可证。**第三方组件见 [NOTICE](NOTICE)；商业化与第三方许可证（含 zcode Apache-2.0）对 Captain Work 的具体影响见 [docs/legal/zcode-license-impact.md](docs/legal/zcode-license-impact.md)；作者与贡献者权利见 [AUTHORS.md](AUTHORS.md)、[CLA.md](CLA.md)。
 
 ---
 
 ## 致谢
 
-Captain Work 是独立产品。开发中参考了 [DeerFlow](https://github.com/bytedance/deer-flow)、[Hermes Agent](https://github.com/NousResearch/hermes-agent)、[OpenClaw](https://github.com/openclaw/openclaw)、[OpenAI Codex](https://github.com/openai/codex)、[LangGraph](https://github.com/langchain-ai/langgraph) / [LangChain](https://github.com/langchain-ai/langchain)、[MCP](https://modelcontextprotocol.io)、[Tauri](https://tauri.app) 等项目的设计思路；完整版权与许可证说明见 [NOTICE](NOTICE)。
+Captain Work 是独立产品。开发中参考了 [DeerFlow](https://github.com/bytedance/deer-flow)、[Hermes Agent](https://github.com/NousResearch/hermes-agent)、[OpenClaw](https://github.com/openclaw/openclaw)、[OpenAI Codex](https://github.com/openai/codex)、[LangGraph](https://github.com/langchain-ai/langgraph) / [LangChain](https://github.com/langchain-ai/langchain)、[MCP](https://modelcontextprotocol.io)、[Tauri](https://tauri.app) 等项目的设计思路；同时 vendored / 借鉴了 [ZCode](https://github.com/zai-org/ZCode)（Z.AI Co., Ltd.，Apache-2.0）的部分 UI、协议与服务代码（详见 [NOTICE](NOTICE) 中 `ZCode (Apache License 2.0)` 一节）。完整版权与许可证说明见 [NOTICE](NOTICE)。
 
 ---
 

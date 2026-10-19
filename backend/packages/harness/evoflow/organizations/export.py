@@ -112,6 +112,153 @@ def _app_to_json(app_id: str) -> dict[str, Any]:
     return out
 
 
+_EXPORT_DIR_SIZE_WARN_MB = 200
+
+
+def _dir_size_mb(p: Path) -> float:
+    total = 0
+    for f in p.rglob("*"):
+        try:
+            if f.is_file():
+                total += f.stat().st_size
+        except OSError:
+            continue
+    return total / (1024 * 1024)
+
+
+def _export_extensions(
+    out_dir: Path,
+    extension_ids: list[str],
+    warnings: list[str],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """导出扩展：copy 形态整目录拷进包；folder-link 形态仅带 manifest + 本机路径（非便携）。"""
+    if not extension_ids:
+        return [], []
+    from evoflow.admin.ui_extensions_registry import ExtensionIOError, read_registry
+
+    try:
+        rows = {str(r.get("id") or ""): r for r in read_registry()}
+    except ExtensionIOError as e:
+        warnings.append(f"extensions export unavailable: {e}")
+        return [], []
+
+    refs: list[dict[str, Any]] = []
+    exported: list[str] = []
+    for eid in extension_ids:
+        row = rows.get(eid)
+        if row is None:
+            warnings.append(f"extension not in registry: {eid}")
+            continue
+        manifest = row.get("manifest") if isinstance(row.get("manifest"), dict) else {}
+        manifest = dict(manifest)
+        manifest.setdefault("id", eid)
+        ext_dir = out_dir / "extensions" / eid
+        ext_dir.mkdir(parents=True, exist_ok=True)
+        _write_json(ext_dir / "evoflow.extension.json", manifest)
+
+        install_path = str(row.get("install_path") or "").strip()
+        source = str(row.get("source") or "")
+        is_link = source.endswith("folder-link") or bool((manifest.get("service") or {}).get("link", False))
+        src = Path(install_path).expanduser() if install_path else None
+        if src is None or not src.is_dir():
+            refs.append({"path": install_path, "link": True})
+            warnings.append(f"extension '{eid}' 仅导出 manifest（install_path 不存在: {install_path}）")
+            exported.append(eid)
+            continue
+        if is_link:
+            refs.append({"path": install_path, "link": True})
+            warnings.append(
+                f"extension '{eid}' 为 folder-link：导出 manifest + 本机路径（换机安装需把文件放入 extensions/{eid}/ 并改为 from 形态）"
+            )
+            exported.append(eid)
+            continue
+        try:
+            size_mb = _dir_size_mb(src)
+            if size_mb > _EXPORT_DIR_SIZE_WARN_MB:
+                warnings.append(f"extension '{eid}' 目录 {size_mb:.0f}MB 超过护栏，仅导出 manifest + 路径")
+                refs.append({"path": install_path, "link": True})
+            else:
+                if ext_dir.exists():
+                    shutil.rmtree(ext_dir)
+                shutil.copytree(src, ext_dir)
+                refs.append({"from": f"./extensions/{eid}"})
+            exported.append(eid)
+        except OSError as e:
+            warnings.append(f"extension '{eid}' copy failed: {e}")
+            refs.append({"path": install_path, "link": True})
+    return refs, exported
+
+
+def _export_knowledge(
+    out_dir: Path,
+    kb_names: list[str],
+    warnings: list[str],
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    """导出知识库定义 + folder 同步源（自包含包）。
+
+    返回 ``(primitives.knowledge 条目, {kb_id: ref})`` 映射——员工导出时把
+    ``knowledge_vault_ids`` 里的 kb id 改写为 ``${KB_REF:ref}`` 占位符。
+    """
+    if not kb_names:
+        return [], {}
+    from evoflow.knowledge.owned import service as owned_service
+
+    try:
+        bases = owned_service.list_bases()
+    except Exception as e:
+        warnings.append(f"knowledge export unavailable: {e}")
+        return [], {}
+
+    by_name: dict[str, dict[str, Any]] = {}
+    for b in bases:
+        n = str(b.get("name") or "").strip()
+        if n:
+            by_name.setdefault(n, b)
+
+    refs: list[dict[str, Any]] = []
+    kb_id_to_ref: dict[str, str] = {}
+    for i, nm in enumerate(kb_names):
+        base = by_name.get(nm)
+        if base is None:
+            warnings.append(f"knowledge base not found: {nm}")
+            continue
+        kb_id = str(base.get("id") or "")
+        ref = _safe_id(nm, fallback=f"kb-{i}")
+        entry: dict[str, Any] = {
+            "ref": ref,
+            "name": nm,
+            "description": str(base.get("description") or ""),
+        }
+        sync_source = ""
+        if str(base.get("syncSourceType") or "") == "folder":
+            sync_source = str(base.get("syncSourcePath") or "").strip()
+        if sync_source:
+            src = Path(sync_source).expanduser()
+            if src.is_dir():
+                dest = out_dir / "knowledge" / ref
+                try:
+                    size_mb = _dir_size_mb(src)
+                    if size_mb > _EXPORT_DIR_SIZE_WARN_MB:
+                        warnings.append(f"knowledge '{nm}' 源目录 {size_mb:.0f}MB 超护栏，仅记录本机路径（非便携）")
+                        entry["import_folder"] = str(src)
+                    else:
+                        if dest.exists():
+                            shutil.rmtree(dest)
+                        shutil.copytree(src, dest)
+                        entry["import_folder"] = f"./knowledge/{ref}"
+                except OSError as e:
+                    warnings.append(f"knowledge '{nm}' copy failed: {e}")
+                    entry["import_folder"] = str(src)
+            else:
+                warnings.append(f"knowledge '{nm}' 同步源不存在: {sync_source}（导出为空库定义）")
+        else:
+            warnings.append(f"knowledge '{nm}' 无 folder 同步源（导出为空库定义）")
+        refs.append(entry)
+        if kb_id:
+            kb_id_to_ref[kb_id] = ref
+    return refs, kb_id_to_ref
+
+
 def export_organization(
     *,
     pack: dict[str, Any],
@@ -126,6 +273,7 @@ def export_organization(
     agent_extra = [str(x).strip().lower() for x in (inc.get("agent_codes") or []) if str(x).strip()]
     skill_names = [str(x).strip() for x in (inc.get("skill_names") or []) if str(x).strip()]
     extension_ids = [str(x).strip() for x in (inc.get("extension_ids") or []) if str(x).strip()]
+    kb_names = [str(x).strip() for x in (inc.get("knowledge_base_names") or []) if str(x).strip()]
     vault_ids = [str(x).strip() for x in (inc.get("vault_ids") or []) if str(x).strip()]
     include_vault_data = bool(inc.get("include_vault_data", False))
     if not employee_codes and not app_ids:
@@ -186,6 +334,9 @@ def export_organization(
         (out_dir / "agents" / f"{code}.SOUL.md").write_text(soul or f"# {code}\n", encoding="utf-8")
         agent_refs.append({"from": f"./agents/{code}.yaml"})
 
+    # 知识库先于员工导出：员工 JSON 里的 kb id 要改写成 ${KB_REF:ref} 占位符
+    knowledge_refs, kb_id_to_ref = _export_knowledge(out_dir, kb_names, warnings)
+
     emp_refs: list[dict[str, str]] = []
     for code in employee_codes:
         try:
@@ -193,6 +344,20 @@ def export_organization(
         except OrganizationExportError as e:
             warnings.append(str(e))
             continue
+        cfg = emp.get("config") if isinstance(emp.get("config"), dict) else {}
+        kb_field = list(cfg.get("knowledge_vault_ids") or [])
+        if kb_field:
+            rewritten = []
+            for kid in kb_field:
+                ref = kb_id_to_ref.get(str(kid))
+                if ref:
+                    rewritten.append(f"${{KB_REF:{ref}}}")
+                else:
+                    rewritten.append(kid)
+                    warnings.append(
+                        f"employee '{code}' 引用知识库 {kid} 未包含在 include.knowledge_base_names 中（安装后需手动补绑）"
+                    )
+            cfg["knowledge_vault_ids"] = rewritten
         _write_json(out_dir / "employees" / f"{code}.json", emp)
         emp_refs.append({"from": f"./employees/{code}.json"})
 
@@ -224,8 +389,7 @@ def export_organization(
             shutil.copytree(src, dest)
             skill_refs.append({"from": f"./skills/{safe}"})
 
-    if extension_ids:
-        warnings.append("extension_ids recorded in manifest only (file copy not available from Gateway)")
+    ext_refs, ext_exported = _export_extensions(out_dir, extension_ids, warnings)
     if vault_ids and not include_vault_data:
         warnings.append("vault_ids recorded as refs; vault data not packed (include_vault_data=false)")
     elif vault_ids and include_vault_data:
@@ -240,8 +404,10 @@ def export_organization(
         "agents": agent_refs,
         "skills": skill_refs,
     }
-    if extension_ids:
-        primitives["extensions"] = [{"id": eid} for eid in extension_ids]
+    if knowledge_refs:
+        primitives["knowledge"] = knowledge_refs
+    if ext_refs:
+        primitives["extensions"] = ext_refs
     if vault_ids:
         primitives["vaults"] = [{"id": vid} for vid in vault_ids]
 
@@ -299,6 +465,8 @@ def export_organization(
         "employees": [r["from"] for r in emp_refs],
         "apps": [r["from"] for r in app_refs],
         "skills": [r["from"] for r in skill_refs],
+        "extensions": ext_exported,
         "extension_ids": extension_ids,
+        "knowledge_bases": [r.get("name") for r in knowledge_refs],
         "vault_ids": vault_ids,
     }

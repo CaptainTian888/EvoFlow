@@ -13,7 +13,7 @@ _CREW_DISALLOWED = [
     "propose_goal",
 ]
 
-_READ_TOOLS = ["read", "write", "replace", "terminal"]
+_READ_TOOLS = ["read", "write", "replace", "bash", "taskoutput", "taskstop"]
 
 MEDIA_SCREENWRITER_CONFIG = SubagentConfig(
     name="media-screenwriter",

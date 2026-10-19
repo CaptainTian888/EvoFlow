@@ -1,4 +1,7 @@
-"""Unified background process management (preferred over ``terminal`` for long jobs)."""
+"""Retired from the model tool list. ZCode Bash ``run_in_background`` + TaskOutput/TaskStop replaced this.
+
+Unified background process management (preferred over ``terminal`` for long jobs).
+"""
 
 from __future__ import annotations
 

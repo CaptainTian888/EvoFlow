@@ -87,12 +87,15 @@ def start_whisper(model: str = "small") -> bool:
 
     try:
         logger.info("[whisper] starting %s --model %s --port %s", binary, model, WHISPER_PORT)
+        from evoflow.utils.subprocess_platform import subprocess_hide_window_kwargs
+
         _process = subprocess.Popen(
             [str(binary), "--model", model, "--port", str(WHISPER_PORT)],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            **subprocess_hide_window_kwargs(),
         )
         # Wait for server to be ready (model download may take time on first run)
         for _ in range(60):  # up to 60s for model download

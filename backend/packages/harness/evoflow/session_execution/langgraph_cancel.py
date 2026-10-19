@@ -63,15 +63,17 @@ async def _post_cancel_run(
     try:
         cancel_resp = await client.post(cancel_url)
     except Exception:
-        logger.debug("cancel run failed thread=%s run=%s", tid, rid, exc_info=True)
+        logger.warning(
+            "[STOP-TRACE] 4.cancel-post-failed thread=%s run=%s", tid, rid, exc_info=True
+        )
         return "rejected"
     if cancel_resp.status_code < 400:
         return "cancelled"
     if cancel_resp.status_code == 404:
         # LangGraph: "No matching runs to cancel" — list 仍标 active 但 run 已不可 cancel
         return "already_gone"
-    logger.debug(
-        "cancel run rejected thread=%s run=%s status=%s",
+    logger.warning(
+        "[STOP-TRACE] 4.cancel-post-rejected thread=%s run=%s status=%s",
         tid,
         rid,
         cancel_resp.status_code,
@@ -204,6 +206,12 @@ async def sweep_langgraph_runs_until_idle(
 
     initial_active = await list_active_langgraph_run_ids(client, tid)
     if not initial_active:
+        # 空转可能是正常（run 已自然结束）也可能是 run id 不一致/loopback 失败 ——
+        # 必须留痕，否则「点停未 cancel 任何 run」完全无观测。
+        logger.info(
+            "[STOP-TRACE] 3.sweep-empty-no-active-runs thread=%s (thread 无 active runs，未 cancel 任何 run)",
+            tid,
+        )
         return [], []
     target_run_ids = set(initial_active)
 
@@ -223,7 +231,7 @@ async def sweep_langgraph_runs_until_idle(
         if not still_targeted:
             if cancelled_all:
                 logger.info(
-                    "sweep_langgraph_runs_until_idle: thread=%s cancelled=%s gone=%s",
+                    "[STOP-TRACE] 5.sweep-idle-reached thread=%s cancelled=%s gone=%s",
                     tid,
                     cancelled_all,
                     sorted(gone_run_ids),
@@ -243,7 +251,7 @@ async def sweep_langgraph_runs_until_idle(
             orphans = [rid for rid in await list_active_langgraph_run_ids(client, tid, exclude_run_ids=gone_run_ids) if rid in target_run_ids]
             if orphans:
                 logger.warning(
-                    "sweep_langgraph_runs_until_idle: orphan runs remain thread=%s runs=%s cancelled=%s gone=%s",
+                    "[STOP-TRACE] 5.sweep-orphan-remain thread=%s runs=%s cancelled=%s gone=%s (超时仍未结束)",
                     tid,
                     orphans,
                     cancelled_all,

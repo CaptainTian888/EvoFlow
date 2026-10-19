@@ -96,6 +96,35 @@ def emit_terminal_stderr(
     )
 
 
+def emit_background_work(
+    *,
+    work_id: str,
+    title: str,
+    command: str,
+    tool_call_id: str,
+    status: str,
+    started_at_ms: int | None = None,
+    stream_writer: StreamWriter | None = None,
+) -> None:
+    """Push a ZCode-shaped backgroundWorks row into the chat custom stream."""
+    wid = str(work_id or "").strip()
+    if not wid:
+        return
+    payload: dict[str, Any] = {
+        "type": "background_work",
+        "workId": wid,
+        "kind": "bash",
+        "title": str(title or command or wid)[:200],
+        "command": str(command or "")[:4000],
+        "status": str(status or "running"),
+        "toolCallId": str(tool_call_id or wid).strip(),
+        "cancellable": status == "running",
+    }
+    if started_at_ms is not None:
+        payload["startedAt"] = int(started_at_ms)
+    _emit(payload, stream_writer=stream_writer)
+
+
 def emit_terminal_exit(
     *,
     invocation_id: str,

@@ -1,0 +1,3 @@
+# Populated by packaging/windows/sync-official-plugins-bundle.ps1 (do not commit blobs).
+*
+!.gitignore

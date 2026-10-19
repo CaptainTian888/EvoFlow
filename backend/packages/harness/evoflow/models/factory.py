@@ -1120,7 +1120,7 @@ def _instrument_vendor_call_timing(model: BaseChatModel) -> None:
             _, _, user_ts = read_configurable_trace_fields()
             if user_ts:
                 elapsed_s = max(0.0, time.time() * 1000.0 - float(user_ts)) / 1000.0
-                print(f"[AGENT-TIMING] → vendor_http_call 请求到模型调用={elapsed_s:.3f}秒", flush=True)
+                print(f"[AGENT-TIMING] → vendor_http_call 会话累计={elapsed_s:.3f}秒", flush=True)
                 if elapsed_s >= 60.0:
                     logger.warning(
                         "slow_provider_alert: TTFT/wall before vendor HTTP >= 60s (%.1fs)",

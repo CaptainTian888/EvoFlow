@@ -789,6 +789,14 @@ export const CHAT_PANEL_HIDDEN_TOOL_NAMES = new Set([
 /** 主气泡不展示（侧栏 / 专用 UI）；SSE 与 DB 历史均适用。 */
 export function toolOmitFromChatPanel(tool) {
   if (!tool || typeof tool !== 'object') return true
+  // 授权入口必须始终可见:pending 工具是审批卡的唯一载体,任何名称退化
+  // (管道中 name 退化为通用名 "tool")都不得把它从聊天面板滤掉,
+  // 否则用户没有可点击的批准按钮(工具审批卡住 bug,2026-10-15)。
+  const st = String(tool.status || '').trim().toLowerCase()
+  if (st === 'pending_approval') return false
+  if (st !== 'pending_approval' && envelopeStatusFromToolOutput(tool.output) === 'pending_approval') {
+    return false
+  }
   const n = String(resolveEffectiveToolName(tool) || '').trim().toLowerCase()
   if (!n || n === 'tool') return true
   if (n.startsWith('scheduler:')) return true
@@ -1717,6 +1725,14 @@ export function upsertTool(tools, entry) {
           ? entry.output_text
           : null
     if (incomingOutput != null) target.output = mergeToolOutput(target.output, incomingOutput)
+    // 历史回放：tool result 行先 slim 再 upsert 到 assistant.tool_calls 占位上；
+    // 必须拷贝 cua_display，否则图标/截图在合并后丢失且 output 已空无法再推断。
+    if (entry.cua_display && typeof entry.cua_display === 'object') {
+      target.cua_display = entry.cua_display
+    } else if (!(target.cua_display && typeof target.cua_display === 'object')) {
+      const inferred = resolveEvoflowCuaDisplay(incomingOutput != null ? incomingOutput : target.output)
+      if (inferred) target.cua_display = inferred
+    }
     if (entry.status) {
       const cur = String(target.status || '').toLowerCase()
       const inc = String(entry.status).toLowerCase()
@@ -1865,6 +1881,10 @@ function attachToolResultOutput(tools, msg) {
     target = tools.find((t) => t.id === tid || t.tool_call_id === tid) || null
   }
   if (!target && tools.length === 1) target = tools[0]
+  const msgCua =
+    msg.cua_display && typeof msg.cua_display === 'object'
+      ? msg.cua_display
+      : resolveEvoflowCuaDisplay(output)
   if (!target) {
     tools.push({
       id: toolCallId,
@@ -1873,6 +1893,7 @@ function attachToolResultOutput(tools, msg) {
       output,
       status: msg.status || 'ok',
       time: resolveToolTime(toolCallId, msg.timestamp),
+      ...(msgCua ? { cua_display: msgCua } : {}),
     })
     const row = tools[tools.length - 1]
     syncToolStatusFromEnvelope(row)
@@ -1885,6 +1906,9 @@ function attachToolResultOutput(tools, msg) {
     target.output = output
     syncToolStatusFromEnvelope(target)
     maybeSyncTerminalToolStatusFromOutput(target)
+  }
+  if (msgCua && !(target.cua_display && typeof target.cua_display === 'object')) {
+    target.cua_display = msgCua
   }
   maybeBackfillToolInputFromOutput(target)
   // Prefer the tool-result message clock so each call has its own time in trail UI.
@@ -2358,6 +2382,19 @@ function _shouldSlimToolOutputForUi(target, text) {
   return Boolean(String(text || '').trim())
 }
 
+/**
+ * node_repl CUA：精简 output 前把展示载荷挪到 cua_display。
+ * 流式层常已剥离标记；历史回放仍可能带标记或仅剩 Screenshot banner。
+ */
+function _preserveCuaDisplayMeta(target, raw) {
+  if (!target || typeof target !== 'object') return
+  if (target.cua_display && typeof target.cua_display === 'object') return
+  const name = String(target.name || target.tool_name || '').trim().toLowerCase()
+  if (!name.includes('node_repl')) return
+  const parsed = resolveEvoflowCuaDisplay(raw)
+  if (parsed) target.cua_display = parsed
+}
+
 /** 所有工具：流缓存不保留大段 output，弹窗经 /tool-results 按需拉取 */
 export function maybeSlimToolOutputForUi(target) {
   if (!target || typeof target !== 'object') return
@@ -2369,6 +2406,7 @@ export function maybeSlimToolOutputForUi(target) {
         : ''
   _preserveBrowserUiMeta(target, raw)
   _preservePlatformUiMeta(target, raw)
+  _preserveCuaDisplayMeta(target, raw)
   if (!_shouldSlimToolOutputForUi(target, raw)) return
   const bytes = typeof TextEncoder !== 'undefined' ? new TextEncoder().encode(raw).length : raw.length
   target.output = ''
@@ -3873,11 +3911,16 @@ export function dedupeHistory(messages) {
         const nm = String(t?.name || t?.tool_name || t?.toolName || '').trim()
         let output = t.output
         const outStr = typeof output === 'string' ? output : output != null ? formatToolDisplayValue(output) : ''
+        const cua =
+          t.cua_display && typeof t.cua_display === 'object'
+            ? t.cua_display
+            : resolveEvoflowCuaDisplay(outStr)
         if (outStr && isStructuredToolSummaryText(outStr)) {
           output = formatToolOutputForUserDisplay(output, nm)
         }
         return {
           ...t,
+          ...(cua ? { cua_display: cua } : {}),
           output,
           time,
           messageTimestamp: msg.timestamp,
@@ -4194,6 +4237,13 @@ export function normalizeChatToolPayloadToEntries(payload) {
     output: output !== undefined ? output : undefined,
     status,
   }
+  // Captain Work CUA：流式层结构化字段优先；否则从正文标记 / Screenshot banner 还原。
+  if (d.cua_display && typeof d.cua_display === 'object') {
+    toolEntry.cua_display = d.cua_display
+  } else {
+    const inferred = resolveEvoflowCuaDisplay(toolEntry.output)
+    if (inferred) toolEntry.cua_display = inferred
+  }
   if (d.truncated === true || d.output_truncated === true) {
     toolEntry.output_truncated = true
     toolEntry.outputTruncated = true
@@ -4227,12 +4277,17 @@ export function extractChatContent(message) {
   if (isToolResultMessage(view)) {
     if (!tools.length) {
       const output = resolveToolResultOutput(view)
+      const cua =
+        view.cua_display && typeof view.cua_display === 'object'
+          ? view.cua_display
+          : resolveEvoflowCuaDisplay(output)
       tools.push({
         id: view.tool_call_id || view.toolCallId || view.id,
         name: view.name || view.tool || view.tool_name || '工具',
         input: view.input || view.args || view.parameters || null,
         output,
         status: view.status || 'ok',
+        ...(cua ? { cua_display: cua } : {}),
       })
       const row = tools[tools.length - 1]
       syncToolStatusFromEnvelope(row)
@@ -4922,4 +4977,130 @@ export function messagesToDisplayRows(rawMessages) {
   }
   outRev.reverse()
   return outRev
+}
+
+// ---------------------------------------------------------------------------
+// Captain Work CUA display 标记（node_repl js 工具结果尾部）
+//
+// 后端 plugins/node_repl_tool.py 在 Computer Use 结果末尾追加一行
+// `{evoflow-cua-display:{...}}` JSON 标记（目标应用身份 + 截图 URL + 状态）。
+// 老对话流式路径（ToolCallList）从这里解析出展示载荷；ZCode 的 v4 display 块
+// 协议不经过老路径，这是等价的平台侧实现。
+// ---------------------------------------------------------------------------
+
+export const EVOFLOW_CUA_DISPLAY_PREFIX = '{evoflow-cua-display:'
+
+function _cuaDisplayTextFromValue(value) {
+  if (typeof value === 'string') return stripAnsi(value)
+  if (value && typeof value === 'object') {
+    if (typeof value.text === 'string') return stripAnsi(value.text)
+    if (typeof value.output === 'string') return stripAnsi(value.output)
+  }
+  return ''
+}
+
+/** 解析工具输出尾部的 CUA display 标记；无标记或载荷不合法返回 null。 */
+export function parseEvoflowCuaDisplay(value) {
+  const text = _cuaDisplayTextFromValue(value)
+  if (!text) return null
+  const lines = text.split('\n')
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i].trim()
+    if (!line) continue
+    if (!line.startsWith(EVOFLOW_CUA_DISPLAY_PREFIX)) return null
+    try {
+      const payload = JSON.parse(line.slice(EVOFLOW_CUA_DISPLAY_PREFIX.length, -1))
+      if (payload && typeof payload === 'object' && !Array.isArray(payload)) return payload
+    } catch {
+      /* malformed marker */
+    }
+    return null
+  }
+  return null
+}
+
+/**
+ * 标记被网关剥离后，从 Screenshot banner / app: 行尽量还原展示载荷，
+ * 避免历史回放、output 精简后图标与截图一起消失。
+ */
+export function inferEvoflowCuaDisplayFromOutput(value) {
+  const text = _cuaDisplayTextFromValue(value)
+  if (!text) return null
+  const shot = text.match(
+    /\[Screenshot captured:\s*(\/api\/threads\/[^/\s]+\/browser-snapshots\/[0-9a-f]{12,32})\b/i,
+  )
+  const appQuoted = text.match(/^app:\s*.+?\s+pid=\d+\s+"([^"]+)"/m)
+  const exePath = text.match(/^app:\s*([A-Za-z]:[^"\n]+?\.(?:exe|EXE))\b/m)
+  if (!shot && !appQuoted && !exePath) return null
+  const out = { status: /操作失败|status=error|\bfailed\b/i.test(text) ? 'failed' : 'success' }
+  if (shot) out.images = [{ url: shot[1] }]
+  if (exePath || appQuoted) {
+    out.target_app = {
+      ...(exePath ? { app_key: `windows-exe:${exePath[1].trim().toLowerCase()}` } : {}),
+      ...(appQuoted ? { display_name: appQuoted[1].trim() } : {}),
+    }
+  }
+  return out
+}
+
+/**
+ * 优先结构化标记，再与正文 banner / ``app:`` 行合并。
+ * 很多历史截图标记里只有 images、没有 target_app；正文里仍有
+ * ``app: D:\\...\\Feishu.exe ... "飞书"``，合并后任意应用都能取图标（不限微信）。
+ */
+export function resolveEvoflowCuaDisplay(value) {
+  const parsed = parseEvoflowCuaDisplay(value)
+  const inferred = inferEvoflowCuaDisplayFromOutput(value)
+  if (!parsed && !inferred) return null
+  if (!parsed) return inferred
+  if (!inferred) return parsed
+  const parsedApp = parsed.target_app && typeof parsed.target_app === 'object' ? parsed.target_app : null
+  const inferredApp =
+    inferred.target_app && typeof inferred.target_app === 'object' ? inferred.target_app : null
+  const hasParsedKey = Boolean(parsedApp && String(parsedApp.app_key || '').trim())
+  const images =
+    Array.isArray(parsed.images) && parsed.images.length
+      ? parsed.images
+      : Array.isArray(inferred.images)
+        ? inferred.images
+        : []
+  return {
+    ...inferred,
+    ...parsed,
+    ...(images.length ? { images } : {}),
+    ...(hasParsedKey
+      ? { target_app: parsedApp }
+      : inferredApp || parsedApp
+        ? { target_app: { ...(parsedApp || {}), ...(inferredApp || {}) } }
+        : {}),
+  }
+}
+
+/** 从输出文本中剥掉 CUA display 标记行（正文展示用）。 */
+export function stripEvoflowCuaDisplayMarker(text) {
+  if (typeof text !== 'string' || !text.includes(EVOFLOW_CUA_DISPLAY_PREFIX)) return text
+  return text
+    .split('\n')
+    .filter((line) => !line.trim().startsWith(EVOFLOW_CUA_DISPLAY_PREFIX))
+    .join('\n')
+    .replace(/\n{3,}$/, '\n\n')
+    .trimEnd()
+}
+
+/** ZCode appKey（`windows-exe:c:\...`）→ 面板 ApplicationIconRequest locator。 */
+export function evoflowCuaAppKeyToIconRequest(appKey) {
+  const raw = String(appKey || '').trim()
+  const sep = raw.indexOf(':')
+  if (sep <= 0) return null
+  const scheme = raw.slice(0, sep).toLowerCase()
+  const value = raw.slice(sep + 1).trim()
+  if (!value) return null
+  const kinds = {
+    darwin: 'darwin-bundle-id',
+    'windows-aumid': 'windows-aumid',
+    'windows-exe': 'windows-executable-path',
+  }
+  const kind = kinds[scheme]
+  if (!kind) return null
+  return { locators: [{ kind, value }] }
 }

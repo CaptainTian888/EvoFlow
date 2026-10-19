@@ -756,7 +756,7 @@ export function WorkspaceFileTree({
 
   // #8: keyboard navigation
   const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent<HTMLUListElement>) => {
+    (e: React.KeyboardEvent<HTMLElement>) => {
       const tag = (e.target as HTMLElement)?.tagName
       if (tag === 'INPUT' || tag === 'TEXTAREA') return
       if (isSearchMode || createDialog || flatNodes.length === 0) return
@@ -999,30 +999,6 @@ export function WorkspaceFileTree({
               title="刷新"
             >
               <KvFolderIcon name="refresh" size={14} />
-            </button>
-            <button
-              type="button"
-              className="kv-browse-action"
-              disabled={isSearchMode || loading}
-              onClick={() => {
-                setCreateDialog({ type: 'file', parentPath: relPath })
-                setCreateName('')
-              }}
-              title="新建文件"
-            >
-              <KvFolderIcon name="file" size={14} />
-            </button>
-            <button
-              type="button"
-              className="kv-browse-action"
-              disabled={isSearchMode || loading}
-              onClick={() => {
-                setCreateDialog({ type: 'folder', parentPath: relPath })
-                setCreateName('')
-              }}
-              title="新建文件夹"
-            >
-              <KvFolderIcon name="folder" size={14} />
             </button>
           </div>
 

@@ -1,0 +1,16 @@
+{
+  "name": "@evoflow/liquid-glass-theme",
+  "description": "Liquid glass / live-wallpaper WebGL theme sources used by Captain Work (build input for glass-shader). Adapted from the MIT-licensed liquid-glass theme upstream; see LICENSE and REFERENCE.md.",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "license": "MIT",
+  "files": [
+    "src/**/*",
+    "lib/**/*",
+    "assets/**/*",
+    "LICENSE",
+    "REFERENCE.md"
+  ]
+}

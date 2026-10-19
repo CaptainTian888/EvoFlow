@@ -17,6 +17,7 @@ from langchain_core.messages import BaseMessage, HumanMessage
 
 from evoflow.agents.lead_agent.runtime_context import (
     merge_model_request_runtime_context,
+    resolve_preferred_plugins_for_turn,
     resolve_preferred_skills_for_turn,
 )
 from evoflow.skills.active import reset_active_skills, set_active_skills
@@ -31,14 +32,17 @@ from evoflow.agents.middlewares.dynamic_system_prompt_middleware import (
 logger = logging.getLogger(__name__)
 
 _SKILL_INJECTION_MESSAGE_NAME = "evf_skill_injection"
+_PLUGIN_INJECTION_MESSAGE_NAME = "evf_plugin_injection"
+
+_INJECTION_MESSAGE_NAMES = {_SKILL_INJECTION_MESSAGE_NAME, _PLUGIN_INJECTION_MESSAGE_NAME}
 
 
-def _is_skill_injection_message(msg: Any) -> bool:
-    return isinstance(msg, HumanMessage) and getattr(msg, "name", None) == _SKILL_INJECTION_MESSAGE_NAME
+def _is_injection_message(msg: Any) -> bool:
+    return isinstance(msg, HumanMessage) and getattr(msg, "name", None) in _INJECTION_MESSAGE_NAMES
 
 
-def _strip_skill_injection_messages(messages: list[Any]) -> list[Any]:
-    return [m for m in messages if not _is_skill_injection_message(m)]
+def _strip_injection_messages(messages: list[Any]) -> list[Any]:
+    return [m for m in messages if not _is_injection_message(m)]
 
 
 def _messages_from_request(request: ModelRequest) -> list[BaseMessage]:
@@ -64,7 +68,7 @@ def _latest_human_preview(messages: list[Any]) -> str:
     return ""
 
 
-def _resolve_turn_skills(request: ModelRequest) -> tuple[list, list[str], dict[str, Any]]:
+def _resolve_turn_skills(request: ModelRequest) -> tuple[list, list[str], str, dict[str, Any]]:
     ctx = merge_model_request_runtime_context(request)
     messages = _messages_from_request(request)
 
@@ -79,7 +83,18 @@ def _resolve_turn_skills(request: ModelRequest) -> tuple[list, list[str], dict[s
         workspace_root=workspace,
     )
     names = [s.name for s in selected]
-    return selected, names, ctx
+
+    plugin_block = ""
+    try:
+        plugin_refs = resolve_preferred_plugins_for_turn(ctx)
+        if plugin_refs:
+            from evoflow.plugins.runtime import build_plugin_injection_block
+
+            plugin_block = build_plugin_injection_block(plugin_refs, user_message=user_message)
+    except Exception:
+        logger.warning("Plugin injection block failed", exc_info=True)
+        plugin_block = ""
+    return selected, names, plugin_block, ctx
 
 
 class SkillsInjectionMiddleware(AgentMiddleware[AgentState]):
@@ -92,9 +107,10 @@ class SkillsInjectionMiddleware(AgentMiddleware[AgentState]):
         request: ModelRequest,
         selected: list,
         names: list[str],
+        plugin_block: str,
         ctx: dict[str, Any],
     ) -> ModelRequest:
-        messages = _strip_skill_injection_messages(_messages_from_request(request))
+        messages = _strip_injection_messages(_messages_from_request(request))
 
         if hasattr(request.runtime, "context"):
             rt_ctx = request.runtime.context
@@ -103,67 +119,83 @@ class SkillsInjectionMiddleware(AgentMiddleware[AgentState]):
             elif hasattr(rt_ctx, "__setitem__"):
                 rt_ctx["evf_active_skills"] = names
 
-        if not selected:
+        if not selected and not plugin_block.strip():
             if len(messages) != len(_messages_from_request(request)):
                 return request.override(messages=messages)
             return request
 
-        body = build_skill_injection_message(
-            selected,
-            prompt_language=str(ctx.get("prompt_language") or "").strip() or None,
-        )
-        if not body.strip():
-            return request
+        extra_messages: list[HumanMessage] = []
+        if selected:
+            body = build_skill_injection_message(
+                selected,
+                prompt_language=str(ctx.get("prompt_language") or "").strip() or None,
+            )
+            if body.strip():
+                extra_messages.append(HumanMessage(content=body.strip(), name=_SKILL_INJECTION_MESSAGE_NAME))
+        if plugin_block.strip():
+            extra_messages.append(
+                HumanMessage(content=plugin_block.strip(), name=_PLUGIN_INJECTION_MESSAGE_NAME)
+            )
+        if not extra_messages:
+            return request.override(messages=messages) if len(messages) != len(_messages_from_request(request)) else request
 
-        logger.info("SkillsInjection: injecting %d skill(s): %s", len(selected), names)
-        hint = HumanMessage(content=body.strip(), name=_SKILL_INJECTION_MESSAGE_NAME)
-        return request.override(messages=[*messages, hint])
+        logger.info(
+            "SkillsInjection: injecting %d skill(s): %s; plugin block: %s",
+            len(selected),
+            names,
+            bool(plugin_block.strip()),
+        )
+        return request.override(messages=[*messages, *extra_messages])
 
     @override
     def wrap_model_call(self, request: ModelRequest, handler) -> ModelCallResult:
-        selected, names, ctx = _resolve_turn_skills(request)
+        selected, names, plugin_block, ctx = _resolve_turn_skills(request)
         token_skills = set_active_skills(names)
         try:
-            result = handler(self._patch_request(request, selected, names, ctx))
-            # Also update the injected-sections ContextVar so the detail modal sees skill content.
+            result = handler(self._patch_request(request, selected, names, plugin_block, ctx))
+            # Also update the injected-sections ContextVar so the detail modal sees the content.
+            merged = dict(get_injected_sections() or {})
             if selected:
                 body = build_skill_injection_message(
                     selected,
                     prompt_language=str(ctx.get("prompt_language") or "").strip() or None,
                 )
                 if body.strip():
-                    prev = get_injected_sections()
-                    merged = dict(prev) if prev else {}
                     merged["skill_injection"] = body.strip()
-                    tok = set_injected_sections(merged)
-                    try:
-                        _ = result
-                    finally:
-                        reset_injected_sections(tok)
+            if plugin_block.strip():
+                merged["plugin_injection"] = plugin_block.strip()
+            if len(merged) > len(get_injected_sections() or {}):
+                tok = set_injected_sections(merged)
+                try:
+                    _ = result
+                finally:
+                    reset_injected_sections(tok)
             return result
         finally:
             reset_active_skills(token_skills)
 
     @override
     async def awrap_model_call(self, request: ModelRequest, handler) -> ModelCallResult:
-        selected, names, ctx = _resolve_turn_skills(request)
+        selected, names, plugin_block, ctx = _resolve_turn_skills(request)
         token_skills = set_active_skills(names)
         try:
-            result = await handler(self._patch_request(request, selected, names, ctx))
+            result = await handler(self._patch_request(request, selected, names, plugin_block, ctx))
+            merged = dict(get_injected_sections() or {})
             if selected:
                 body = build_skill_injection_message(
                     selected,
                     prompt_language=str(ctx.get("prompt_language") or "").strip() or None,
                 )
                 if body.strip():
-                    prev = get_injected_sections()
-                    merged = dict(prev) if prev else {}
                     merged["skill_injection"] = body.strip()
-                    tok = set_injected_sections(merged)
-                    try:
-                        _ = result
-                    finally:
-                        reset_injected_sections(tok)
+            if plugin_block.strip():
+                merged["plugin_injection"] = plugin_block.strip()
+            if len(merged) > len(get_injected_sections() or {}):
+                tok = set_injected_sections(merged)
+                try:
+                    _ = result
+                finally:
+                    reset_injected_sections(tok)
             return result
         finally:
             reset_active_skills(token_skills)

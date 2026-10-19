@@ -171,7 +171,7 @@ EvoFlow/
 
 **Boundary:** `evoflow.*` must not import `app.*`. App may import `evoflow`.
 
-Chinese contributor guide: [docs/contribute/](docs/contribute/index.md) (repo map, branching, add-skill). Harness tips: [backend/AGENTS.md](backend/AGENTS.md). Maintainers: [MAINTAINERS.md](MAINTAINERS.md).
+Chinese contributor guide: [docs/contribute/](docs/contribute/index.md) (repo map, branching, add-skill). Harness tips: [backend/AGENTS.md](backend/AGENTS.md). Maintainers: [MAINTAINERS.md](MAINTAINERS.md). Desktop release checklist: [RELEASE.md](RELEASE.md).
 
 ---
 
@@ -204,7 +204,7 @@ Chinese contributor guide: [docs/contribute/](docs/contribute/index.md) (repo ma
 - At least one maintainer review for `main`
 - Squash merge preferred for feature branches
 - Do not force-push `main`
-- Release packaging is **maintainer-only** (`scripts/maintainer/` and `release-*-public.yml`)
+- Release packaging is **maintainer-only** — follow [RELEASE.md](RELEASE.md) (`scripts/maintainer/` + `release-*-public.yml`)
 
 ---
 

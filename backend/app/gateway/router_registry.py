@@ -78,6 +78,7 @@ def register_core_routers(app: FastAPI) -> None:
     _include_module_router(app, "app.gateway.routers.models", label="models")
     _include_module_router(app, "app.gateway.routers.agents", label="agents")
     _include_module_router(app, "app.gateway.routers.skills", label="skills")
+    _include_module_router(app, "app.gateway.routers.ui_extensions", label="ui_extensions")
     _include_module_router(app, "app.gateway.routers.artifacts", label="artifacts")
     _include_module_router(app, "app.gateway.routers.uploads", label="uploads")
     _include_module_router(app, "app.gateway.routers.threads", label="threads")
@@ -104,6 +105,7 @@ def register_core_routers(app: FastAPI) -> None:
     _include_module_router(app, "app.gateway.routers.security_settings", label="security_settings")
     _include_module_router(app, "app.gateway.routers.plans", label="plans")
     _include_module_router(app, "app.gateway.routers.runs", label="runs")
+    _include_module_router(app, "app.gateway.routers.background_bash", label="background_bash")
 
     langgraph_proxy = importlib.import_module("app.gateway.routers.langgraph_proxy")
     app.include_router(langgraph_proxy.router, include_in_schema=False)
@@ -146,6 +148,9 @@ def register_extended_routers(app: FastAPI) -> None:
         ("app.gateway.routers.organizations", "organizations", {}),
         ("app.gateway.routers.collab", "collab", {}),
         ("app.gateway.routers.mcp", "mcp", {}),
+        ("app.gateway.routers.plugins", "plugins", {}),
+        ("app.gateway.routers.browser_bridge", "browser_bridge", {}),
+        ("app.gateway.routers.cua_bridge", "cua_bridge", {}),
         ("app.gateway.routers.memory", "memory", {}),
         ("app.gateway.routers.assets", "assets", {}),
         ("app.gateway.routers.knowledge_owned", "knowledge_owned", {}),

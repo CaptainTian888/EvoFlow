@@ -10,7 +10,7 @@
  */
 
 import { formatTaskStatusZh, toUnifiedTaskStatus } from '../../lib/task-status-label.js'
-import type { SubagentStreamTask, TerminalStreamTask } from '../chat-types.js'
+import type { BackgroundWorkStreamItem, SubagentStreamTask, TerminalStreamTask } from '../chat-types.js'
 
 export type ProcessKind = 'terminal' | 'agent' | 'workflow'
 
@@ -27,6 +27,10 @@ export type ProcessItem = {
   detail?: string
   /** 点击定位用的原始载荷（由调用方决定怎么用） */
   source: TerminalStreamTask | SubagentStreamTask | { subtaskId?: string; name?: string }
+  /** ZCode background work id，用于停止和详情查询 */
+  workId?: string
+  startedAt?: number
+  cancellable?: boolean
 }
 
 export type ProcessSummary = {
@@ -52,6 +56,8 @@ export type ProcessInput = {
     assignedAgent?: string
     assignedAgentDisplay?: string
   }> | null
+  /** ZCode backgroundWorks（kind=bash）。面板只展示 status=running。 */
+  backgroundWorks?: Record<string, BackgroundWorkStreamItem> | null
 }
 
 /** 终端命令行压到单行、限长，避免长命令撑破面板 */
@@ -61,16 +67,6 @@ function compactCommand(raw: string, max = 72): string {
     .trim()
   if (oneLine.length <= max) return oneLine
   return `${oneLine.slice(0, max - 1)}…`
-}
-
-function terminalState(t: TerminalStreamTask): ProcessState {
-  const phase = String(t?.phase || '').trim().toLowerCase()
-  if (phase === 'running') return 'running'
-  if (phase === 'failed') return 'failed'
-  // phase === 'success'，但 exitCode 非 0 仍算失败（后端 phase 可能滞后）
-  const code = Number(t?.exitCode)
-  if (Number.isFinite(code) && code !== 0) return 'failed'
-  return 'completed'
 }
 
 function subagentState(t: SubagentStreamTask): ProcessState {
@@ -127,16 +123,24 @@ const STATE_ORDER: Record<ProcessState, number> = {
 export function buildProcessItems(input: ProcessInput): ProcessItem[] {
   const items: ProcessItem[] = []
 
-  for (const t of Object.values(input.terminalStreams || {})) {
-    if (!t) continue
-    const command = compactCommand(t.command || '')
+  // ZCode「终端」区只列 running background bash；前台/已结束的终端留在聊天卡片里。
+  for (const work of Object.values(input.backgroundWorks || {})) {
+    if (!work || work.status !== 'running') continue
+    const toolCallId = String(work.toolCallId || work.workId || '').trim()
+    const command = compactCommand(work.command || work.title || '')
     items.push({
-      id: `terminal:${t.toolCallId}${t.invocationId ? `:${t.invocationId}` : ''}`,
+      id: `bash:${work.workId}`,
       kind: 'terminal',
       label: command || '终端',
-      state: terminalState(t),
-      detail: t.exitCode != null && Number(t.exitCode) !== 0 ? `退出码 ${t.exitCode}` : undefined,
-      source: t,
+      state: 'running',
+      workId: work.workId,
+      startedAt: work.startedAt,
+      cancellable: work.cancellable !== false,
+      source: {
+        toolCallId,
+        command: work.command || work.title || '',
+        phase: 'running',
+      } as TerminalStreamTask,
     })
   }
 

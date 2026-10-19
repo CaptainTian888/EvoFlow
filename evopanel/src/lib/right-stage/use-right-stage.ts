@@ -12,9 +12,10 @@ export function useRightStageStore() {
   return {
     snapshot,
     surface: snapshot.surface,
-    isOpen: snapshot.surface !== null,
+    /** 侧栏是否占宽：折叠态与 tabs 脱钩（空 tabs 也可展开显示首页）。 */
+    isOpen: !snapshot.collapsed,
+    collapsed: snapshot.collapsed,
     kind: snapshot.surface?.kind ?? null,
-    // 多 tab API：subtabs / 总览弹层直接消费，避免外部再写自己的"我以为的 tab 列表"。
     tabs: snapshot.tabs,
     activeKey: snapshot.activeKey,
     recentClosed: snapshot.recentClosed,
@@ -24,6 +25,9 @@ export function useRightStageStore() {
     activateTab: rightStageStore.activateTab.bind(rightStageStore),
     reopenClosedTab: rightStageStore.reopenClosedTab.bind(rightStageStore),
     reorderTab: rightStageStore.reorderTab.bind(rightStageStore),
+    expand: rightStageStore.expand.bind(rightStageStore),
+    collapse: rightStageStore.collapse.bind(rightStageStore),
+    toggleCollapsed: rightStageStore.toggleCollapsed.bind(rightStageStore),
     updateData: rightStageStore.updateData.bind(rightStageStore),
     appendStream: rightStageStore.appendStream.bind(rightStageStore),
     openStream: rightStageStore.openStream.bind(rightStageStore),
@@ -39,22 +43,27 @@ export function isWorkspaceKind(kind: RightStageKind | null | undefined): boolea
   return k === 'workspace-browse' || k === 'write'
 }
 
-export function surfaceLegacyFlags(surface: RightStageSurface | null) {
-  if (!surface) {
-    return {
-      workspacePanelOpen: false,
-      workspaceWrite: false,
-      collabExecPanelOpen: false,
-      knowledgeMapPanelOpen: false,
-      newsDashboardOpen: false,
-    }
-  }
-  const k = normalizeRightStageKind(surface.kind)
+/**
+ * 「打开」= tabs 列表里存在该 kind（可与激活项不同）。
+ * 切到浏览器时文件树仍在列表里，不能被当成已关闭而拆掉状态。
+ */
+export function surfaceLegacyFlags(
+  surface: RightStageSurface | null,
+  tabs?: readonly RightStageSurface[] | null,
+) {
+  const kindSet = new Set(
+    (tabs && tabs.length
+      ? tabs
+      : surface
+        ? [surface]
+        : []
+    ).map((t) => normalizeRightStageKind(t.kind)),
+  )
   return {
-    workspacePanelOpen: k === 'workspace-browse' || k === 'write',
-    workspaceWrite: k === 'write',
-    collabExecPanelOpen: k === 'collab-workflow',
-    knowledgeMapPanelOpen: k === 'mind-map',
-    newsDashboardOpen: k === 'news-dashboard',
+    workspacePanelOpen: kindSet.has('workspace-browse') || kindSet.has('write'),
+    workspaceWrite: kindSet.has('write'),
+    collabExecPanelOpen: kindSet.has('collab-workflow'),
+    knowledgeMapPanelOpen: kindSet.has('mind-map'),
+    newsDashboardOpen: kindSet.has('news-dashboard'),
   }
 }

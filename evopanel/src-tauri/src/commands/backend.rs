@@ -1226,6 +1226,8 @@ fn ensure_backend_sidecar_inner(app: &tauri::AppHandle) -> Result<(), String> {
     })
         .env("EVOFLOW_PROFILE", super::current_profile_id())
         .env("EVOFLOW_HOME", &work_dir)
+        // gateway 需要同一个共享根来读写 ui-extensions/registry.json（见 mod.rs evoflow_dir）。
+        .env("EVOFLOW_CONFIG_DIR", super::evoflow_dir().to_string_lossy().to_string())
         .env("EVOFLOW_LOGS_DIR", logs_dir())
         .env("EVOFLOW_CONFIG_PATH", &config_yaml)
         .env("EVOFLOW_APP_SERVER_STDIO", "1")
@@ -1326,14 +1328,39 @@ fn ensure_backend_sidecar_inner(app: &tauri::AppHandle) -> Result<(), String> {
 fn kill_gateway_port(port: u16) {
     #[cfg(target_os = "windows")]
     {
+        // Kill the listener AND walk up the parent chain to the supervisor
+        // (powershell/pwsh running uvicorn/langgraph/watch-external-gateway) so a
+        // watchdog cannot immediately respawn the child we just killed — which
+        // would race our sidecar bind and cause Windows dual-bind
+        // (0.0.0.0:port + 127.0.0.1:port coexisting). Mirrors the PowerShell
+        // Stop-EvoFlowKillPortListenerRoots logic in backend-common.ps1.
+        // Use taskkill.exe directly (not `cmd /c taskkill`) — nested cmd.exe flashes a
+        // console even when this PowerShell parent has CREATE_NO_WINDOW.
+        let script = format!(
+            "function Invoke-EvoFlowTaskKill([int]$TargetPid) {{ \
+                if ($TargetPid -gt 0) {{ \
+                    & taskkill.exe /T /F /PID $TargetPid 2>$null | Out-Null \
+                }} \
+             }}; \
+             Get-NetTCPConnection -LocalPort {port} -State Listen -ErrorAction SilentlyContinue | ForEach-Object {{ \
+                $lp = [int]$_.OwningProcess; \
+                if ($lp -gt 0) {{ \
+                    $p = $lp; \
+                    for ($i=0; $i -le 20; $i++) {{ \
+                        $r = @(Get-CimInstance Win32_Process -Filter \"ProcessId=$p\" -ErrorAction SilentlyContinue)[0]; \
+                        if (-not $r) {{ Invoke-EvoFlowTaskKill $lp; break }}; \
+                        $n=[string]$r.Name; $c=[string]$r.CommandLine; \
+                        if (($n -match '(?i)powershell|pwsh') -and ($c -match '(?i)uvicorn|langgraph_cli|watch-external-gateway')) {{ Invoke-EvoFlowTaskKill $p; break }}; \
+                        if (($n -match '(?i)^python(?:w)?\\.exe$') -and ($c -match '(?i)app\\.gateway\\.app:app')) {{ Invoke-EvoFlowTaskKill $p; break }}; \
+                        $pp=[int]$r.ParentProcessId; \
+                        if ($pp -le 0 -or $pp -eq $p) {{ Invoke-EvoFlowTaskKill $lp; break }}; \
+                        $p=$pp \
+                    }} \
+                }} \
+            }}"
+        );
         let mut cmd = Command::new("powershell");
-        cmd.args([
-            "-NoProfile",
-            "-Command",
-            &format!(
-                "Get-NetTCPConnection -LocalPort {port} -State Listen -ErrorAction SilentlyContinue | ForEach-Object {{ Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }}"
-            ),
-        ]);
+        cmd.args(["-NoProfile", "-WindowStyle", "Hidden", "-NonInteractive", "-Command", &script]);
         const CREATE_NO_WINDOW: u32 = 0x08000000;
         cmd.creation_flags(CREATE_NO_WINDOW);
         let _ = cmd.output();
@@ -1553,6 +1580,7 @@ pub fn get_profile_info() -> serde_json::Value {
     let runtime_path = runtime_state_path();
     let home = super::runtime_data_dir();
     let base_url = resolved_gateway_base_url();
+    let external = env_gateway_base_url().is_some();
     json!({
         "profileId": id,
         "profileDir": profile_path.to_string_lossy().to_string(),
@@ -1560,6 +1588,9 @@ pub fn get_profile_info() -> serde_json::Value {
         "evoflowHome": home.to_string_lossy().to_string(),
         "expectedPort": port,
         "resolvedBaseUrl": base_url,
+        // EVOFLOW_GATEWAY_URL set → operator owns uvicorn; guardian must not
+        // pretend reload_gateway restarts it (that only resets warm latch).
+        "externalGateway": external,
     })
 }
 

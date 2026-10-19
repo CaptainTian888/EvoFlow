@@ -1,4 +1,4 @@
-import {
+            import {
   memo,
   useRef,
   useEffect,
@@ -13,6 +13,7 @@ import {
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { resolveMessageRowIsStreaming, shouldDropEmptyStreamPlaceholder } from '../lib/message-row-streaming.js'
 import { markRecentlyStreamed, clearRecentlyStreamed } from '../lib/recently-streamed-runids.js'
+import { attachScrollbarReveal } from '../lib/scrollbar-reveal.js'
 import { MessageRow } from './MessageRow.js'
 import { TurnNavigatorRail } from './TurnNavigatorRail.js'
 import { EvoFlowHomeDashboard } from './EvoFlowHomeDashboard.js'
@@ -38,6 +39,20 @@ import {
   isFoldInducedScrollAway,
 } from '../lib/fold-induced-scroll-away.js'
 import { useStreamSnapshotSeq } from '../lib/stream-snapshot-store.js'
+import {
+  streamPerfBeginDelta,
+  streamPerfEndDelta,
+  streamPerfTime,
+  streamPerfCountRender,
+  streamPerfSetVisibleRows,
+  streamPerfNoteContext,
+  streamPerfEnabled,
+  installStreamPerfGlobal,
+} from '../lib/stream-perf-trace.js'
+import {
+  estimateStreamBumpScore,
+  resolveStreamBumpMinIntervalMs,
+} from '../lib/stream-bump-interval.js'
 
 /**
  * AI 回复流式贴底时，在真正底部上方留一点余量，让最新内容「吸附」在底部偏上，
@@ -69,7 +84,15 @@ type SharedHistoryProps = {
   toolApprovalUiDisabled: boolean
   suppressPlanExecPromptNoise: boolean
   hideSubagentInnerTools: boolean
-  onOpenFile?: (rawUrl: string, name?: string) => void
+  onOpenFile?: (
+    rawUrl: string,
+    name?: string,
+    opts?: {
+      line?: number
+      endLine?: number
+      annotation?: { title?: string; body?: string; priority?: number }
+    },
+  ) => void
   onOpenKnowledgeMap?: () => void
   onToolApproval?: (
     action: 'approve' | 'approve_all' | 'deny' | 'grant_all' | 'approve_remember',
@@ -91,25 +114,32 @@ type SharedHistoryProps = {
   assistantAgent?: import('../lib/agent-avatar.js').AgentAvatarAgent | null
 }
 
-type HistoryMessageRowProps = SharedHistoryProps & {
+type HistoryMessageRowProps = Omit<SharedHistoryProps, 'isSending' | 'streamContinuedRowIndex'> & {
+  /** 流式气泡单独钉在列表外时，历史里的最后一条助手不再算「最后一轮」 */
+  liveTurnSeparate?: boolean
   item: HistoryItem
+  /** 续流合并后的 row；仅传给续流目标行，避免击穿其余行 memo */
+  continuedRow?: DisplayRow | null
   historyIndex: number
   className: string
   style?: CSSProperties
   measureRef?: (node: HTMLDivElement | null) => void
   measureIndex?: number
+  /** 父层预算：该行是否为当前流式续写行。非流式行恒 false，不随 isSending 变化 → memo 不被击穿 */
+  isContinuedStream: boolean
 }
 
 // resolveShowToolTiming removed (unused)
 
+
 const HistoryMessageRow = memo(function HistoryMessageRow({
   item,
+  continuedRow,
   historyIndex,
   sessionKey,
   toolApprovalHost,
   streamToolApprovalHost,
-  streamContinuedRowIndex,
-  isSending,
+  isContinuedStream,
   toolApprovalUiDisabled,
   suppressPlanExecPromptNoise,
   hideSubagentInnerTools,
@@ -125,17 +155,16 @@ const HistoryMessageRow = memo(function HistoryMessageRow({
   onFork,
   assistantAgentLabel,
   assistantAgent,
+  lastAssistantRowIndex,
+  liveTurnSeparate = false,
   className,
   style,
   measureRef,
   measureIndex,
 }: HistoryMessageRowProps) {
+  streamPerfCountRender()
   const sk = String(sessionKey || 'default')
-  const isContinuedStream = resolveMessageRowIsStreaming(
-    item.i,
-    streamContinuedRowIndex,
-    isSending,
-  )
+  const effectiveItem = continuedRow ? { ...item, row: continuedRow } : item
   const approvalHost = isContinuedStream ? streamToolApprovalHost : toolApprovalHost
   return (
     <div
@@ -146,11 +175,11 @@ const HistoryMessageRow = memo(function HistoryMessageRow({
       style={style}
     >
       <MemoMessageRow
-        row={item.row}
+        row={effectiveItem.row}
         isStreaming={isContinuedStream}
         // v5.10：threadBusy（齿轮兜底源）只给「当前活跃行」（续流合并目标），
         // 其余历史行恒 false —— 否则线程忙时每条旧 AI 回复都会挂一个齿轮。
-        threadBusy={item.i === streamContinuedRowIndex ? isSending : false}
+        threadBusy={isContinuedStream}
         showToolTiming
         onOpenFile={onOpenFile}
         onOpenKnowledgeMap={onOpenKnowledgeMap}
@@ -159,8 +188,8 @@ const HistoryMessageRow = memo(function HistoryMessageRow({
         interactiveToolApproval={
           toolApprovalUiDisabled
             ? false
-            : toolApprovalInteractiveForItem(approvalHost, item, {
-                continuedStreamRowIndex: streamContinuedRowIndex,
+            : toolApprovalInteractiveForItem(approvalHost, effectiveItem, {
+                continuedStreamRowIndex: isContinuedStream ? effectiveItem.i : -1,
               })
         }
         suppressPlanExecPromptNoise={suppressPlanExecPromptNoise}
@@ -168,6 +197,11 @@ const HistoryMessageRow = memo(function HistoryMessageRow({
         sessionKey={sk}
         liveActivityDockLabel={isContinuedStream ? liveActivityDockLabel : undefined}
         liveTurnElapsedSec={isContinuedStream ? liveTurnElapsedSec : undefined}
+        isLatestTurn={
+          !liveTurnSeparate &&
+          (effectiveItem.row.role === 'assistant' || effectiveItem.row.role === '_stream') &&
+          effectiveItem.i === lastAssistantRowIndex
+        }
         onCopy={onCopy}
         onRetry={onRetry}
         onEdit={onEdit}
@@ -177,26 +211,39 @@ const HistoryMessageRow = memo(function HistoryMessageRow({
       />
     </div>
   )
+
 })
 
 /** 普通文档流：浏览器原生滚动，读历史最稳 */
 const FlatHistoryBody = memo(function FlatHistoryBody(
-  props: SharedHistoryProps & { historyItems: HistoryItem[] },
+  props: SharedHistoryProps & { historyItems: HistoryItem[]; streamContinuedRow?: DisplayRow | null },
 ) {
-  const { historyItems, liveActivityDockLabel, liveTurnElapsedSec, ...rowProps } = props
+
+  const {
+    historyItems,
+    streamContinuedRow,
+    liveActivityDockLabel,
+    liveTurnElapsedSec,
+    isSending,
+    streamContinuedRowIndex,
+    ...rowProps
+  } = props
   const sk = String(props.sessionKey || 'default')
+
+
   return (
     <div className="react-vlist-inner react-vlist-inner--flat">
       {historyItems.map((item, historyIndex) => {
         const isContinuedStream = resolveMessageRowIsStreaming(
           item.i,
-          rowProps.streamContinuedRowIndex,
-          rowProps.isSending,
+          streamContinuedRowIndex,
+          isSending,
         )
         return (
           <HistoryMessageRow
             key={historyItemStableKey(sk, item.row, item.i)}
             item={item}
+            continuedRow={historyIndex === streamContinuedRowIndex ? streamContinuedRow : undefined}
             historyIndex={historyIndex}
             className={
               item.row.role === 'user'
@@ -204,6 +251,8 @@ const FlatHistoryBody = memo(function FlatHistoryBody(
                 : 'react-vlist-item react-vlist-item--turn'
             }
             {...rowProps}
+            isContinuedStream={isContinuedStream}
+            liveTurnSeparate={isSending && streamContinuedRowIndex < 0}
             // 仅流式续写行接收 dock 计时，避免每秒计时击穿其余行 memo
             liveActivityDockLabel={isContinuedStream ? liveActivityDockLabel : undefined}
             liveTurnElapsedSec={isContinuedStream ? liveTurnElapsedSec : undefined}
@@ -215,9 +264,30 @@ const FlatHistoryBody = memo(function FlatHistoryBody(
 })
 
 /** 仅极长会话才用虚拟列表 */
+/**
+ * 虚拟行 style 对象缓存：按 vRow.start（像素偏移）复用同一引用。
+ * 原内联 style={{...}} 每条 delta 创建新对象 → HistoryMessageRow memo 浅比较
+ * 引用不等 → 所有可见行重渲染（10-15 行 × computeAssistantBodyBundle ≈ 10ms/delta）。
+ * 缓存后 start 不变的行 memo 命中，只有位置真变的行重渲染。
+ */
+const vRowStyleCache = new Map<number, React.CSSProperties>()
+function getVRowStyle(start: number): React.CSSProperties {
+  let s = vRowStyleCache.get(start)
+  if (!s) {
+    s = { position: 'absolute', top: 0, left: 0, width: '100%', transform: `translateY(${start}px)` }
+    vRowStyleCache.set(start, s)
+    if (vRowStyleCache.size > 500) {
+      const firstKey = vRowStyleCache.keys().next().value
+      if (firstKey != null) vRowStyleCache.delete(firstKey)
+    }
+  }
+  return s
+}
+
 const VirtualHistoryBody = memo(function VirtualHistoryBody(
   props: SharedHistoryProps & {
     historyItems: HistoryItem[]
+    streamContinuedRow?: DisplayRow | null
     parentRef: RefObject<HTMLDivElement | null>
     autoFollowRef: MutableRefObject<boolean>
     holdHistoryScrollRef: MutableRefObject<boolean>
@@ -231,10 +301,14 @@ const VirtualHistoryBody = memo(function VirtualHistoryBody(
     virtualScrollToOffsetRef: MutableRefObject<((offset: number) => void) | null>
     /** RUN_FINISHED 后的贴底跟随窗口（47986170）：由 MessageVirtualList 声明并下传 */
     postStreamFollowUntilRef?: MutableRefObject<number>
+    /** 流式活跃状态 ref：流式中 autoFollow=true 时禁用校正，避免 reasoning 折叠/工具出现
+     *  高度突变时校正与 RO syncScrollToBottom 贴底竞速导致"到底一下再回去" */
+    streamActiveRef?: MutableRefObject<boolean>
   },
 ) {
   const {
     historyItems,
+    streamContinuedRow,
     parentRef,
     autoFollowRef,
     holdHistoryScrollRef,
@@ -244,6 +318,7 @@ const VirtualHistoryBody = memo(function VirtualHistoryBody(
     virtualScrollToIndexRef,
     virtualScrollToOffsetRef,
     postStreamFollowUntilRef,
+    streamActiveRef,
     ...rowProps
   } = props
   const sk = String(rowProps.sessionKey || 'default')
@@ -279,8 +354,8 @@ const VirtualHistoryBody = memo(function VirtualHistoryBody(
       }
       return 100
     },
-    // 6->3：降低滚动窗口外常驻行数（配合 markdown LRU 缓存，重挂成本已可控）
-    overscan: 3,
+    // 5->8：快速滚动时给测高/渲染更多缓冲，减少 totalSize 跳变频率 → 缓解 thumb 跳动
+    overscan: 8,
     getItemKey: (index) => getRowKey(index),
   })
 
@@ -291,19 +366,24 @@ const VirtualHistoryBody = memo(function VirtualHistoryBody(
       if (holdHistoryScrollRef.current) return true
       // 用户手势中改 scrollTop 会与手指/滚轮抢位置 → 卡顿抖动
       if (Date.now() - lastUserScrollAtRef.current < 160) return false
-      // 整回合刚封存（RUN_FINISHED 后 grace 窗口内）：无视 readingHistoryRef，
-      // 否则「整段从 1 段膨胀到 30 段」时 virtualizer 调正 scrollTop 把视口推回
-      // 用户当时的位置（如果用户碰过滚轮 → 视口被推回顶部 → 「页面跳到顶」）。
-      // 修法：postStreamFollowUntilRef 仍有效时强制走 autoFollow 路径，
-      // streamEnded 分支会在下一帧清掉 userScrolledAway + readingHistory 锁，
-      // 配合 schedulePostStreamScrollToBottom 把视口钉回底。
-      // （47986170 曾直接引用外层 MessageVirtualList 的 ref —— 本组件作用域里
-      //   不存在，运行时 ReferenceError 让整个测高校正失效；现由父级下传。）
+      // 整回合刚封存（RUN_FINISHED 后 grace 窗口内）：无视 readingHistoryRef。
+      // autoFollow=true（贴底意图）时禁用校正：postStream 期间 AI 消息高度常减小
+      // （reasoning/tool 折叠、cursor 消失），virtualizer 校正在 item 变瘦时会把
+      // scrollTop 减小以保持视口 item 位置 → 视口上移跳到上方用户消息块；且校正
+      // （RO 回调）可能晚于贴底 rAF，把 scrollTop 又拉回中间无人纠正 → 卡住。
+      // 贴底改由 RO settlingPostStream(pinPostStreamBottomFrame) + schedulePostStreamScrollToBottom
+      // 独占，对高度增/减一致。autoFollow=false（用户上滚读历史）时仍校正保持位置。
+      // （47986170 曾直接引用外层 ref —— 本组件作用域里不存在，运行时 ReferenceError
+      //   让测高校正失效；现由父级下传。原修法返回 autoFollow 靠校正对"增高=贴底"的
+      //   副作用，但对"变瘦=上移"有害，故反向。）
       if (postStreamFollowUntilRef && Date.now() <= postStreamFollowUntilRef.current) {
-        return autoFollowRef.current
+        return !autoFollowRef.current
       }
       // 读历史且手势已停：允许测高校正，避免滚到一半卡住
       if (readingHistoryRef.current) return true
+      // 流式中贴底由 RO syncScrollToBottom 独占：禁用校正，避免 reasoning 折叠/工具出现
+      // 高度突变时校正与贴底竞速导致"到底一下再回去"
+      if (streamActiveRef?.current && autoFollowRef.current) return false
       return autoFollowRef.current
     }
     const scrollToHistoryIndex = (index: number, align: 'start' | 'end') => {
@@ -336,18 +416,24 @@ const VirtualHistoryBody = memo(function VirtualHistoryBody(
         const item = historyItems[vRow.index]
         if (!item) return null
         const isUser = item.row.role === 'user'
+        const isContinuedStream = resolveMessageRowIsStreaming(
+          item.i,
+          rowProps.streamContinuedRowIndex,
+          rowProps.isSending,
+        )
         return (
           <HistoryMessageRow
             key={vRow.key}
             item={item}
+            continuedRow={vRow.index === rowProps.streamContinuedRowIndex ? streamContinuedRow : undefined}
             historyIndex={vRow.index}
             sessionKey={rowProps.sessionKey}
             historyLoading={rowProps.historyLoading}
             toolApprovalHost={rowProps.toolApprovalHost}
             streamToolApprovalHost={rowProps.streamToolApprovalHost}
-            streamContinuedRowIndex={rowProps.streamContinuedRowIndex}
-            isSending={rowProps.isSending}
+            isContinuedStream={isContinuedStream}
             lastAssistantRowIndex={rowProps.lastAssistantRowIndex}
+            liveTurnSeparate={rowProps.isSending && rowProps.streamContinuedRowIndex < 0}
             liveTurnAssistantRunId={rowProps.liveTurnAssistantRunId}
             liveTurnTimingActive={rowProps.liveTurnTimingActive}
             executionToolTiming={rowProps.executionToolTiming}
@@ -361,20 +447,12 @@ const VirtualHistoryBody = memo(function VirtualHistoryBody(
             onToolApproval={rowProps.onToolApproval}
             toolApprovalBusy={rowProps.toolApprovalBusy}
             liveActivityDockLabel={
-              resolveMessageRowIsStreaming(
-                item.i,
-                rowProps.streamContinuedRowIndex,
-                rowProps.isSending,
-              )
+              isContinuedStream
                 ? rowProps.liveActivityDockLabel
                 : undefined
             }
             liveTurnElapsedSec={
-              resolveMessageRowIsStreaming(
-                item.i,
-                rowProps.streamContinuedRowIndex,
-                rowProps.isSending,
-              )
+              isContinuedStream
                 ? rowProps.liveTurnElapsedSec
                 : undefined
             }
@@ -391,13 +469,7 @@ const VirtualHistoryBody = memo(function VirtualHistoryBody(
             }
             measureRef={virtualizer.measureElement}
             measureIndex={vRow.index}
-            style={{
-              position: 'absolute',
-              top: 0,
-              left: 0,
-              width: '100%',
-              transform: `translateY(${vRow.start}px)`,
-            }}
+            style={getVRowStyle(vRow.start)}
           />
         )
       })}
@@ -408,6 +480,7 @@ const VirtualHistoryBody = memo(function VirtualHistoryBody(
 const HistoryBody = memo(function HistoryBody(
   props: SharedHistoryProps & {
     historyItems: HistoryItem[]
+    streamContinuedRow?: DisplayRow | null
     parentRef: RefObject<HTMLDivElement | null>
     autoFollowRef: MutableRefObject<boolean>
     holdHistoryScrollRef: MutableRefObject<boolean>
@@ -421,10 +494,13 @@ const HistoryBody = memo(function HistoryBody(
     showApprovalPauseHint: boolean
     /** RUN_FINISHED 后的贴底跟随窗口，透传给 VirtualHistoryBody */
     postStreamFollowUntilRef?: MutableRefObject<number>
+    /** 流式活跃状态 ref，透传给 VirtualHistoryBody */
+    streamActiveRef?: MutableRefObject<boolean>
   },
 ) {
   const {
     historyItems,
+    streamContinuedRow,
     parentRef,
     autoFollowRef,
     holdHistoryScrollRef,
@@ -435,6 +511,7 @@ const HistoryBody = memo(function HistoryBody(
     virtualScrollToOffsetRef,
     showApprovalPauseHint,
     postStreamFollowUntilRef,
+    streamActiveRef,
     ...rowProps
   } = props
   const useFlat = historyItems.length <= HISTORY_FLAT_LIST_MAX_ROWS
@@ -447,10 +524,11 @@ const HistoryBody = memo(function HistoryBody(
         </div>
       ) : null}
       {useFlat ? (
-        <FlatHistoryBody historyItems={historyItems} {...rowProps} />
+        <FlatHistoryBody historyItems={historyItems} streamContinuedRow={streamContinuedRow} {...rowProps} />
       ) : (
         <VirtualHistoryBody
           historyItems={historyItems}
+          streamContinuedRow={streamContinuedRow}
           parentRef={parentRef}
           autoFollowRef={autoFollowRef}
           holdHistoryScrollRef={holdHistoryScrollRef}
@@ -460,6 +538,7 @@ const HistoryBody = memo(function HistoryBody(
           virtualScrollToIndexRef={virtualScrollToIndexRef}
           virtualScrollToOffsetRef={virtualScrollToOffsetRef}
           postStreamFollowUntilRef={postStreamFollowUntilRef}
+          streamActiveRef={streamActiveRef}
           {...rowProps}
         />
       )}
@@ -641,7 +720,15 @@ export const MessageVirtualList = memo(function MessageVirtualList({
   toolApprovalUiDisabled?: boolean
   suppressStreamFiles?: boolean
   hideSubagentInnerTools?: boolean
-  onOpenFile?: (rawUrl: string, name?: string) => void
+  onOpenFile?: (
+    rawUrl: string,
+    name?: string,
+    opts?: {
+      line?: number
+      endLine?: number
+      annotation?: { title?: string; body?: string; priority?: number }
+    },
+  ) => void
   onOpenKnowledgeMap?: () => void
   recentArtifacts?: ChatArtifact[]
   onOpenArtifact?: (item: ChatArtifact) => void
@@ -735,9 +822,13 @@ export const MessageVirtualList = memo(function MessageVirtualList({
   const userScrolledAwayDuringStreamRef = useRef(false)
   if (prevLayoutKeyRef.current !== layoutKey) {
     prevLayoutKeyRef.current = layoutKey
-    autoFollowRef.current = false
-    userScrolledAwayDuringStreamRef.current = false
-    postSendScrollAnchorRef.current = false
+    // 流式中打开右栏（文件/终端）只改宽度：勿清贴底 follow，否则测高与贴底失步会整栏跳动。
+    const streamingNow = isSending || streamLive || resumeStreamHoldActive
+    if (!streamingNow) {
+      autoFollowRef.current = false
+      userScrolledAwayDuringStreamRef.current = false
+      postSendScrollAnchorRef.current = false
+    }
     cancelPendingScrollRaf(rafScheduledRef)
   }
   const onViewReadyRef = useRef(onViewReady)
@@ -817,6 +908,14 @@ export const MessageVirtualList = memo(function MessageVirtualList({
    * 这里会收到通知并重算 streamRow，保证每个 delta 都能触发重新渲染。
    */
   const streamSnapshotSeq = useStreamSnapshotSeq(sessionKeyForSend)
+  streamPerfBeginDelta(streamSnapshotSeq)
+  useLayoutEffect(() => {
+
+    streamPerfEndDelta()
+  })
+  useEffect(() => {
+    installStreamPerfGlobal()
+  }, [])
   if (lastSessionKeyForSendRef.current !== sessionKeyForSend) {
     lastSessionKeyForSendRef.current = sessionKeyForSend
     lastSendScrollTailRef.current = ''
@@ -899,7 +998,7 @@ export const MessageVirtualList = memo(function MessageVirtualList({
       lastStreamRowRef.current = null
       return null
     }
-    const built = buildStreamDisplayRow(
+    const built = streamPerfTime('buildRow', () => buildStreamDisplayRow(
       streamRef.current,
       liveTurnTokenStr,
       suppressStreamFiles,
@@ -912,7 +1011,7 @@ export const MessageVirtualList = memo(function MessageVirtualList({
       streamActive,
       streamPriorTurnStrip,
       sessionKeyForSend,
-    )
+    ))
     if (built) {
       const last = continuationTargetRow || rows[rows.length - 1]
       const emptyPlaceholder =
@@ -985,6 +1084,8 @@ export const MessageVirtualList = memo(function MessageVirtualList({
 
   // ★ 性能优化：拆分 baseHistoryItems 与流式合并，使流式 tick 期间非末行 item 引用保持稳定，
   // 避免所有 HistoryMessageRow 因 item prop 引用变化而打破 memo。
+  // 逐行比较 row 引用：只有 row 真变的行才创建新 item，其余行复用旧 item → memo 命中。
+  const baseHistoryItemsRef = useRef<HistoryItem[]>([])
   const baseHistoryItems = useMemo((): HistoryItem[] => {
     const ink = inlineSubagentTasks || {}
     const rawLast = rows[rows.length - 1]
@@ -992,21 +1093,52 @@ export const MessageVirtualList = memo(function MessageVirtualList({
     if (rawLast?.role === 'assistant' && Object.keys(ink).length > 0) {
       displayRows = [...rows.slice(0, -1), { ...rawLast, subagentTasks: { ...ink } }]
     }
-    return displayRows.map((row, i) => ({ kind: 'row' as const, row, i }))
+    const prev = baseHistoryItemsRef.current
+    const next: HistoryItem[] = new Array(displayRows.length)
+    for (let i = 0; i < displayRows.length; i++) {
+      const row = displayRows[i]
+      const prevItem = prev[i]
+      if (prevItem && prevItem.row === row && prevItem.i === i) {
+        next[i] = prevItem
+      } else {
+        next[i] = { kind: 'row' as const, row, i }
+      }
+    }
+    baseHistoryItemsRef.current = next
+    return next
   }, [rows, inlineSubagentTasks])
 
-  const historyItems = useMemo((): HistoryItem[] => {
-    if (!streamContinuesAssistant || !streamRow || continuationTargetIndex < 0) {
-      return baseHistoryItems
-    }
+  const streamContinuedRow = useMemo(() => {
+    if (!streamContinuesAssistant || !streamRow || continuationTargetIndex < 0) return null
     const last = baseHistoryItems[continuationTargetIndex]
-    if (last?.row.role !== 'assistant') return baseHistoryItems
-    return [
-      ...baseHistoryItems.slice(0, continuationTargetIndex),
-      { ...last, row: mergeAssistantRowWithStreamRow(last.row, streamRow) },
-      ...baseHistoryItems.slice(continuationTargetIndex + 1),
-    ]
+    if (last?.row.role !== 'assistant') return null
+    return mergeAssistantRowWithStreamRow(last.row, streamRow)
   }, [baseHistoryItems, streamContinuesAssistant, streamRow, continuationTargetIndex])
+
+  const historyItems = baseHistoryItems
+  streamPerfSetVisibleRows(historyItems.length)
+  if (streamPerfEnabled()) {
+    const live = streamRef.current
+    const segs = streamRow?.segments
+    let reasoningChars = String(streamRow?.reasoningPreview || '').length
+    let textChars = String(streamRow?.text || '').length
+    if (Array.isArray(segs)) {
+      for (const seg of segs) {
+        if (seg?.kind === 'reasoning') reasoningChars += String(seg.text || '').length
+        else if (seg?.kind === 'text') textChars += String(seg.text || '').length
+      }
+    }
+    streamPerfNoteContext({
+      historyRows: historyItems.length,
+      reasoningChars,
+      textChars,
+      toolCount: Array.isArray(streamRow?.tools) ? streamRow.tools.length : live?.turn?.tools?.length || 0,
+      segmentCount: Array.isArray(segs) ? segs.length : 0,
+      bumpScore: estimateStreamBumpScore(live),
+      bumpIntervalMs: resolveStreamBumpMinIntervalMs(live),
+      streamActive,
+    })
+  }
 
   const streamContinuedRowIndex =
     streamContinuesAssistant && streamRow ? continuationTargetIndex : -1
@@ -1019,30 +1151,34 @@ export const MessageVirtualList = memo(function MessageVirtualList({
   const sessionKeyRef = useRef(sessionKey)
   sessionKeyRef.current = sessionKey
 
-  const historyToolApprovalHost = useMemo(
-    () =>
-      resolveToolApprovalHost({
-        rows,
-        streamTools: undefined,
-        isSending: false,
-      }),
-    [rows],
-  )
+  const historyToolApprovalHostRef = useRef<ReturnType<typeof resolveToolApprovalHost> | null>(null)
+  const historyToolApprovalHost = useMemo(() => {
+    const next = resolveToolApprovalHost({ rows, streamTools: undefined, isSending: false })
+    const prev = historyToolApprovalHostRef.current
+    if (prev && prev.kind === next.kind && (prev as { index?: number }).index === (next as { index?: number }).index) {
+      return prev
+    }
+    historyToolApprovalHostRef.current = next
+    return next
+  }, [rows])
 
   // ★ 性能修复：原依赖含 streamDisplayTick，流式期间每 80-200ms 重算生成新对象引用，
   // 通过 SharedHistoryProps 传给所有 HistoryMessageRow 导致 memo 全部失效 → N 条消息每秒
   // 重渲染 5-12 次。改为依赖 streamRef.current?.turn.tools 实际快照引用：只有工具数组
   // 引用变化时才重算，文本 delta 期间保持稳定。
+  // ★ 引用稳定化：resolveToolApprovalHost 每次返回新对象，即使结果等价也会击穿全行 memo。
+  // 用 ref 缓存：kind + index 不变时复用旧引用。
   const streamToolsRaw = streamRef.current?.turn.tools as unknown[] | undefined
-  const streamToolApprovalHost = useMemo(
-    () =>
-      resolveToolApprovalHost({
-        rows,
-        streamTools: streamToolsRaw,
-        isSending,
-      }),
-    [rows, streamToolsRaw, isSending],
-  )
+  const streamToolApprovalHostRef = useRef<ReturnType<typeof resolveToolApprovalHost> | null>(null)
+  const streamToolApprovalHost = useMemo(() => {
+    const next = resolveToolApprovalHost({ rows, streamTools: streamToolsRaw, isSending })
+    const prev = streamToolApprovalHostRef.current
+    if (prev && prev.kind === next.kind && (prev as { index?: number }).index === (next as { index?: number }).index) {
+      return prev
+    }
+    streamToolApprovalHostRef.current = next
+    return next
+  }, [rows, streamToolsRaw, isSending])
 
   const showApprovalPauseHint =
     !toolApprovalUiDisabled && historyToolApprovalHost.kind !== 'none' && !isSending
@@ -1459,9 +1595,13 @@ export const MessageVirtualList = memo(function MessageVirtualList({
   }, [syncScrollJumpButtons])
 
   /** ZCode 对齐：回合导航条 —— 用户问题刻度（≥2 才显示，<864px 宽由 CSS 隐藏） */
+  // deps 用 baseHistoryItems（流式期间稳定）而非 historyItems：turnNavTurns 只取
+  // user 行，user 行来自历史落库，与 streamRow（_stream/assistant 续流合并）无关。
+  // 原依赖 historyItems 时，每条 delta 因 streamRow 浅拷贝换新引用 → O(rows) forEach
+  // 重算，N 轮后 20Hz×N 次/秒遍历 → 累积型卡顿。
   const turnNavTurns = useMemo(() => {
     const turns: Array<{ rowIndex: number; preview: string }> = []
-    historyItems.forEach((item, index) => {
+    baseHistoryItems.forEach((item, index) => {
       if (item.row.role !== 'user') return
       if (isHiddenToolApprovalUserMessage(item.row)) return
       turns.push({
@@ -1470,7 +1610,7 @@ export const MessageVirtualList = memo(function MessageVirtualList({
       })
     })
     return turns
-  }, [historyItems])
+  }, [baseHistoryItems])
   const turnNavTurnsRef = useRef(turnNavTurns)
   turnNavTurnsRef.current = turnNavTurns
   const [activeNavIndex, setActiveNavIndex] = useState(-1)
@@ -1793,6 +1933,30 @@ export const MessageVirtualList = memo(function MessageVirtualList({
     const el = parentRef.current
     if (!el || !hasContent || !viewReady) return
 
+    // ★ 滚动性能：nav active index 计算含 querySelectorAll + getBoundingClientRect 遍历
+    //   （O(visibleRows) 同步布局查询），每次 scroll 都跑会强制 reflow 卡住滚动。
+    //   改为 rAF 批处理（一帧只算一次）+ scrollTop 阈值节流（小幅滚动不重算）。
+    let navActiveRafId = 0
+    let navActiveLastScrollTop = -1
+    const NAV_ACTIVE_RECOMPUTE_THRESHOLD = 48
+    const scheduleNavActiveUpdate = (scrollTop: number) => {
+      const navTurns = turnNavTurnsRef.current
+      if (navTurns.length < 2) return
+      if (navActiveRafId) return
+      if (Math.abs(scrollTop - navActiveLastScrollTop) < NAV_ACTIVE_RECOMPUTE_THRESHOLD) return
+      navActiveRafId = requestAnimationFrame(() => {
+        navActiveRafId = 0
+        navActiveLastScrollTop = el.scrollTop
+        const anchor = findAnchorHistoryIndexInViewport(contentRef.current, el)
+        let navActive = 0
+        for (let i = 0; i < navTurns.length; i += 1) {
+          if (navTurns[i].rowIndex <= anchor.index) navActive = i
+          else break
+        }
+        setActiveNavIndex((prev) => (prev === navActive ? prev : navActive))
+      })
+    }
+
     const onScroll = () => {
       const st = el.scrollTop
       const sh = el.scrollHeight
@@ -1806,17 +1970,8 @@ export const MessageVirtualList = memo(function MessageVirtualList({
       })
       setShowScrollTopBtn((prev) => (prev === showTop ? prev : showTop))
       setShowScrollBottomBtn((prev) => (prev === showBottom ? prev : showBottom))
-      // ZCode 对齐：当前回合刻度 = 视口顶可见行所归属的用户问题
-      const navTurns = turnNavTurnsRef.current
-      if (navTurns.length >= 2) {
-        const anchor = findAnchorHistoryIndexInViewport(contentRef.current, el)
-        let navActive = 0
-        for (let i = 0; i < navTurns.length; i += 1) {
-          if (navTurns[i].rowIndex <= anchor.index) navActive = i
-          else break
-        }
-        setActiveNavIndex((prev) => (prev === navActive ? prev : navActive))
-      }
+      // ZCode 对齐：当前回合刻度 = 视口顶可见行所归属的用户问题（rAF 批处理 + 阈值节流）
+      scheduleNavActiveUpdate(st)
       const inPrefetchZone = shouldPrefetchOlderHistory(el)
       if (!inPrefetchZone) {
         wasInOlderPrefetchZoneRef.current = false
@@ -1930,6 +2085,7 @@ export const MessageVirtualList = memo(function MessageVirtualList({
     return () => {
       el.removeEventListener('scroll', onScroll)
       el.removeEventListener('wheel', onWheel)
+      if (navActiveRafId) cancelAnimationFrame(navActiveRafId)
     }
   }, [sessionKey, hasContent, viewReady, markUserScrollAway])
 
@@ -1996,6 +2152,8 @@ export const MessageVirtualList = memo(function MessageVirtualList({
         return
       }
       if (!autoFollowRef.current) return
+      // ★ 用户手势中不抢 scrollTop（RO 与滚轮/触摸竞速会导致抖动）
+      if (Date.now() - lastUserScrollAtRef.current < 160) return
       syncScrollToBottom()
     })
     ro.observe(content)
@@ -2104,6 +2262,14 @@ export const MessageVirtualList = memo(function MessageVirtualList({
     pinPostStreamBottomFrame()
   }, [rows, viewReady, historyLoading, hasContent, pinPostStreamBottomFrame])
 
+  // 滚动条平时隐藏，鼠标靠近右缘或滚动时短暂显示（macOS overlay 风格，样式见 react-chat.css）
+  useEffect(() => {
+    const el = parentRef.current
+    if (!el) return
+    // 主滚动器仅在 hasContent && !historyLoading 分支挂载，依赖翻转后重挂
+    return attachScrollbarReveal(el, 'react-vlist-scroller--sb-show')
+  }, [hasContent, historyLoading, viewReady])
+
   if (!hasContent) {
     if (historyLoading) {
       return (
@@ -2197,6 +2363,7 @@ export const MessageVirtualList = memo(function MessageVirtualList({
       >
         <HistoryBody
           historyItems={historyItems}
+          streamContinuedRow={streamContinuedRow}
           parentRef={parentRef}
           autoFollowRef={autoFollowRef}
           holdHistoryScrollRef={holdHistoryScrollRef}
@@ -2206,6 +2373,7 @@ export const MessageVirtualList = memo(function MessageVirtualList({
           virtualScrollToIndexRef={virtualScrollToIndexRef}
           virtualScrollToOffsetRef={virtualScrollToOffsetRef}
           postStreamFollowUntilRef={postStreamFollowUntilRef}
+          streamActiveRef={streamActiveRef}
           sessionKey={sessionKey}
           historyLoading={historyLoading}
           toolApprovalHost={historyToolApprovalHost}
@@ -2241,6 +2409,7 @@ export const MessageVirtualList = memo(function MessageVirtualList({
               row={streamRow}
               isStreaming
               threadBusy={streamActive}
+              isLatestTurn
               liveActivityDockLabel={liveActivityDockLabel}
               liveTurnElapsedSec={liveTurnElapsedSec}
               showToolTiming

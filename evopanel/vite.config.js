@@ -81,7 +81,7 @@ export default defineConfig(({ mode }) => {
     String(fileEnv.EVOFLOW_VITE_PORT || process.env.EVOFLOW_VITE_PORT || '').trim(),
     10,
   )
-  const viteDevPort = Number.isFinite(_evoVitePort) && _evoVitePort > 0 ? _evoVitePort : 1421
+  const viteDevPort = Number.isFinite(_evoVitePort) && _evoVitePort > 0 ? _evoVitePort : 1521
   const viteStrictPort = Number.isFinite(_evoVitePort) && _evoVitePort > 0
   // Tauri dev health-check on Windows: bind/check 127.0.0.1 (localhost may resolve to ::1).
   const _evoViteHost = String(fileEnv.EVOFLOW_VITE_HOST || process.env.EVOFLOW_VITE_HOST || '').trim()
@@ -166,6 +166,16 @@ export default defineConfig(({ mode }) => {
         // `@braintree/sanitize-url` ships CJS only; shim re-exports named ESM for Mermaid.
         { find: /^@braintree\/sanitize-url$/, replacement: sanitizeUrlShim },
         { find: 'braintree-sanitize-url-dist', replacement: braintreeSanitizeUrlDist },
+        // fastdom: UMD-only; mermaid 11.17+ uses it but ESM interop breaks in Vite dev.
+        // Map to an empty module to allow mermaid to skip the optional import.
+        {
+          find: /^fastdom$/,
+          replacement: path.resolve(__dirname, 'src/lib/shims/fastdom-stub.mjs'),
+        },
+        {
+          find: 'fastdom/extensions/fastdom-promised',
+          replacement: path.resolve(__dirname, 'src/lib/shims/fastdom-promised-stub.mjs'),
+        },
         // @mermaid-js/parser has broken package.json exports field.
         // Force direct path to avoid resolver failure.
         {
@@ -188,12 +198,22 @@ export default defineConfig(({ mode }) => {
         'react/jsx-runtime',
         '@tanstack/react-virtual',
         'dayjs',
+        // Include mermaid in pre-bundle so alias rewrites for fastdom-promised take effect
+        'mermaid',
       ],
       // Mermaid brings ESM-only deps (e.g. @mermaid-js/parser) that can break esbuild pre-bundle
-      // in some environments (Tauri beforeDevCommand on Windows). Exclude from optimizeDeps and
-      // let Vite handle native ESM in dev.
-      exclude: ['mermaid', '@mermaid-js/parser', 'dompurify'],
+      // in some environments (Tauri beforeDevCommand on Windows). Now we pre-bundle mermaid itself
+      // and exclude only its parser dep.
+      exclude: ['@mermaid-js/parser', 'dompurify'],
       esbuildOptions: {
+        // esbuild scans Mermaid's static import before Vite's resolve.alias plugins run.
+        // Redirect the UMD-only fastdom extension to our ESM-compatible stub during pre-bundling.
+        alias: {
+          'fastdom/extensions/fastdom-promised.js': path.resolve(
+            __dirname,
+            'src/lib/shims/fastdom-promised-stub.mjs',
+          ),
+        },
         // Avoid writing react-dom.js.map etc. into deps_temp_* (common Windows EACCES).
         sourcemap: false,
       },

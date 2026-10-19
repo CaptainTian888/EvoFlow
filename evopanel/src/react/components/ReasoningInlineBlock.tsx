@@ -8,6 +8,7 @@ import {
   reasoningPreviewOneLine,
   reasoningStreamOneLine,
 } from '../lib/reasoning-display-text.js'
+import { streamPerfEnabled, streamPerfNoteReasoningPaint } from '../lib/stream-perf-trace.js'
 import { RunningScanText } from './RunningScanText.js'
 
 export { reasoningPreviewOneLine } from '../lib/reasoning-display-text.js'
@@ -201,11 +202,20 @@ function ReasoningInlineBlockInner({
 
   // 流式思考：单行扫描
   if (isStreamingActive || (inExploring && !collapsible)) {
+    const perfOn = streamPerfEnabled()
+    const t0 = perfOn && typeof performance !== 'undefined' ? performance.now() : 0
     const line = body
       ? isStreamingActive
         ? reasoningStreamOneLine(body)
         : reasoningPreviewOneLine(body)
       : ''
+    const title = waitingOnly ? '' : reasoningPreviewOneLine(body, 280)
+    if (perfOn) {
+      streamPerfNoteReasoningPaint(
+        (typeof performance !== 'undefined' ? performance.now() : 0) - t0,
+        body.length,
+      )
+    }
     return (
       <div
         className={`react-chat-inline-reasoning is-oneline-stream${
@@ -230,7 +240,7 @@ function ReasoningInlineBlockInner({
               className={`react-chat-inline-reasoning-stream-line${
                 isStreamingActive ? ' is-scan-active' : ''
               }`}
-              title={reasoningPreviewOneLine(body, 280)}
+              title={title}
             >
               {isStreamingActive ? (
                 <RunningScanText text={line} maxChars={96} />

@@ -1219,6 +1219,25 @@ CREATE TABLE IF NOT EXISTS evoflow_proactive_roles (
     updated_at TEXT NOT NULL
 , reports_to TEXT NOT NULL DEFAULT '', position_code TEXT NOT NULL DEFAULT '', heartbeat_schedule TEXT NOT NULL DEFAULT '');
 
+CREATE TABLE IF NOT EXISTS evoflow_role_push_bindings (
+    agent_code TEXT PRIMARY KEY,
+    push_enabled INTEGER NOT NULL DEFAULT 1,
+    push_channels TEXT NOT NULL DEFAULT 'feishu',
+    feishu_open_id TEXT NOT NULL DEFAULT '',
+    feishu_chat_id TEXT NOT NULL DEFAULT '',
+    feishu_user_id TEXT NOT NULL DEFAULT '',
+    feishu_target_type TEXT NOT NULL DEFAULT 'open_id',
+    feishu_verified_at TEXT,
+    wecom_bot_id TEXT NOT NULL DEFAULT '',
+    wecom_verified_at TEXT,
+    slack_channel_id TEXT NOT NULL DEFAULT '',
+    slack_verified_at TEXT,
+    email TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (agent_code) REFERENCES evoflow_proactive_roles(agent_code) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS evoflow_sandbox_audit (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             event_type TEXT NOT NULL,

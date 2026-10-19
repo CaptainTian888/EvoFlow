@@ -31,7 +31,7 @@ BASH_AGENT_CONFIG = SubagentConfig(
 </输出格式>
 
 """,
-    tools=["terminal", "read", "write", "replace", "rg", "find"],
+    tools=["bash", "taskoutput", "taskstop", "read", "write", "replace"],
     disallowed_tools=["subagent", "task", "ask_clarification", "scenario", "plan", "supervisor"],
     model="inherit",
     max_turns=500,

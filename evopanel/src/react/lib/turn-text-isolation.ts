@@ -385,7 +385,13 @@ export function stripLoosePriorReasoningEcho(text: string, priorReasoning: strin
   const prefix = String(priorReasoning || '').trim()
   const out = String(text || '')
   if (!prefix || !out) return out
-  if (assistantBodiesLooselySame(out, prefix)) return ''
+  // 「宽松相同→清空」仅在本轮（去空白）不短于上一轮时成立：流式增长中本轮
+  // 常是上一轮 reasoning 的子串（还没写完），assistantBodiesLooselySame 的
+  // cb.includes(ca) 会误判"相同" → 整段清空 → 思考块消失，待内容长过包含
+  // 关系后又重现。短于上一轮时保留原样。
+  const caLen = out.replace(/\s+/g, '').length
+  const cbLen = prefix.replace(/\s+/g, '').length
+  if (caLen >= cbLen && assistantBodiesLooselySame(out, prefix)) return ''
   const on = fixReasoningStreamText(out)
   const pn = fixReasoningStreamText(prefix)
   if (!pn) return out

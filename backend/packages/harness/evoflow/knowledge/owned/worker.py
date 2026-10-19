@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 import threading
+import traceback
 import uuid
 from typing import Any
 
@@ -103,8 +104,14 @@ async def _dispatch(job: dict[str, Any]) -> None:
         else:
             jobs.complete(job["id"], error=f"unknown job type: {jtype}")
     except Exception as exc:
+        tb = traceback.format_exc()
+        last_line = tb.strip().splitlines()[-1] if tb.strip() else str(exc)
+        # Keep the user-facing message first (matches what kb_documents.error_message
+        # stores) and append the last traceback line so the UI can show *where* it
+        # failed without dumping the whole stack into a toast.
+        combined = f"{str(exc)[:1500]}\n[traceback] {last_line}"[:2000]
         logger.exception("owned kb job failed: %s", job.get("id"))
-        jobs.complete(job["id"], error=str(exc))
+        jobs.complete(job["id"], error=combined)
 
 
 async def _loop() -> None:
@@ -127,6 +134,7 @@ async def _loop() -> None:
 
                 def _reconcile() -> int:
                     jobs.reclaim_stale_running()
+                    jobs.purge_failed_orphan_jobs(limit=200)
                     from evoflow.knowledge.owned import service as owned_service
 
                     # Auto path: only pending/processing — never loop forever on failed.

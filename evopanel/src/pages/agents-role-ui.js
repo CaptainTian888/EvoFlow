@@ -280,9 +280,35 @@ function filterRoleEditorTools(tools) {
   return (tools || []).filter((t) => ROLE_EDITOR_CONFIGURABLE_TIERS.has(t.tier || 'optional'))
 }
 
+const ROLE_EDITOR_TOOL_ALIASES = {
+  terminal: 'bash',
+  rg: 'bash',
+  find: 'bash',
+  find_file: 'bash',
+  grep: 'bash',
+  ripgrep: 'bash',
+  process: 'bash',
+  process_start: 'bash',
+  process_kill: 'taskstop',
+  process_log: 'taskoutput',
+  process_wait: 'taskoutput',
+  process_poll: 'taskoutput',
+  Bash: 'bash',
+  TaskOutput: 'taskoutput',
+  TaskStop: 'taskstop',
+}
+
+function canonicalRoleEditorTool(name) {
+  const raw = String(name || '').trim()
+  if (!raw) return ''
+  return ROLE_EDITOR_TOOL_ALIASES[raw] || ROLE_EDITOR_TOOL_ALIASES[raw.toLowerCase()] || raw.toLowerCase()
+}
+
 function intersectRoleEditorToolValues(selectedValues, configurableTools) {
-  const allowed = new Set((configurableTools || []).map((t) => t.value))
-  return (selectedValues || []).filter((v) => allowed.has(v))
+  const allowed = new Set((configurableTools || []).map((t) => canonicalRoleEditorTool(t.value)))
+  return (selectedValues || [])
+    .map((v) => canonicalRoleEditorTool(v))
+    .filter((v) => allowed.has(v))
 }
 
 function isXiaomiFrontDesk(agent) {
@@ -417,7 +443,11 @@ function renderToolCheckRow(t, { checked = false, readonly = false } = {}) {
 }
 
 function renderToolsEditorGrid(tools, selectedValues) {
-  const selected = new Set(selectedValues || [])
+  const selected = new Set((selectedValues || []).map((v) => canonicalRoleEditorTool(v)))
+  if (selected.has('bash')) {
+    selected.add('taskoutput')
+    selected.add('taskstop')
+  }
   const groups = groupRoleEditorToolsByTier(tools)
   if (!groups.length) return '<div class="re-empty">暂无可用工具</div>'
   return groups

@@ -127,15 +127,200 @@ def sanitize_child_process_env(env: dict[str, str]) -> dict[str, str]:
 
 
 def subprocess_hide_window_kwargs() -> dict[str, Any]:
-    """Extra kwargs for ``Popen`` / ``run`` / ``asyncio.create_subprocess_exec`` so child shells do not flash a console on Windows."""
+    """Extra kwargs for ``Popen`` / ``run`` / ``asyncio.create_subprocess_exec`` so child shells do not flash a console on Windows.
+
+    Combines ``CREATE_NO_WINDOW`` with ``STARTUPINFO(SW_HIDE)`` when available.
+    Batch files (``.cmd`` / ``.bat``) still often flash unless wrapped via
+    :func:`wrap_windows_batch_argv` first.
+    """
     if os.name != "nt":
         return {}
+    out: dict[str, Any] = {}
     if _CREATE_NO_WINDOW:
-        return {"creationflags": _CREATE_NO_WINDOW}
-    si = subprocess.STARTUPINFO()
-    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-    si.wShowWindow = 0  # SW_HIDE
-    return {"startupinfo": si}
+        out["creationflags"] = _CREATE_NO_WINDOW
+    try:
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        si.wShowWindow = 0  # SW_HIDE
+        out["startupinfo"] = si
+    except Exception:
+        pass
+    return out
+
+
+def wrap_windows_batch_argv(command: str, args: list[str] | None = None) -> tuple[str, list[str]]:
+    """Rewrite ``*.cmd`` / ``*.bat`` launches through ``cmd.exe /d /c`` so CREATE_NO_WINDOW sticks.
+
+    Direct CreateProcess on a batch file still flashes a console on many Windows builds;
+    launching via ComSpec with CREATE_NO_WINDOW does not.
+    """
+    argv_tail = list(args or [])
+    cmd = str(command or "").strip()
+    if os.name != "nt" or not cmd:
+        return cmd, argv_tail
+    lowered = cmd.lower()
+    if not (lowered.endswith(".cmd") or lowered.endswith(".bat")):
+        return cmd, argv_tail
+    comspec = os.environ.get("ComSpec") or shutil.which("cmd.exe") or "cmd.exe"
+    return comspec, ["/d", "/c", cmd, *argv_tail]
+
+
+def prefer_windows_gui_safe_executable(command: str) -> str:
+    """Prefer ``*.exe`` over ``*.cmd``/``*.bat`` shims when both exist on PATH."""
+    cmd = str(command or "").strip()
+    if os.name != "nt" or not cmd:
+        return cmd
+    try:
+        resolved = shutil.which(cmd) or cmd
+    except OSError:
+        return cmd
+    path = Path(resolved)
+    suffix = path.suffix.lower()
+    if suffix in {".cmd", ".bat"}:
+        exe_sibling = path.with_suffix(".exe")
+        try:
+            if exe_sibling.is_file():
+                return str(exe_sibling)
+        except OSError:
+            pass
+        try:
+            which_exe = shutil.which(f"{path.stem}.exe")
+        except OSError:
+            which_exe = None
+        if which_exe:
+            return which_exe
+    return resolved if resolved else cmd
+
+
+def harden_windows_stdio_argv(
+    command: str, args: list[str] | None = None
+) -> tuple[str, list[str]]:
+    """Make a stdio MCP / plugin argv less likely to flash a console on Windows.
+
+    Order: prefer ``.exe`` shims → rewrite ``npm``/``npx`` via node cli.js when
+    possible → wrap remaining ``.cmd``/``.bat`` through ``cmd.exe /d /c``.
+    """
+    argv_tail = list(args or [])
+    cmd = str(command or "").strip()
+    if os.name != "nt" or not cmd:
+        return cmd, argv_tail
+
+    stem = Path(cmd).stem.lower()
+    if stem in {"npm", "npx"}:
+        node = shutil.which("node") or ""
+        if stem == "npm":
+            prefix = resolve_npm_argv(node)
+            if len(prefix) >= 2:
+                return prefix[0], [*prefix[1:], *argv_tail]
+        if stem == "npx" and node:
+            node_dir = Path(node).resolve().parent
+            for candidate in (
+                node_dir / "node_modules" / "npm" / "bin" / "npx-cli.js",
+                node_dir.parent / "lib" / "node_modules" / "npm" / "bin" / "npx-cli.js",
+            ):
+                try:
+                    if candidate.is_file():
+                        return node, [str(candidate), *argv_tail]
+                except OSError:
+                    continue
+
+    cmd = prefer_windows_gui_safe_executable(cmd)
+    return wrap_windows_batch_argv(cmd, argv_tail)
+
+
+_MCP_STDIO_PATCHED = False
+
+
+def patch_mcp_stdio_no_console_flash() -> bool:
+    """Monkey-patch MCP Windows stdio spawn so console windows do not flash.
+
+    The upstream SDK already tries ``CREATE_NO_WINDOW``, but:
+    1. its ``except Exception`` path retries *without* the flag;
+    2. resolving ``npx``/``npm`` to ``*.cmd`` still flashes on many Windows builds.
+
+    Idempotent; no-op on non-Windows or when ``mcp`` is not installed.
+    """
+    global _MCP_STDIO_PATCHED
+    if os.name != "nt" or _MCP_STDIO_PATCHED:
+        return _MCP_STDIO_PATCHED
+    try:
+        from mcp.os.win32 import utilities as win_util
+    except Exception:
+        return False
+
+    if getattr(win_util, "_evoflow_no_console_flash", False):
+        _MCP_STDIO_PATCHED = True
+        return True
+
+    original_create = win_util.create_windows_process
+    original_get_exe = win_util.get_windows_executable_command
+
+    def _get_windows_executable_command(command: str) -> str:
+        return prefer_windows_gui_safe_executable(original_get_exe(command))
+
+    async def _create_windows_process(
+        command: str,
+        args: list[str],
+        env: dict[str, str] | None = None,
+        errlog: Any = None,
+        cwd: Any = None,
+    ) -> Any:
+        import sys as _sys
+
+        safe_cmd, safe_args = harden_windows_stdio_argv(command, list(args or []))
+        hide = subprocess_hide_window_kwargs()
+        creationflags = int(hide.get("creationflags") or 0)
+        startupinfo = hide.get("startupinfo")
+        stderr = errlog if errlog is not None else _sys.stderr
+        job = win_util._create_job_object()
+        process: Any = None
+
+        try:
+            import anyio
+
+            process = await anyio.open_process(
+                [safe_cmd, *safe_args],
+                env=env,
+                creationflags=creationflags,
+                stderr=stderr,
+                cwd=cwd,
+            )
+        except Exception:
+            # Always keep CREATE_NO_WINDOW — upstream retries without it and flashes.
+            popen_obj = subprocess.Popen(
+                [safe_cmd, *safe_args],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=stderr,
+                env=env,
+                cwd=cwd,
+                bufsize=0,
+                creationflags=creationflags,
+                startupinfo=startupinfo,
+            )
+            process = win_util.FallbackProcess(popen_obj)
+
+        win_util._maybe_assign_process_to_job(process, job)
+        return process
+
+    win_util.get_windows_executable_command = _get_windows_executable_command  # type: ignore[assignment]
+    win_util.create_windows_process = _create_windows_process  # type: ignore[assignment]
+    win_util._evoflow_no_console_flash = True  # type: ignore[attr-defined]
+    # Keep a reference so the originals are not GC'd unexpectedly.
+    win_util._evoflow_original_create_windows_process = original_create  # type: ignore[attr-defined]
+    win_util._evoflow_original_get_windows_executable_command = original_get_exe  # type: ignore[attr-defined]
+
+    # mcp.client.stdio binds these names at import time — patch both modules.
+    try:
+        import mcp.client.stdio as mcp_stdio
+
+        mcp_stdio.get_windows_executable_command = _get_windows_executable_command  # type: ignore[attr-defined]
+        mcp_stdio.create_windows_process = _create_windows_process  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
+    _MCP_STDIO_PATCHED = True
+    return True
 
 
 def resolve_npm_argv(node_path: str | None = None) -> list[str]:

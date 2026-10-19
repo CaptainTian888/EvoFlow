@@ -82,6 +82,18 @@ jobs:
           done
           exit 1
 
+      - name: Fetch official plugins bundle
+        shell: bash
+        env:
+          EVOFLOW_OFFICIAL_PLUGINS_URL: ${{ secrets.EVOFLOW_OFFICIAL_PLUGINS_URL }}
+          EVOFLOW_OFFICIAL_PLUGINS_RELEASE: ${{ vars.EVOFLOW_OFFICIAL_PLUGINS_RELEASE }}
+          EVOFLOW_OFFICIAL_PLUGINS_TOKEN: ${{ secrets.EVOFLOW_OFFICIAL_PLUGINS_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          chmod +x backend/packaging/fetch-official-plugins-bundle.sh
+          bash backend/packaging/fetch-official-plugins-bundle.sh
+
       - name: Pre-flight build validation
         working-directory: backend
         run: uv run python ../scripts/preflight-build-check.py

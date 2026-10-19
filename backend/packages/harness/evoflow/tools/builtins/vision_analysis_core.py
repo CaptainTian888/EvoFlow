@@ -20,6 +20,10 @@ _DEFAULT_USER_PROMPT = "请详细描述这张图片的内容。"
 _VISION_MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024  # 50 MB
 _NATIVE_MAX_EDGE = 1600  # align with EvoPanel composer compress
 _NATIVE_MAX_BYTES = 4 * 1024 * 1024  # cap staged read before resize
+# Budget for images injected into the main model context (aligned with ZCode's
+# prepareForModel maxBase64Bytes): the data URL of an injected image must not
+# exceed this many base64 characters.
+MODEL_INJECT_MAX_BASE64_BYTES = 200 * 1024
 
 
 def _vision_log(event: str, *, source: str = "core", level: int = logging.INFO, **fields: Any) -> None:
@@ -303,13 +307,28 @@ def analyze_image_bytes(
         return {"error": f"视觉分析失败: {e}", "vision_model": vision_model}
 
 
-def prepare_image_bytes_for_native(img_bytes: bytes, mime_type: str) -> tuple[bytes, str]:
-    """Resize/compress for main-model injection (runtime ResizeToFit-style)."""
+def prepare_image_bytes_for_native(
+    img_bytes: bytes, mime_type: str, *, max_base64_bytes: int | None = None
+) -> tuple[bytes, str]:
+    """Resize/compress for main-model injection (runtime ResizeToFit-style).
+
+    With ``max_base64_bytes`` set (budget path, aligned with ZCode's
+    prepareForModel), the output is iteratively re-encoded (quality ladder,
+    then geometric shrink) until its base64 size fits the budget; the budgeted
+    result wins even when it is slightly larger than the raw input, but the
+    raw input wins when both fit.
+    """
     if not img_bytes:
         return img_bytes, mime_type or "application/octet-stream"
     mime = str(mime_type or "application/octet-stream").lower()
     if mime == "image/gif":
         return img_bytes, mime
+
+    def _fits(data: bytes) -> bool:
+        # 预算按 base64 字符数计（对齐 ZCode 的 inline base64 上限）；
+        # 3/4 换算与 ZCode maxRawBytes = floor(maxBase64Bytes*3/4) 一致。
+        return max_base64_bytes is None or (len(data) + 2) // 3 * 4 <= max_base64_bytes
+
     try:
         from io import BytesIO
 
@@ -323,11 +342,21 @@ def prepare_image_bytes_for_native(img_bytes: bytes, mime_type: str) -> tuple[by
                 img = img.resize((max(1, int(w * scale)), max(1, int(h * scale))), Image.Resampling.LANCZOS)
         if img.mode not in ("RGB", "RGBA"):
             img = img.convert("RGB")
-        out = BytesIO()
         out_mime = "image/jpeg"
-        img.save(out, format="JPEG", quality=85, optimize=True)
-        data = out.getvalue()
-        if len(data) <= len(img_bytes):
+        data: bytes | None = None
+        for _ in range(8):
+            for quality in (85, 70, 55, 40):
+                out = BytesIO()
+                img.save(out, format="JPEG", quality=quality, optimize=True)
+                candidate = out.getvalue()
+                if _fits(candidate):
+                    data = candidate
+                    break
+            if data is not None:
+                break
+            shrink_w, shrink_h = img.size
+            img = img.resize((max(1, int(shrink_w * 0.8)), max(1, int(shrink_h * 0.8))), Image.Resampling.LANCZOS)
+        if data is not None and _fits(data) and (len(data) <= len(img_bytes) or not _fits(img_bytes)):
             return data, out_mime
     except Exception:
         pass

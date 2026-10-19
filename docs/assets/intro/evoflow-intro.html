@@ -1,0 +1,1061 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>EvoFlow · 面向长任务的原生 Agent Runtime 与控制平面</title>
+<meta name="description" content="EvoFlow 是 EvovexAI 打造的桌面 Agent 平台：规划、拆解、执行、恢复与交付，多 Agent 协作全程可观测、可干预。" />
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' x2='1' y1='0' y2='1'%3E%3Cstop offset='0' stop-color='%236366f1'/%3E%3Cstop offset='1' stop-color='%2306b6d4'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='32' height='32' rx='8' fill='url(%23g)'/%3E%3Cpath d='M9 21 L9 11 L16 17 L23 11 L23 21' fill='none' stroke='white' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
+<style>
+  :root {
+    --bg: #0b0d12;
+    --bg-soft: #11141b;
+    --surface: rgba(255, 255, 255, 0.04);
+    --surface-2: rgba(255, 255, 255, 0.06);
+    --border: rgba(255, 255, 255, 0.10);
+    --border-strong: rgba(255, 255, 255, 0.18);
+    --text: #e6e9f2;
+    --text-soft: #b6bccd;
+    --text-mute: #8088a0;
+    --primary: #6366f1;
+    --primary-2: #06b6d4;
+    --accent: #a855f7;
+    --good: #10b981;
+    --warn: #f59e0b;
+    --gradient: linear-gradient(135deg, #6366f1 0%, #06b6d4 50%, #a855f7 100%);
+    --gradient-soft: linear-gradient(135deg, rgba(99,102,241,0.15), rgba(6,182,212,0.10), rgba(168,85,247,0.10));
+    --radius: 14px;
+    --radius-sm: 10px;
+    --shadow: 0 10px 40px -10px rgba(0,0,0,0.5);
+    --mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+                 "Hiragino Sans GB", "Microsoft YaHei", Helvetica, Arial, sans-serif;
+    color: var(--text);
+    background: var(--bg);
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+    position: relative;
+  }
+  body::before {
+    content: '';
+    position: fixed; inset: 0;
+    background-image:
+      radial-gradient(circle at 20% 10%, rgba(99,102,241,0.15), transparent 40%),
+      radial-gradient(circle at 80% 80%, rgba(6,182,212,0.12), transparent 40%),
+      radial-gradient(circle at 50% 50%, rgba(168,85,247,0.08), transparent 50%);
+    z-index: -2; pointer-events: none;
+  }
+  body::after {
+    content: '';
+    position: fixed; inset: 0;
+    background-image:
+      linear-gradient(rgba(255,255,255,0.025) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,0.025) 1px, transparent 1px);
+    background-size: 56px 56px;
+    background-position: -1px -1px;
+    mask-image: radial-gradient(ellipse at center, black 30%, transparent 75%);
+    -webkit-mask-image: radial-gradient(ellipse at center, black 30%, transparent 75%);
+    z-index: -1; pointer-events: none;
+  }
+  a { color: inherit; text-decoration: none; }
+  .container { max-width: 1180px; margin: 0 auto; padding: 0 24px; }
+
+  /* Nav */
+  .nav {
+    position: sticky; top: 0; z-index: 100;
+    backdrop-filter: blur(18px) saturate(140%);
+    -webkit-backdrop-filter: blur(18px) saturate(140%);
+    background: rgba(11,13,18,0.7);
+    border-bottom: 1px solid var(--border);
+  }
+  .nav-inner { display: flex; align-items: center; justify-content: space-between; height: 64px; }
+  .brand { display: flex; align-items: center; gap: 12px; font-weight: 700; font-size: 17px; letter-spacing: -0.01em; }
+  .brand-mark {
+    width: 32px; height: 32px; border-radius: 8px;
+    background: var(--gradient);
+    display: grid; place-items: center;
+    box-shadow: 0 6px 24px -4px rgba(99,102,241,0.5);
+  }
+  .brand-mark svg { width: 18px; height: 18px; }
+  .brand small {
+    display: block; font-weight: 500; font-size: 11px;
+    color: var(--text-mute); letter-spacing: 0.05em; text-transform: uppercase;
+  }
+  .nav-links { display: flex; gap: 28px; align-items: center; }
+  .nav-links a { color: var(--text-soft); font-size: 14px; font-weight: 500; transition: color .2s; }
+  .nav-links a:hover { color: var(--text); }
+  .nav-actions { display: flex; gap: 10px; align-items: center; }
+  .lang-switch { display: flex; border: 1px solid var(--border); border-radius: 999px; padding: 3px; background: var(--surface); }
+  .lang-switch button {
+    background: transparent; border: 0; color: var(--text-soft);
+    padding: 5px 12px; border-radius: 999px; font-size: 12px;
+    font-weight: 600; cursor: pointer; transition: all .2s;
+  }
+  .lang-switch button.active {
+    background: linear-gradient(135deg, var(--primary), var(--primary-2));
+    color: white;
+  }
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 9px 16px; border-radius: 10px; font-size: 14px;
+    font-weight: 600; border: 1px solid transparent;
+    transition: all .2s; cursor: pointer; text-decoration: none;
+  }
+  .btn-primary { background: var(--gradient); color: white; box-shadow: 0 8px 24px -8px rgba(99,102,241,0.6); }
+  .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 12px 28px -6px rgba(99,102,241,0.7); }
+  .btn-ghost { background: var(--surface); color: var(--text); border-color: var(--border); }
+  .btn-ghost:hover { background: var(--surface-2); border-color: var(--border-strong); }
+
+  /* Hero */
+  .hero { padding: 96px 0 80px; position: relative; }
+  .eyebrow {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 6px 14px; border-radius: 999px;
+    background: var(--gradient-soft); border: 1px solid var(--border);
+    font-size: 12px; font-weight: 600; color: var(--text-soft);
+    letter-spacing: 0.04em; text-transform: uppercase;
+  }
+  .eyebrow .dot {
+    width: 6px; height: 6px; border-radius: 999px;
+    background: var(--good); box-shadow: 0 0 8px var(--good);
+    animation: pulse 2s infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.6; transform: scale(1.3); }
+  }
+  .hero h1 {
+    margin: 22px 0 18px;
+    font-size: clamp(40px, 6vw, 68px);
+    font-weight: 800; line-height: 1.05; letter-spacing: -0.03em;
+  }
+  .hero h1 .grad {
+    background: var(--gradient);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .hero .lede { max-width: 760px; font-size: clamp(16px, 1.6vw, 19px); color: var(--text-soft); line-height: 1.7; }
+  .hero .cta-row { margin-top: 32px; display: flex; gap: 12px; flex-wrap: wrap; }
+  .hero-meta {
+    margin-top: 48px; display: flex; gap: 28px; flex-wrap: wrap;
+    color: var(--text-mute); font-size: 13px;
+  }
+  .hero-meta span { display: inline-flex; align-items: center; gap: 6px; }
+  .hero-meta svg { width: 14px; height: 14px; color: var(--primary); }
+
+  /* Pure-CSS chat window mock */
+  .hero-grid { margin-top: 72px; display: grid; grid-template-columns: 1fr; gap: 18px; }
+  .chat-mock {
+    border-radius: var(--radius); overflow: hidden;
+    border: 1px solid var(--border); background: var(--bg-soft);
+    box-shadow: var(--shadow); position: relative;
+  }
+  .chat-mock::before {
+    content: ''; position: absolute; inset: -1px; border-radius: var(--radius);
+    padding: 1px; background: var(--gradient);
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+            mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor; mask-composite: exclude;
+    opacity: 0.4; pointer-events: none;
+  }
+  .chat-mock-bar {
+    display: flex; align-items: center; gap: 8px;
+    padding: 10px 14px; border-bottom: 1px solid var(--border);
+    background: rgba(255,255,255,0.02);
+  }
+  .chat-mock-dot { width: 10px; height: 10px; border-radius: 999px; background: var(--surface-2); }
+  .chat-mock-dot.r { background: #ef4444; opacity: 0.5; }
+  .chat-mock-dot.y { background: #eab308; opacity: 0.5; }
+  .chat-mock-dot.g { background: #22c55e; opacity: 0.5; }
+  .chat-mock-title {
+    margin-left: 8px; font-size: 12px; color: var(--text-mute); font-family: var(--mono);
+  }
+  .chat-mock-modes {
+    margin-left: auto; display: inline-flex;
+    border: 1px solid var(--border); border-radius: 999px;
+    padding: 3px; background: var(--surface); gap: 2px;
+  }
+  .chat-mock-modes span { font-size: 11px; padding: 3px 10px; border-radius: 999px; color: var(--text-mute); }
+  .chat-mock-modes span.on {
+    background: linear-gradient(135deg, var(--primary), var(--primary-2));
+    color: white; font-weight: 600;
+  }
+  .chat-mock-body { padding: 26px 28px; display: flex; flex-direction: column; gap: 14px; }
+  .chat-msg {
+    max-width: 86%; padding: 12px 16px; border-radius: 12px;
+    font-size: 14.5px; line-height: 1.55;
+  }
+  .chat-msg.user {
+    align-self: flex-end;
+    background: linear-gradient(135deg, var(--primary), var(--primary-2));
+    color: white; border-bottom-right-radius: 4px;
+  }
+  .chat-msg.bot {
+    align-self: flex-start; background: var(--surface);
+    border: 1px solid var(--border); color: var(--text);
+    border-bottom-left-radius: 4px;
+  }
+  .chat-msg .step {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 13px; color: var(--text-soft); padding: 4px 0;
+  }
+  .chat-msg .step .check {
+    width: 16px; height: 16px; border-radius: 999px;
+    background: var(--good); color: white;
+    display: grid; place-items: center; font-size: 10px;
+    font-weight: 700; flex-shrink: 0;
+  }
+  .chat-msg .step.running .check {
+    background: transparent; border: 1px solid var(--primary-2);
+    animation: spin 1.2s linear infinite; border-top-color: transparent;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .chat-composer {
+    display: flex; align-items: center; gap: 8px;
+    padding: 12px 16px; border-top: 1px solid var(--border);
+    background: rgba(255,255,255,0.02);
+  }
+  .chat-composer .field {
+    flex: 1; padding: 9px 14px; border-radius: 10px;
+    background: var(--surface); border: 1px solid var(--border);
+    font-size: 13.5px; color: var(--text-mute);
+  }
+  .chat-composer .send {
+    width: 36px; height: 36px; border-radius: 10px;
+    background: var(--gradient); display: grid; place-items: center; color: white;
+  }
+  .chat-composer .send svg { width: 16px; height: 16px; }
+
+  /* Sections */
+  section { padding: 72px 0; scroll-margin-top: 80px; }
+  .section-head { margin-bottom: 48px; max-width: 760px; }
+  .section-eyebrow {
+    display: inline-block; font-size: 12px; font-weight: 700;
+    color: var(--primary-2); letter-spacing: 0.12em;
+    text-transform: uppercase; margin-bottom: 12px;
+  }
+  h2 {
+    font-size: clamp(28px, 3.5vw, 40px); font-weight: 700;
+    letter-spacing: -0.02em; line-height: 1.15; margin: 0 0 14px;
+  }
+  h3 { font-size: 18px; font-weight: 700; margin: 0 0 6px; }
+  .section-sub { color: var(--text-soft); font-size: 16px; line-height: 1.65; margin: 0; }
+
+  /* Scenarios */
+  .scenarios { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }
+  .scenario {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 28px;
+    position: relative; overflow: hidden; transition: transform .2s, border-color .2s;
+  }
+  .scenario:hover { transform: translateY(-3px); border-color: var(--border-strong); }
+  .scenario::after {
+    content: ''; position: absolute; top: -40px; right: -40px;
+    width: 160px; height: 160px; background: var(--gradient);
+    filter: blur(80px); opacity: 0.18; pointer-events: none;
+  }
+  .scenario-icon {
+    width: 44px; height: 44px; border-radius: 10px;
+    display: grid; place-items: center;
+    background: var(--gradient-soft); border: 1px solid var(--border);
+    margin-bottom: 18px;
+  }
+  .scenario-icon svg { width: 22px; height: 22px; color: var(--primary-2); }
+  .scenario h3 { font-size: 19px; }
+  .scenario p { color: var(--text-soft); font-size: 14.5px; margin: 6px 0 16px; }
+  .scenario ul { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 10px; font-size: 14px; }
+  .scenario li { display: flex; gap: 10px; align-items: flex-start; color: var(--text-soft); }
+  .scenario li svg { width: 16px; height: 16px; color: var(--good); flex-shrink: 0; margin-top: 4px; }
+
+  /* Capability grid */
+  .cap-grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 16px; }
+  .cap {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 22px;
+    transition: all .2s; position: relative; overflow: hidden;
+  }
+  .cap:hover { border-color: var(--border-strong); background: var(--surface-2); transform: translateY(-2px); }
+  .cap .tag {
+    display: inline-block; font-family: var(--mono); font-size: 11px;
+    color: var(--primary-2); letter-spacing: 0.05em; margin-bottom: 10px;
+  }
+  .cap h3 { font-size: 16px; line-height: 1.4; margin-bottom: 8px; }
+  .cap p { margin: 0; font-size: 13.5px; color: var(--text-soft); line-height: 1.55; }
+  .cap.span-4 { grid-column: span 4; }
+  .cap.span-6 { grid-column: span 6; }
+  .cap.span-8 { grid-column: span 8; }
+  .cap.span-12 { grid-column: span 12; }
+
+  /* Compare table */
+  .compare {
+    overflow-x: auto; border: 1px solid var(--border);
+    border-radius: var(--radius); background: var(--surface);
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; min-width: 720px; }
+  th, td { padding: 14px 18px; text-align: left; border-bottom: 1px solid var(--border); }
+  th { font-weight: 600; color: var(--text-soft); background: var(--bg-soft); font-size: 13px; letter-spacing: 0.02em; }
+  td { color: var(--text-soft); }
+  tbody tr:last-child td { border-bottom: 0; }
+  td:first-child { color: var(--text); font-weight: 600; }
+  td .pill {
+    display: inline-block; padding: 2px 10px; border-radius: 999px;
+    font-size: 11px; font-weight: 600;
+    background: var(--gradient-soft); color: var(--primary-2);
+    border: 1px solid var(--border);
+  }
+
+  /* Quick start */
+  .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; margin-bottom: 32px; }
+  .step {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 24px; position: relative;
+  }
+  .step-num {
+    position: absolute; top: -14px; left: 22px;
+    width: 28px; height: 28px; border-radius: 8px;
+    background: var(--gradient); color: white;
+    font-weight: 700; font-size: 14px;
+    display: grid; place-items: center;
+    box-shadow: 0 4px 12px -2px rgba(99,102,241,0.5);
+  }
+  .step h3 { margin-top: 12px; }
+  .step p { color: var(--text-soft); font-size: 14px; margin: 6px 0 0; }
+  .code {
+    background: var(--bg-soft); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 18px 20px;
+    overflow-x: auto; font-family: var(--mono); font-size: 13px; color: var(--text-soft);
+  }
+  .code .c-comment { color: var(--text-mute); }
+  .code .c-key { color: var(--accent); }
+  .code .c-str { color: var(--good); }
+  .code .c-fn { color: var(--primary-2); }
+
+  /* Architecture */
+  .arch {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 36px; overflow-x: auto;
+  }
+  .arch-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; min-width: 720px; }
+  .arch-col { background: var(--bg-soft); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 22px; }
+  .arch-col h4 {
+    margin: 0 0 14px; font-size: 14px; color: var(--primary-2);
+    letter-spacing: 0.04em; text-transform: uppercase; font-weight: 700;
+  }
+  .arch-col ul { list-style: none; padding: 0; margin: 0; }
+  .arch-col li {
+    display: flex; gap: 10px; align-items: flex-start;
+    padding: 8px 0; border-bottom: 1px dashed var(--border);
+    font-size: 13.5px; color: var(--text-soft);
+  }
+  .arch-col li:last-child { border-bottom: 0; }
+  .arch-col li svg { width: 14px; height: 14px; color: var(--primary); flex-shrink: 0; margin-top: 5px; }
+  .arch-col li b { color: var(--text); font-weight: 600; }
+
+  /* Gallery */
+  .gallery { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+  .gallery figure {
+    margin: 0; background: var(--surface);
+    border: 1px solid var(--border); border-radius: var(--radius);
+    overflow: hidden; transition: transform .2s, border-color .2s;
+  }
+  .gallery figure:hover { transform: translateY(-3px); border-color: var(--border-strong); }
+  .gallery .ph {
+    aspect-ratio: 16 / 10; background: var(--bg-soft);
+    display: grid; place-items: center;
+    color: var(--text-mute); font-size: 12px; overflow: hidden;
+  }
+  .gallery img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .gallery figcaption {
+    padding: 12px 16px; font-size: 13px; color: var(--text-soft);
+    border-top: 1px solid var(--border);
+  }
+  .gallery figcaption b { display: block; color: var(--text); margin-bottom: 2px; font-size: 13.5px; font-weight: 600; }
+
+  /* FAQ */
+  .faq-list { display: flex; flex-direction: column; gap: 12px; }
+  .faq { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 18px 22px; }
+  .faq summary {
+    cursor: pointer; font-weight: 600; color: var(--text);
+    font-size: 15px; list-style: none;
+    display: flex; justify-content: space-between; align-items: center; gap: 12px;
+  }
+  .faq summary::-webkit-details-marker { display: none; }
+  .faq summary::after { content: '+'; font-size: 22px; font-weight: 300; color: var(--primary-2); transition: transform .2s; }
+  .faq[open] summary::after { transform: rotate(45deg); }
+  .faq p { margin: 12px 0 0; color: var(--text-soft); font-size: 14px; line-height: 1.65; }
+
+  /* Footer */
+  footer {
+    padding: 64px 0 40px; border-top: 1px solid var(--border);
+    margin-top: 48px; color: var(--text-mute); font-size: 13px;
+  }
+  .footer-grid { display: grid; grid-template-columns: 2fr 1fr 1fr 1fr; gap: 32px; margin-bottom: 32px; }
+  .footer-grid h5 {
+    margin: 0 0 14px; font-size: 12px; text-transform: uppercase;
+    letter-spacing: 0.08em; color: var(--text); font-weight: 700;
+  }
+  .footer-grid ul { list-style: none; padding: 0; margin: 0; }
+  .footer-grid li { margin-bottom: 8px; }
+  .footer-grid a:hover { color: var(--text); }
+  .footer-bottom {
+    padding-top: 24px; border-top: 1px solid var(--border);
+    display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px;
+  }
+  .footer-brand p { margin: 12px 0 0; color: var(--text-soft); font-size: 13.5px; line-height: 1.6; }
+
+  /* Bilingual toggles */
+  body[data-lang="en"] [data-zh] { display: none; }
+  body[data-lang="zh"] [data-en] { display: none; }
+
+  /* Responsive */
+  @media (max-width: 880px) {
+    .nav-links { display: none; }
+    .scenarios, .steps, .gallery { grid-template-columns: 1fr; }
+    .cap.span-4, .cap.span-6, .cap.span-8 { grid-column: span 12; }
+    .arch-grid { grid-template-columns: 1fr; }
+    .footer-grid { grid-template-columns: 1fr 1fr; }
+    .hero { padding: 64px 0 56px; }
+    section { padding: 56px 0; }
+  }
+  @media (max-width: 540px) {
+    .footer-grid { grid-template-columns: 1fr; }
+    .nav-actions .btn:not(.btn-primary) { display: none; }
+  }
+
+  /* Reveal animation */
+  .reveal { opacity: 0; transform: translateY(18px); transition: opacity .8s ease, transform .8s ease; }
+  .reveal.visible { opacity: 1; transform: none; }
+</style>
+</head>
+<body data-lang="zh">
+
+<!-- NAV -->
+<nav class="nav">
+  <div class="container nav-inner">
+    <a href="#top" class="brand">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 32 32" fill="none">
+          <path d="M9 21 L9 11 L16 17 L23 11 L23 21" stroke="white" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </span>
+      <span>
+        EvoFlow
+        <small data-zh>由 EvovexAI 打造</small>
+        <small data-en>Built by EvovexAI</small>
+      </span>
+    </a>
+
+    <div class="nav-links">
+      <a href="#scenarios" data-zh>主打场景</a>
+      <a href="#scenarios" data-en>Scenarios</a>
+      <a href="#capabilities" data-zh>核心能力</a>
+      <a href="#capabilities" data-en>Capabilities</a>
+      <a href="#architecture" data-zh>架构</a>
+      <a href="#architecture" data-en>Architecture</a>
+      <a href="#quickstart" data-zh>快速开始</a>
+      <a href="#quickstart" data-en>Quick Start</a>
+      <a href="#faq">FAQ</a>
+    </div>
+
+    <div class="nav-actions">
+      <div class="lang-switch" role="tablist" aria-label="Language">
+        <button type="button" data-set-lang="zh" class="active">中</button>
+        <button type="button" data-set-lang="en">EN</button>
+      </div>
+      <a class="btn btn-ghost" href="https://github.com/EvovexAI/EvoFlow" target="_blank" rel="noopener">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 .5C5.7.5.7 5.5.7 11.8c0 5 3.2 9.2 7.7 10.7.6.1.8-.2.8-.6v-2c-3.1.7-3.8-1.3-3.8-1.3-.5-1.3-1.2-1.6-1.2-1.6-1-.7.1-.7.1-.7 1.1.1 1.7 1.2 1.7 1.2 1 1.7 2.6 1.2 3.2.9.1-.7.4-1.2.7-1.5-2.5-.3-5.1-1.3-5.1-5.6 0-1.2.4-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.2 0 0 .9-.3 3.1 1.2.9-.3 1.9-.4 2.8-.4s2 .1 2.8.4c2.2-1.5 3.1-1.2 3.1-1.2.6 1.7.2 2.9.1 3.2.7.8 1.2 1.9 1.2 3.1 0 4.3-2.6 5.3-5.1 5.6.4.3.8 1 .8 2v3c0 .4.2.7.8.6 4.5-1.5 7.7-5.7 7.7-10.7C23.3 5.5 18.3.5 12 .5z"/></svg>
+        GitHub
+      </a>
+      <a class="btn btn-primary" href="https://github.com/EvovexAI/EvoFlow/releases" target="_blank" rel="noopener" data-zh>下载桌面端</a>
+      <a class="btn btn-primary" href="https://github.com/EvovexAI/EvoFlow/releases" target="_blank" rel="noopener" data-en>Download</a>
+    </div>
+  </div>
+</nav>
+
+<!-- HERO -->
+<header class="hero" id="top">
+  <div class="container">
+    <span class="eyebrow">
+      <span class="dot"></span>
+      <span data-zh>面向长任务的原生 Agent Runtime · 控制平面</span>
+      <span data-en>Native Agent Runtime &amp; Control Plane for Long Tasks</span>
+    </span>
+
+    <h1>
+      <span data-zh>把多步的事<span class="grad">真正做完</span><br/>而不是聊几句就散场</span>
+      <span data-en>Actually <span class="grad">finish</span> multi-step work,<br/>instead of just chatting about it</span>
+    </h1>
+
+    <p class="lede">
+      <span data-zh>EvoFlow 是由 <b>EvovexAI</b> 打造的桌面 Agent 平台。它先澄清与规划，再在隔离上下文中执行工具与沙箱作业，失败可恢复，过程可验收。控制平面覆盖对话、Plan、Goal、任务中心、工作流、岗位值班与可观测性——多 Agent 协作全程可见、可干预。</span>
+      <span data-en>EvoFlow, built by <b>EvovexAI</b>, is a desktop Agent platform. It clarifies and plans first, then executes tools and sandboxed work in isolated context with recovery and review. The control plane covers chat, Plan, Goal, task center, workflows, on-duty posts, and observability — collaborative Agent Teams end-to-end.</span>
+    </p>
+
+    <div class="cta-row">
+      <a class="btn btn-primary" href="https://github.com/EvovexAI/EvoFlow/releases" target="_blank" rel="noopener">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12m0 0l-4-4m4 4l4-4M5 21h14"/></svg>
+        <span data-zh>下载桌面端</span>
+        <span data-en>Download Desktop</span>
+      </a>
+      <a class="btn btn-ghost" href="https://www.evovexai.com/docs/chat/evopanel" target="_blank" rel="noopener">
+        <span data-zh>阅读文档 →</span>
+        <span data-en>Read the docs →</span>
+      </a>
+      <a class="btn btn-ghost" href="https://github.com/EvovexAI/EvoFlow" target="_blank" rel="noopener">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 .5C5.7.5.7 5.5.7 11.8c0 5 3.2 9.2 7.7 10.7.6.1.8-.2.8-.6v-2c-3.1.7-3.8-1.3-3.8-1.3-.5-1.3-1.2-1.6-1.2-1.6-1-.7.1-.7.1-.7 1.1.1 1.7 1.2 1.7 1.2 1 1.7 2.6 1.2 3.2.9.1-.7.4-1.2.7-1.5-2.5-.3-5.1-1.3-5.1-5.6 0-1.2.4-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.2 0 0 .9-.3 3.1 1.2.9-.3 1.9-.4 2.8-.4s2 .1 2.8.4c2.2-1.5 3.1-1.2 3.1-1.2.6 1.7.2 2.9.1 3.2.7.8 1.2 1.9 1.2 3.1 0 4.3-2.6 5.3-5.1 5.6.4.3.8 1 .8 2v3c0 .4.2.7.8.6 4.5-1.5 7.7-5.7 7.7-10.7C23.3 5.5 18.3.5 12 .5z"/></svg>
+        GitHub
+      </a>
+    </div>
+
+    <div class="hero-meta">
+      <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>
+        <span data-zh>Windows · macOS · Linux 桌面端</span>
+        <span data-en>Windows · macOS · Linux desktop</span>
+      </span>
+      <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+        <span data-zh>LangGraph · MCP · SKILL.md</span>
+        <span data-en>LangGraph · MCP · SKILL.md</span>
+      </span>
+      <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-12V5l-8 3-8-3v5c0 8 8 12 8 12z"/></svg>
+        <span data-zh>沙箱隔离 · 关键审批 · 费用观测</span>
+        <span data-en>Sandbox · Approval gates · Cost ledger</span>
+      </span>
+      <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 010 18M12 3a14 14 0 000 18"/></svg>
+        <span data-zh>飞书 · 微信 · Slack · Telegram</span>
+        <span data-en>Feishu · WeCom · Slack · Telegram</span>
+      </span>
+    </div>
+
+    <!-- Hero showcase: pure CSS mock, no screenshot dependency -->
+    <div class="hero-grid">
+      <div class="chat-mock" role="img" aria-label="EvoFlow 对话界面示意">
+        <div class="chat-mock-bar">
+          <span class="chat-mock-dot r"></span>
+          <span class="chat-mock-dot y"></span>
+          <span class="chat-mock-dot g"></span>
+          <span class="chat-mock-title" data-zh>evoflow · 主对话</span>
+          <span class="chat-mock-title" data-en">evoflow · main chat</span>
+          <div class="chat-mock-modes">
+            <span>Ask</span>
+            <span>Agent</span>
+            <span class="on">Plan</span>
+            <span>Goal</span>
+          </div>
+        </div>
+        <div class="chat-mock-body">
+          <div class="chat-msg user" data-zh>帮我把飞书渠道的消息格式化模块拆成独立文件，补单测，跑通过才算完。</div>
+          <div class="chat-msg user" data-en>Refactor the Feishu message-format module into its own files, add unit tests, only finish when tests pass.</div>
+
+          <div class="chat-msg bot">
+            <div class="step">
+              <span class="check">✓</span>
+              <span data-zh>澄清意图 · 已确认目标与边界</span>
+              <span data-en>Clarified intent · goal &amp; scope locked</span>
+            </div>
+            <div class="step running">
+              <span class="check"></span>
+              <span data-zh>规划方案 · Supervisor 拆出 5 个子任务</span>
+              <span data-en>Planning · Supervisor split 5 subtasks</span>
+            </div>
+            <div class="step">
+              <span class="check" style="opacity:.25">·</span>
+              <span style="color:var(--text-mute)" data-zh>执行 · 等待沙箱就绪</span>
+              <span style="color:var(--text-mute)" data-en>Execute · waiting on sandbox</span>
+            </div>
+            <div class="step">
+              <span class="check" style="opacity:.25">·</span>
+              <span style="color:var(--text-mute)" data-zh>验收 · 跑测试与人工把关</span>
+              <span style="color:var(--text-mute)" data-en>Verify · tests + human gate</span>
+            </div>
+          </div>
+        </div>
+        <div class="chat-composer">
+          <div class="field" data-zh>补一句要求 / 选个工具…</div>
+          <div class="field" data-en">Add a constraint or pick a tool…</div>
+          <div class="send" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l14-7-7 14-2-5-5-2z"/></svg>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</header>
+
+<!-- ONE-LINER -->
+<section style="padding-top:32px">
+  <div class="container">
+    <div class="section-head reveal">
+      <span class="section-eyebrow" data-zh>为什么是 EvoFlow</span>
+      <span class="section-eyebrow" data-en>Why EvoFlow</span>
+      <h2 data-zh>多数 AI 工具擅长聊几句或写一段代码。EvoFlow 要解决的是——把一件多步的事做完，并且可规划、可审批、可观测、可沉淀、可再跑。</h2>
+      <h2 data-en>Most AI tools are great at chatting or writing a snippet. EvoFlow tackles a different problem — finish a multi-step task with planning, approval, observability, compounding memory, and re-runnability.</h2>
+    </div>
+
+    <div class="cap-grid">
+      <div class="cap span-4 reveal">
+        <span class="tag">CHAT × PLAN × GOAL</span>
+        <h3 data-zh>对话壳分四档行为</h3>
+        <h3 data-en>Four-mode chat shell</h3>
+        <p data-zh>Ask 快速问答、Agent 新建、Plan 先对齐再开工、Goal 长任务后台自驱——一行话切档，控制 AI 干多少。</p>
+        <p data-en>Ask for Q&amp;A, Agent for action, Plan to align first, Goal for long-running background work — one line switches AI behavior.</p>
+      </div>
+      <div class="cap span-4 reveal">
+        <span class="tag">SUPERVISOR</span>
+        <h3 data-zh>超级总控拆任务</h3>
+        <h3 data-en>Supervisor decomposes</h3>
+        <p data-zh>澄清意图 → 出方案 → 拆成 DAG 子任务 → 按能力画像分发到子 Agent；异常局部重编排，进度全局可观测。</p>
+        <p data-en>Clarify → plan → split into a DAG of subtasks → dispatch by capability profile; locally re-plan on failure, observable end-to-end.</p>
+      </div>
+      <div class="cap span-4 reveal">
+        <span class="tag">SANDBOX</span>
+        <h3 data-zh>沙箱里真执行</h3>
+        <h3 data-en>Real work in sandboxes</h3>
+        <p data-zh>本地 / Docker / 可选 K8s 三种隔离执行面，文件操作、命令、命令链可放心交给 Agent；默认权限 + 审计。</p>
+        <p data-en>Local / Docker / optional K8s isolation — files and shell commands run for real with default permissions and audit logs.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- SCENARIOS -->
+<section id="scenarios">
+  <div class="container">
+    <div class="section-head reveal">
+      <span class="section-eyebrow" data-zh>两条主打场景</span>
+      <span class="section-eyebrow" data-en>Two flagship scenarios</span>
+      <h2 data-zh>先把这两类用法记住，剩下的能力都从这里延伸</h2>
+      <h2 data-en>Start with these two — everything else extends from here</h2>
+      <p class="section-sub" data-zh>固定流程产品化、多员工组织协作加闸门——这两件事对应 EvoFlow 的两条产品主线。</p>
+      <p class="section-sub" data-en>Productize recurring flows; let multi-agent teams collaborate with human gates. These are EvoFlow's two flagship tracks.</p>
+    </div>
+
+    <div class="scenarios">
+      <div class="scenario reveal">
+        <div class="scenario-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+        </div>
+        <h3 data-zh>个人固定业务工作流</h3>
+        <h3 data-en>Recurring personal workflows</h3>
+        <p data-zh>同一套多节点流程反复跑，只换参数。</p>
+        <p data-en>Same multi-node flow, only the parameters change.</p>
+        <ul>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>
+            <span data-zh"><b>应用中心</b>画布编排 → 发布 → 填参再跑</span>
+            <span data-en"><b>App Center</b>: canvas → publish → fill params and rerun</span>
+          </li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>
+            <span data-zh"><b>自动化</b>：到点触发，可推飞书/钉钉/Slack</span>
+            <span data-en"><b>Automation</b>: schedule it, push to Feishu / DingTalk / Slack</span>
+          </li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>
+            <span data-zh">过程进<b>任务中心</b>：看板、DAG、验收</span>
+            <span data-en">Runs land in the <b>Task Center</b>: board, DAG, review</span>
+          </li>
+        </ul>
+      </div>
+
+      <div class="scenario reveal">
+        <div class="scenario-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg>
+        </div>
+        <h3 data-zh>组织协作 · 多 Agent 加闸门</h3>
+        <h3 data-en>Multi-agent teams with gates</h3>
+        <p data-zh>多个岗位并行，关键环节人把关。</p>
+        <p data-en>Multiple roles in parallel; humans gate the critical moments.</p>
+        <ul>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>
+            <span data-zh"><b>智能体</b>配人设、工具、技能、MCP</span>
+            <span data-en"><b>Agents</b>: persona, tools, skills, MCP</span>
+          </li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>
+            <span data-zh"><b>智能体员工</b>值班、职责、关键审批、汇报</span>
+            <span data-en"><b>Smart employees</b>: on-duty, duties, key approvals, reports</span>
+          </li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>
+            <span data-zh">小V 临时委派，不必改岗位职责</span>
+            <span data-en">XiaoV for ad-hoc dispatch without role edits</span>
+          </li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- CAPABILITIES -->
+<section id="capabilities">
+  <div class="container">
+    <div class="section-head reveal">
+      <span class="section-eyebrow" data-zh>核心能力</span>
+      <span class="section-eyebrow" data-en>Capabilities</span>
+      <h2 data-zh>八块能力，按控制平面入口展开</h2>
+      <h2 data-en>Eight building blocks, organized by control-plane entry</h2>
+      <p class="section-sub" data-zh>它们是 EvoFlow 的一等公民——不是边角配置。下面是按「你点哪里、得到什么」组织的能力地图。</p>
+      <p class="section-sub" data-en">These are first-class citizens — not buried config. Below is the capability map organized by what you click and what you get.</p>
+    </div>
+
+    <div class="cap-grid">
+      <div class="cap span-6 reveal">
+        <span class="tag">01 · DO THE WORK</span>
+        <h3 data-zh>把事做完：Plan · Goal · Teams · 任务中心</h3>
+        <h3 data-en>Finish the work: Plan · Goal · Teams · Task Center</h3>
+        <p data-zh>Plan 先澄清、出可修订计划再动手；Goal 让长任务后台自驱；Agent Teams / 项目团队多 Agent 隔离上下文、委派与重试；任务中心看板 + 验收——执行层可见、可打回。</p>
+        <p data-en>Plan first, revise, then execute. Goal runs long tasks in the background. Agent Teams isolate context per agent. Task Center shows boards and review.</p>
+      </div>
+
+      <div class="cap span-6 reveal">
+        <span class="tag">02 · PRODUCTIZE FLOWS</span>
+        <h3 data-zh>固定业务：应用中心 · 自动化</h3>
+        <h3 data-en>Productize recurring work: App Center · Automation</h3>
+        <p data-zh>应用中心画布编排多节点工作流 → 发布 → 填参再跑；自动化按 Cron 或一次性触发固定 Prompt，可推 IM。一次配好，长期生效。</p>
+        <p data-en>Compose multi-node flows in the canvas → publish → run with parameters. Schedule with cron or one-shot and push to IM. Set once, run many.</p>
+      </div>
+
+      <div class="cap span-6 reveal">
+        <span class="tag">03 · ORG SHAPE</span>
+        <h3 data-zh>组织形态：智能体 · 智能体员工 · 小V</h3>
+        <h3 data-en>Org shape: Agents · Employees · XiaoV</h3>
+        <p data-zh>智能体定义「会什么」（人设 / 工具 / 技能 / MCP）；智能体员工定义「何时干、谁放行」（值班 / 职责 / 关键审批 / 汇报）；小V 前台临时委派，不必改岗位合同。</p>
+        <p data-en>Agents define 'what they can do'. Smart employees define 'when they work and who approves'. XiaoV handles ad-hoc dispatch without role edits.</p>
+      </div>
+
+      <div class="cap span-6 reveal">
+        <span class="tag">04 · WORKSPACE</span>
+        <h3 data-zh>工程上下文：工作空间 · 代码索引</h3>
+        <h3 data-en>Engineering context: Workspace · Code index</h3>
+        <p data-zh>工作空间绑定本地项目目录、侧栏分组、读写边界；代码索引产出导入 / 引用 / 类型图谱，Agent 用 <code>search_code_index</code> 检索——不只是全文搜。</p>
+        <p data-en>Workspaces bind local projects with read/write boundaries. The code index exposes import / reference / type graphs; agents query via <code>search_code_index</code>.</p>
+      </div>
+
+      <div class="cap span-6 reveal">
+        <span class="tag">05 · SELF-EVOLUTION</span>
+        <h3 data-zh>自我进化：资产中心</h3>
+        <h3 data-en>Self-evolution: Asset Center</h3>
+        <p data-zh>画像 / 记忆跨会话记得偏好与约定；经验沉淀把「怎么做」固化下来；反思过程形成可回顾的进化轨迹。对话里直接说「记住 / 沉淀 / 反思」就能存。</p>
+        <p data-en>Profile / memory carry preferences across sessions. Experience capture freezes 'how to do this'. Reflection journals form an evolvable trail. Say 'remember / capture / reflect' in chat to persist.</p>
+      </div>
+
+      <div class="cap span-6 reveal">
+        <span class="tag">06 · GOVERNANCE</span>
+        <h3 data-zh>治理套件：多账号 · 费用 · 观测 · 安全</h3>
+        <h3 data-en>Governance: Accounts · Cost · Observability · Security</h3>
+        <p data-zh>多账号 / ACL / 企业 SSO；Token 与费用账本按日 / 模型拆分；运维观测覆盖会话 / 工具 / 模型 / Gateway 热点；安全中心管沙箱、默认权限、终端策略、审计。</p>
+        <p data-en>Multi-account with ACL and SSO. Token / cost ledger per day and model. Observability covers sessions, tools, models, gateway. Security Center handles sandbox defaults and audit.</p>
+      </div>
+
+      <div class="cap span-12 reveal">
+        <span class="tag">07 · EXTENSIBILITY</span>
+        <h3 data-zh>扩展与触达：资源市场 · 技能 · MCP · IM · 多模型</h3>
+        <h3 data-en>Extensions &amp; reach: Marketplace · Skills · MCP · IM · Multi-model</h3>
+        <p data-zh>资源中心与资源市场安装资源包与Agent应用；<code>SKILL.md</code> 技能包 + MCP（stdio / SSE / HTTP）连接任意外部服务；飞书 / 微信 / Slack / Telegram 等 IM 与桌面同线程心智；设置里配服务商与主模型，开箱改。</p>
+        <p data-en>Install resource packs from the marketplace. <code>SKILL.md</code> skills plus MCP (stdio / SSE / HTTP) connect any external service. Feishu / WeCom / Slack / Telegram share the same thread model as the desktop. Switch providers and primary model in Settings.</p>
+      </div>
+
+      <div class="cap span-12 reveal" style="background:linear-gradient(135deg, rgba(99,102,241,0.08), rgba(6,182,212,0.05));">
+        <span class="tag">08 · FOUNDATION</span>
+        <h3 data-zh>底座：Supervisor · 子代理 · 沙箱 · 记忆中间件 · 工具渐进暴露</h3>
+        <h3 data-en>Foundation: Supervisor · Subagents · Sandbox · Memory middleware · Progressive tool exposure</h3>
+        <p data-zh">这一层不常被当成「全部」来讲，但少了它上面八块都跑不起来——它保证所有一等公民能力<b>真能跑</b>。对外叙事优先级：<b>Plan→验收、工作流、员工审批、自我进化、治理</b>，而不是「又一个 LangGraph demo」。</p>
+        <p data-en>This layer is rarely the headline, but everything depends on it. We talk about <b>Plan → review, workflows, employee approvals, self-evolution, governance</b> first — not 'yet another LangGraph demo'.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ARCHITECTURE -->
+<section id="architecture">
+  <div class="container">
+    <div class="section-head reveal">
+      <span class="section-eyebrow" data-zh>架构总览</span>
+      <span class="section-eyebrow" data-en>Architecture</span>
+      <h2 data-zh>两层心智：桌面控制平面 + Agent 运行时</h2>
+      <h2 data-en>Two layers: desktop control plane + Agent runtime</h2>
+      <p class="section-sub" data-zh>EvoFlow = Agent Runtime（规划、委派、工具、沙箱、恢复）+ 产品控制平面（对话壳、任务、岗位、工作流、治理、扩展）。</p>
+      <p class="section-sub" data-en">EvoFlow = Agent runtime (plan, dispatch, tools, sandbox, recovery) + product control plane (chat, tasks, roles, workflows, governance, extensions).</p>
+    </div>
+
+    <div class="arch reveal">
+      <div class="arch-grid">
+        <div class="arch-col">
+          <h4 data-zh>控制平面 · Control Plane</h4>
+          <h4 data-en>Control Plane</h4>
+          <ul>
+            <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.4 8.4 0 01-.9 3.8 8.5 8.5 0 01-7.6 4.7 8.4 8.4 0 01-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 01-.9-3.8 8.5 8.5 0 014.7-7.6 8.4 8.4 0 013.8-.9h.5a8.5 8.5 0 018 8v.5z"/></svg>
+              <span><b data-zh>对话壳</b><b data-en>Chat shell</b><span data-zh">：Ask / Agent / Plan / Goal 四种模式</span><span data-en">: Ask / Agent / Plan / Goal modes</span></span>
+            </li>
+            <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18M3 9h18"/></svg>
+              <span><b data-zh>任务中心</b><b data-en>Task Center</b><span data-zh">：多任务看板 / DAG / 总结验收</span><span data-en">: board / DAG / review</span></span>
+            </li>
+            <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+              <span><b data-zh>应用中心</b><b data-en>App Center</b><span data-zh">：多节点工作流画布</span><span data-en">: multi-node flow canvas</span></span>
+            </li>
+            <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+              <span><b data-zh>自动化</b><b data-en>Automation</b><span data-zh">：Cron / 一次性固定 Prompt</span><span data-en">: cron / one-shot</span></span>
+            </li>
+            <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>
+              <span><b data-zh>智能体员工</b><b data-en>Smart employees</b><span data-zh">：值班 / 关键审批 / 汇报</span><span data-en">: duty / approval / report</span></span>
+            </li>
+            <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+              <span><b data-zh>设置中心</b><b data-en>Settings</b><span data-zh">：模型 / IM / 安全 / 多账号 / 资源市场</span><span data-en">: models / IM / security / accounts / marketplace</span></span>
+            </li>
+          </ul>
+        </div>
+        <div class="arch-col">
+          <h4 data-zh>运行时 · Agent Runtime</h4>
+          <h4 data-en>Agent Runtime</h4>
+          <ul>
+            <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="9"/></svg>
+              <span><b>Supervisor</b> <span data-zh">超级总控：澄清 → 拆 DAG → 局部重编排</span><span data-en">clarify → split DAG → locally re-plan</span></span>
+            </li>
+            <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h18M12 3v18"/></svg>
+              <span><b>Subagent Router</b> <span data-zh">：按能力画像分发子任务</span><span data-en">: dispatch by capability profile</span></span>
+            </li>
+            <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-12V5l-8 3-8-3v5c0 8 8 12 8 12z"/></svg>
+              <span><b data-zh">沙箱执行</b><b data-en">Sandbox</b> <span data-zh">：本地 / Docker / 可选 K8s</span><span data-en">: local / Docker / optional K8s</span></span>
+            </li>
+            <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
+              <span><b data-zh">记忆中间件</b><b data-en">Memory middleware</b> <span data-zh">：画像 / 经验 / 反思 / 上下文</span><span data-en">: profile / experience / reflection / context</span></span>
+            </li>
+            <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 9h6v6H9z"/></svg>
+              <span><b data-zh">工具渐进暴露</b><b data-en">Tool exposure</b> <span data-zh">：按场景决定 Agent 看得见什么工具</span><span data-en">: per-scene toolset gating</span></span>
+            </li>
+            <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/></svg>
+              <span><b data-zh">MCP / 技能加载器</b><b data-en">MCP / Skill loader</b> <span data-zh">：stdio / SSE / HTTP + <code>SKILL.md</code></span><span data-en">: stdio / SSE / HTTP + <code>SKILL.md</code></span></span>
+            </li>
+            <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
+              <span><b data-zh">可观测层</b><b data-en">Observability</b> <span data-zh">：会话 / 工具 / 模型 / Gateway 热点</span><span data-en">: sessions / tools / models / gateway</span></span>
+            </li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- QUICK START -->
+<section id="quickstart">
+  <div class="container">
+    <div class="section-head reveal">
+      <span class="section-eyebrow" data-zh>快速开始</span>
+      <span class="section-eyebrow" data-en>Quick start</span>
+      <h2 data-zh>三步上手，长任务用 Goal</h2>
+      <h2 data-en>Three steps; reach for Goal on long work</h2>
+    </div>
+
+    <div class="steps">
+      <div class="step reveal">
+        <span class="step-num">1</span>
+        <h3 data-zh>下载并安装</h3>
+        <h3 data-en>Download &amp; install</h3>
+        <p data-zh>从 Releases 下载桌面安装包（Windows / macOS / Linux），双击装好。</p>
+        <p data-en>Grab the desktop installer from Releases (Windows / macOS / Linux) and install.</p>
+      </div>
+      <div class="step reveal">
+        <span class="step-num">2</span>
+        <h3 data-zh>设置 → 模型</h3>
+        <h3 data-en>Settings → Models</h3>
+        <p data-zh">添加服务商与 API Key，跑一次连通测试，指定主模型。<b>不要</b>把 Key 写进 <code>config.yaml</code>。</p>
+        <p data-en">Add a provider and API key, run the connectivity test, set as primary. <b>Do not</b> paste keys into <code>config.yaml</code>.</p>
+      </div>
+      <div class="step reveal">
+        <span class="step-num">3</span>
+        <h3 data-zh">开始对话</h3>
+        <h3 data-en>Start chatting</h3>
+        <p data-zh">复杂多步用 <b>Plan</b>，长任务后台挂起用 <b>Goal</b>，固定业务去<b>应用中心</b>。</p>
+        <p data-en>Use <b>Plan</b> for multi-step work, <b>Goal</b> for long-running background tasks, and head to the <b>App Center</b> for recurring flows.</p>
+      </div>
+    </div>
+
+    <div class="code reveal">
+<span class="c-comment" data-zh"># 或者从源码运行（开发 / 自托管）</span><span class="c-comment" data-en"># Or run from source (dev / self-host)</span>
+<span class="c-fn">git</span> clone https://github.com/EvovexAI/EvoFlow.git
+<span class="c-fn">cd</span> EvoFlow
+<span class="c-fn">cp</span> config.example.yaml config.yaml   <span class="c-comment" data-zh"># 沙箱 / 工具 / 渠道等；模型在启动后界面配置</span><span class="c-comment" data-en"># sandbox / tools / channels; models via UI</span>
+
+<span class="c-comment" data-zh"># 依赖：Git · Python 3.12+ · Node.js 22+ · uv · pnpm 9+</span><span class="c-comment" data-en"># needs: Git · Python 3.12+ · Node.js 22+ · uv · pnpm 9+</span>
+<span class="c-fn">make</span> check && <span class="c-fn">make</span> install && <span class="c-fn">make</span> dev
+
+<span class="c-comment" data-zh"># Windows: .\scripts\windows\dev-stack-isolated.bat</span><span class="c-comment" data-en"># Windows: .\scripts\windows\dev-stack-isolated.bat</span>
+    </div>
+  </div>
+</section>
+
+<!-- VS OTHERS -->
+<section id="comparison">
+  <div class="container">
+    <div class="section-head reveal">
+      <span class="section-eyebrow" data-zh">生态对照</span>
+      <span class="section-eyebrow" data-en>Where it fits</span>
+      <h2 data-zh">它和「只聊天 / 只写码 / 只编排」差在哪一层</h2>
+      <h2 data-en>How it sits next to chat / code / harness-only tools</h2>
+    </div>
+
+    <div class="compare reveal">
+      <table>
+        <thead>
+          <tr>
+            <th data-zh">项目</th><th data-en">Project</th>
+            <th data-zh">一句话</th><th data-en">One-liner</th>
+            <th data-zh">主打</th><th data-en">Primary</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td data-zh">聊天产品</td><td data-en">Chat tools</td>
+            <td data-zh">问一句答一句，长任务易跑偏</td><td data-en">Q&amp;A; long work drifts off</td>
+            <td><span class="pill" data-zh">轻量问答</span><span class="pill" data-en">Lightweight Q&amp;A</span></td>
+          </tr>
+          <tr>
+            <td data-zh">编码 CLI / IDE Agent</td><td data-en">Coding CLI / IDE agent</td>
+            <td data-zh">改代码、跑命令、沙箱</td><td data-en">Edit, run, sandbox</td>
+            <td><span class="pill" data-zh">写码</span><span class="pill" data-en">Coding</span></td>
+          </tr>
+          <tr>
+            <td data-zh">纯 harness / 网关</td><td data-en">Pure harness / gateway</td>
+            <td data-zh">能编排 Agent，缺桌面控制平面</td><td data-en">Orchestration without a desktop plane</td>
+            <td><span class="pill" data-zh">开发者</span><span class="pill" data-en">Developers</span></td>
+          </tr>
+          <tr>
+            <td><b>EvoFlow</b></td>
+            <td data-zh">桌面控制平面 + Agent Runtime</td><td data-en">Desktop plane + Agent runtime</td>
+            <td><span class="pill" data-zh">长任务 + 多员工 + 治理</span><span class="pill" data-en">Long work + multi-agent + governance</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- FAQ -->
+<section id="faq">
+  <div class="container">
+    <div class="section-head reveal">
+      <span class="section-eyebrow">FAQ</span>
+      <h2 data-zh">关于 EvoFlow 的常见问题</h2>
+      <h2 data-en">Frequently asked</h2>
+    </div>
+
+    <div class="faq-list">
+      <details class="faq reveal">
+        <summary data-zh">EvoFlow 是给开发者用的吗？普通用户能上手吗？</summary>
+        <summary data-en">Is EvoFlow only for developers?</summary>
+        <p data-zh">不是。主战场是「个人与小团队（约 1～30 人）需要把长任务跑完」——研究者、运营、内容创作者、独立开发都常用。开发者用得深是因为它本身可二次开发；非开发者也能在装好后用 Ask / Agent / Plan / Goal 完成多步工作。</p>
+        <p data-en">No. The product is for anyone with multi-step work — researchers, ops, creators, indie devs. Developers go deeper because it's hackable, but non-developers ship multi-step work via Ask / Agent / Plan / Goal.</p>
+      </details>
+
+      <details class="faq reveal">
+        <summary data-zh">和直接用 LangChain / LangGraph 搭一个 Agent 有什么区别？</summary>
+        <summary data-en">How is this different from wiring up LangChain / LangGraph myself?</summary>
+        <p data-zh">LangGraph 是 EvoFlow 的底层之一。你拿 LangGraph 写的是「一段编排」，而 EvoFlow 给的是「整套产品控制平面 + 沙箱 + 任务中心 + 岗位 + 治理 + 桌面 UI」。如果只想写段 demo，LangGraph 够；如果要让它真正在桌面/IM 里跑、跑得久、跑得稳、可观测可治理——EvoFlow 直接给你这套车间。</p>
+        <p data-en">LangGraph is part of EvoFlow's substrate. LangGraph is the orchestration primitive; EvoFlow adds the control plane — sandbox, task center, roles, governance, desktop UI. Use LangGraph for a demo; use EvoFlow when you want it to run, persist, and stay observable in a real product.</p>
+      </details>
+
+      <details class="faq reveal">
+        <summary data-zh">我可以接自己的模型吗？</summary>
+        <summary data-en">Can I bring my own model?</summary>
+        <p data-zh">可以。EvoFlow 在「设置 → 模型」里加服务商与 API Key，主模型随时切；任何 OpenAI 兼容协议都可以接。</p>
+        <p data-en">Yes. Add providers and API keys in Settings → Models. Any OpenAI-compatible endpoint works.</p>
+      </details>
+
+      <details class="faq reveal">
+        <summary data-zh">是不是又一个 DeerFlow 换皮？</summary>
+        <summary data-en">Is this a DeerFlow reskin?</summary>
+        <p data-zh">不是。EvoFlow 早期参考过 DeerFlow 思路与部分代码（已在 NOTICE 中致谢），但产品形态、运行时、控制平面都已系统性重构为独立产品——加上了桌面 EvoPanel、控制平面、岗位、应用中心、治理与 IM 渠道，是面向长任务的产品。</p>
+        <p data-en">No. EvoFlow drew early inspiration from DeerFlow (credited in NOTICE), but the runtime, control plane, and product shape are now an independent rebuild — desktop EvoPanel, on-duty posts, App Center, governance, IM channels.</p>
+      </details>
+
+      <details class="faq reveal">
+        <summary data-zh">授权怎么算？能商用吗？</summary>
+        <summary data-en">What about licensing?</summary>
+        <p data-zh">采用 PolyForm Noncommercial 1.0.0（源码可见，非商业）：个人、学习、研究、非商业使用允许；商业使用需书面授权（cloud@evovexai.com）。这不是 OSI「开源」许可证。</p>
+        <p data-en">PolyForm Noncommercial 1.0.0 (source-available, non-commercial): personal, research, and non-commercial use allowed. Commercial use requires written authorization (cloud@evovexai.com). Not an OSI open-source license.</p>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- FOOTER -->
+<footer>
+  <div class="container">
+    <div class="footer-grid">
+      <div class="footer-brand">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 32 32" fill="none"><path d="M9 21 L9 11 L16 17 L23 11 L23 21" stroke="white" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </span>
+          <span>EvoFlow</span>
+        </div>
+        <p data-zh">面向长任务的原生 Agent Runtime 与控制平面。<br/>Built by EvovexAI · 景银泰 · © 2026</p>
+        <p data-en">A native Agent runtime and control plane for long-running work.<br/>Built by EvovexAI · © 2026</p>
+      </div>
+      <div>
+        <h5 data-zh">产品</h5><h5 data-en">Product</h5>
+        <ul>
+          <li><a href="https://github.com/EvovexAI/EvoFlow/releases" target="_blank" rel="noopener" data-zh">下载桌面端</a><a href="https://github.com/EvovexAI/EvoFlow/releases" target="_blank" rel="noopener" data-en">Download</a></li>
+          <li><a href="https://www.evovexai.com/docs/chat/evopanel" target="_blank" rel="noopener" data-zh">用户文档</a><a href="https://www.evovexai.com/docs/chat/evopanel" target="_blank" rel="noopener" data-en">User docs</a></li>
+          <li><a href="https://github.com/EvovexAI/EvoFlow/discussions" target="_blank" rel="noopener">Discussions</a></li>
+        </ul>
+      </div>
+      <div>
+        <h5 data-zh">开发者</h5><h5 data-en">Developers</h5>
+        <ul>
+          <li><a href="https://github.com/EvovexAI/EvoFlow" target="_blank" rel="noopener">GitHub</a></li>
+          <li><a href="https://github.com/EvovexAI/EvoFlow/blob/main/CONTRIBUTING.md" data-zh">参与贡献</a><a href="https://github.com/EvovexAI/EvoFlow/blob/main/CONTRIBUTING.md" data-en">Contributing</a></li>
+          <li><a href="https://github.com/EvovexAI/EvoFlow/blob/main/docs/contribute/rfc.md">RFC</a></li>
+        </ul>
+      </div>
+      <div>
+        <h5 data-zh">联系</h5><h5 data-en">Contact</h5>
+        <ul>
+          <li><a href="mailto:cloud@evovexai.com">cloud@evovexai.com</a></li>
+          <li><a href="https://www.evovexai.com" target="_blank" rel="noopener">evovexai.com</a></li>
+          <li><a href="https://github.com/EvovexAI/EvoFlow/blob/main/LICENSE" data-zh">许可证</a><a href="https://github.com/EvovexAI/EvoFlow/blob/main/LICENSE" data-en">License</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <span data-zh">本项目独立开发，参考了 LangGraph / LangChain / MCP / Tauri / DeerFlow / Hermes Agent / OpenClaw / OpenAI Codex 等项目的设计思路，并 vendored / 借鉴了 ZCode（Apache-2.0）的部分 UI 与服务代码。</span>
+      <span data-en">An independent product. Design inspired by LangGraph / LangChain / MCP / Tauri / DeerFlow / Hermes Agent / OpenClaw / OpenAI Codex. UI and services partially vendored from ZCode (Apache-2.0). See NOTICE.</span>
+      <span>· <a href="https://github.com/EvovexAI/EvoFlow/blob/main/NOTICE">NOTICE</a></span>
+    </div>
+  </div>
+</footer>
+
+<script>
+  const langBtns = document.querySelectorAll('[data-set-lang]');
+  langBtns.forEach(b => b.addEventListener('click', () => {
+    const lang = b.dataset.setLang;
+    document.body.dataset.lang = lang;
+    document.documentElement.lang = lang === 'en' ? 'en' : 'zh-CN';
+    langBtns.forEach(x => x.classList.toggle('active', x === b));
+  }));
+
+  const io = new IntersectionObserver(entries => {
+    entries.forEach(e => {
+      if (e.isIntersecting) {
+        e.target.classList.add('visible');
+        io.unobserve(e.target);
+      }
+    });
+  }, { threshold: 0.12, rootMargin: '0px 0px -40px 0px' });
+  document.querySelectorAll('.reveal').forEach(el => io.observe(el));
+
+  document.querySelectorAll('a[href^="#"]').forEach(a => {
+    a.addEventListener('click', ev => {
+      const id = a.getAttribute('href').slice(1);
+      if (!id) return;
+      const t = document.getElementById(id);
+      if (t) {
+        ev.preventDefault();
+        const top = t.getBoundingClientRect().top + window.scrollY - 64;
+        window.scrollTo({ top, behavior: 'smooth' });
+      }
+    });
+  });
+</script>
+</body>
+</html>

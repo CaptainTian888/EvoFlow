@@ -4,6 +4,7 @@ export type SessionExecutionRow = {
   sessionKey?: string
   runStatus?: string | null
   currentRunId?: string | null
+  currentTurnEndedAt?: string | null
 }
 
 /** DB 终态 run_status（与 backend session_run_state 对齐；不再写 idle） */

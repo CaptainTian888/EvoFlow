@@ -6,8 +6,8 @@ mod utils;
 mod voice_hotkey;
 
 use commands::{
-    app_server, assistant, backend, boot_cycle, browser_embed, config, gateway, logs, mcp_market,
-    ui_extensions, update, voice_overlay,
+    app_server, assistant, backend, boot_cycle, browser_embed, browser_embed_bridge, config,
+    gateway, logs, mcp_market, ui_extensions, update, voice_overlay,
 };
 /// Windows-only: expose WebView2 CDP commands directly to Python over HTTP invoke.
 #[cfg(target_os = "windows")]
@@ -30,6 +30,7 @@ pub fn run() {
     // that on a separate env like `EVOFLOW_SHARE_WINDOW=1`.
     tauri::Builder::default()
         .manage(browser_embed::BrowserEmbedState::default())
+        .manage(browser_embed_bridge::EmbedBridge::default())
         .manage(std::sync::Arc::new(
             browser_embed::BrowserCdpBroker::default(),
         ))
@@ -41,6 +42,17 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_notification::init())
         .on_window_event(|window, event| {
+            // 仅给还没嵌成子窗口的弹窗兜底。WS_CHILD 跟随父窗口，
+            // 在 Moved 里 SetWindowPos 会重入拖动循环，把整个客户端卡死。
+            if let WindowEvent::Moved(_) | WindowEvent::Resized(_) = event {
+                if window.label() == "main" {
+                    let resized = matches!(event, WindowEvent::Resized(_));
+                    commands::browser_embed::on_main_window_geometry(
+                        &window.app_handle(),
+                        resized,
+                    );
+                }
+            }
             if let WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() != "main" {
                     return;
@@ -116,6 +128,8 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            // 浏览器 embed 看门狗：可见窗口偏离槽位即记 ANOMALY 并吸回（自愈+取证）。
+            commands::browser_embed::start_embed_watchdog(app.handle().clone());
             #[cfg(desktop)]
             {
                 app.handle()
@@ -349,7 +363,10 @@ pub fn run() {
             browser_embed::browser_embed_supported,
             browser_embed::browser_embed_upsert,
             browser_embed::browser_embed_set_bounds,
+            browser_embed::browser_embed_set_zoom,
+            browser_embed::browser_embed_park,
             browser_embed::browser_embed_close,
+            browser_embed_bridge::browser_embed_bridge_response,
         ])
         .build(tauri::generate_context!())
         .expect("启动 Captain Work 失败")

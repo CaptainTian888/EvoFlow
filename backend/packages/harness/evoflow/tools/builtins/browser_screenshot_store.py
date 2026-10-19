@@ -45,12 +45,39 @@ def screenshot_api_path(thread_id: str, screenshot_id: str) -> str:
     return f"/api/threads/{tid}/browser-snapshots/{sid}"
 
 
+_BROWSER_SNAPSHOT_REF_RE = re.compile(
+    r"(?:^|/)api/threads/(?P<tid>[^/?#]+)/browser-snapshots/(?P<sid>[0-9a-f]{12,32})/?$",
+    re.IGNORECASE,
+)
+
+
 def resolve_screenshot_file(thread_id: str, screenshot_id: str) -> Path | None:
     sid = str(screenshot_id or "").strip()
     if not sid or not re.fullmatch(r"[0-9a-f]{12,32}", sid):
         return None
     path = screenshots_dir(thread_id) / f"{sid}.png"
     return path if path.is_file() else None
+
+
+def resolve_browser_snapshot_ref(ref: str) -> Path | None:
+    """Map ``/api/threads/{tid}/browser-snapshots/{sid}`` (or URL ending that way) to the PNG on disk.
+
+    Models often pass the ``image_url`` from screenshot tool results into ``view_image``;
+    that ref is not an absolute filesystem path and must be resolved here.
+    """
+    text = str(ref or "").strip().replace("\\", "/")
+    if not text:
+        return None
+    # Strip query/fragment from full URLs before matching the path tail.
+    if "://" in text:
+        text = text.split("://", 1)[1]
+        slash = text.find("/")
+        text = text[slash:] if slash >= 0 else ""
+    text = text.split("?", 1)[0].split("#", 1)[0]
+    match = _BROWSER_SNAPSHOT_REF_RE.search(text)
+    if not match:
+        return None
+    return resolve_screenshot_file(match.group("tid"), match.group("sid"))
 
 
 def save_screenshot_png(
@@ -103,12 +130,32 @@ def compact_legacy_screenshot_tool_content(content: str, tool_name: str = "") ->
     return "[Screenshot omitted from model context — image is shown in the user UI only. Use browser_snapshot(mode='text') or web_fetch for readable page content.]"
 
 
-def format_screenshot_tool_result(thread_id: str, meta: dict[str, str | int | bool]) -> str:
+def format_screenshot_tool_result(
+    thread_id: str, meta: dict[str, str | int | bool], *, staged_for_model: bool = False
+) -> str:
     """JSON tool result for the model (no base64)."""
     w, h = int(meta.get("width") or 0), int(meta.get("height") or 0)
     dims = f"{w}x{h}px" if w and h else "unknown size"
     fp = "full page" if meta.get("full_page") else "viewport"
-    summary = f"Screenshot captured ({dims}, ~{meta.get('size_kb', 0)}KB, {fp}). The image is shown to the user in the chat UI only and is not included in your context. Use browser_snapshot(mode='text') if you need readable page text."
+    # 图已在 BrowserScreenshotPreview 工具卡上。勿把磁盘路径 / @@…png@@ 写进摘要，
+    # 否则模型会原样抄进回复，前端再拦成 [Image blocked]。
+    no_cite = (
+        " Already shown on the tool card — do not mention the file path, filename, "
+        "or @@...png@@ in your reply. Do NOT call view_image."
+    )
+    if staged_for_model:
+        summary = (
+            f"Screenshot captured ({dims}, ~{meta.get('size_kb', 0)}KB, {fp}). The capture is "
+            f"shown in the chat UI and staged for your next context — you will see the pixels, "
+            f"so verify the visual state from it (dialogs, layout, changes) before acting further."
+            f"{no_cite}"
+        )
+    else:
+        summary = (
+            f"Screenshot captured ({dims}, ~{meta.get('size_kb', 0)}KB, {fp}). The image is "
+            f"shown to the user in the chat UI only and is not included in your context. "
+            f"Use browser_snapshot(mode='text') if you need readable page text.{no_cite}"
+        )
     page_url = str(meta.get("page_url") or "").strip()
     if page_url:
         summary += f" Page URL: {page_url}"
@@ -119,5 +166,6 @@ def format_screenshot_tool_result(thread_id: str, meta: dict[str, str | int | bo
         "image_url": meta["image_url"],
         "page_url": page_url,
         "full_page": bool(meta.get("full_page")),
+        "staged_for_model": bool(staged_for_model),
     }
     return json.dumps(payload, ensure_ascii=False)

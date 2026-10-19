@@ -2,6 +2,7 @@
  * 设置弹窗：近全屏工作区内左分类 + 右嵌入各功能（非全页路由）
  */
 import { navigate } from '../router.js'
+import { beginGlobalOverlay, endGlobalOverlay } from '../lib/browser-embed-overlay.js'
 import { setChatOverlayDefer } from '../lib/chat-overlay-defer.js'
 import { applyModalTauriDragChrome, listenModalEscape } from '../lib/modal-chrome.js'
 
@@ -165,6 +166,7 @@ export function closeSettingsModal(opts = {}) {
   _instance = null
   setChatOverlayDefer('settings', false)
   if (hadInstance) {
+    endGlobalOverlay('settings')
     window.dispatchEvent(new CustomEvent('evopanel:settings-modal-closed'))
   }
   if (opts.skipNavigate) return
@@ -201,6 +203,7 @@ export async function openSettingsModal(opts = {}) {
   _instance = { overlay, unlistenEscape, restoreHash, onThemePref, routeEntry }
 
   setChatOverlayDefer('settings', true)
+  beginGlobalOverlay('settings')
   window.dispatchEvent(new CustomEvent('evopanel:settings-modal-opened'))
 
   const hubPromise = loadSettingsHubModule()

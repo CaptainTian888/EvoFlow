@@ -13,8 +13,8 @@ import { ChangedFilesSummaryRow } from './ChangedFilesSummaryRow.js'
 import type { AssistantBubbleDisplayPlan, AssistantBubbleSlot } from '../lib/message-row-display-plan.js'
 import { hasVisibleBodyBelowActivityChunk } from '../lib/message-row-stream-display.js'
 import { bubbleMarkdownText, visibleAssistantText, visibleExploringInnerText, visiblePreToolTimelineText } from '../lib/message-row-visible-text.js'
-import { isRecentlyStreamed } from '../lib/recently-streamed-runids.js'
-import { formatWorkDurationText } from '../lib/turn-timing.js'
+
+import { formatWorkDurationText, formatWorkedHeadLabel, resolveStreamTailLabel } from '../lib/turn-timing.js'
 import type { MessageSegment, SubagentStreamTask, TerminalStreamTask } from '../chat-types.js'
 import { ExploringActivityChunk } from './ExploringActivityChunk.js'
 import { MarkdownHtml } from './MarkdownHtml.js'
@@ -22,6 +22,8 @@ import { ReasoningInlineBlock } from './ReasoningInlineBlock.js'
 import { StreamRunStatusLine } from './StreamRunStatusLine.js'
 import { ToolCallList } from './ToolCallList.js'
 import { TurnHistoryFold } from './TurnHistoryFold.js'
+import { shouldDefaultOpenTurnHistory } from '../lib/turn-history-fold-policy.js'
+import { isToolRunning } from '../../lib/chat-normalize.js'
 
 /** 按 display-plan slots 顺序渲染助手气泡内容（唯一 DOM 顺序出口） */
 function AssistantBubbleSlotViewInner({
@@ -51,6 +53,9 @@ function AssistantBubbleSlotViewInner({
   runId,
   turnInterrupted,
   threadBusy = false,
+  liveActivityLabel,
+  lastStepLabel,
+  isLatestTurn = false,
 }: {
   plan: AssistantBubbleDisplayPlan
   displaySegments: MessageSegment[]
@@ -63,7 +68,15 @@ function AssistantBubbleSlotViewInner({
   interactiveToolApproval: boolean
   subagentTasks?: Record<string, SubagentStreamTask>
   terminalStreams?: Record<string, TerminalStreamTask>
-  onOpenFile?: (rawUrl: string, name?: string) => void
+  onOpenFile?: (
+    rawUrl: string,
+    name?: string,
+    opts?: {
+      line?: number
+      endLine?: number
+      annotation?: { title?: string; body?: string; priority?: number }
+    },
+  ) => void
   onToolApproval?: (
     action: 'approve' | 'approve_all' | 'deny' | 'grant_all' | 'approve_remember',
     toolCallId?: string,
@@ -92,9 +105,25 @@ function AssistantBubbleSlotViewInner({
    * 提前翻 false 的盲区；历史行恒为 false，不会误挂齿轮。
    */
   threadBusy?: boolean
+  /** 实时活动文案（dock copy，如「执行工具 web_search · 45s」）；驱动流式尾部 spinner */
+  liveActivityLabel?: string
+  /** 封存后折叠头「已工作 X · 最后一步」的最后一步文案（流式期间记忆） */
+  lastStepLabel?: string
+  /**
+   * 整段对话的最后一条助手回合。结束后：纯正文 / 一段思考+正文 才默认折叠；
+   * 带工具过程保持展开。更早的回合不传，结束后默认折叠。
+   */
+  isLatestTurn?: boolean
 }) {
   // ZCode 式扁平内联：plan.flatTimeline 为权威（MessageRow 默认 true，工作轨迹显式传 false）
   const flatTimeline = plan.flatTimeline !== false && !suppressExploringFold
+
+  // 授权暂停 → 续流 → 下一个待授权出现的间隙里，interactiveToolApproval 会短暂翻
+  // false（已批准的工具不再 pending、新的还没出现），折叠头会收起再弹开（闪烁）。
+  // 本行一旦进入过授权等待，回合内保持展开；用户手动收起（TurnHistoryFold manual）仍优先。
+  const approvalLatchRef = useRef(false)
+  if (interactiveToolApproval) approvalLatchRef.current = true
+  const approvalLatch = approvalLatchRef.current
   const layout = plan.layout
   const displayChunks = layout?.displayChunks ?? []
   const lastReasoningSegIdx = layout?.lastReasoningSegIdx ?? -1
@@ -275,27 +304,18 @@ function AssistantBubbleSlotViewInner({
   const workedLabel = (() => {
     if (plan.flatTimeline === false || suppressExploringFold) return ''
     if (isStreaming) return workedText ? `工作中 ${workedText}` : '工作中'
+    // 授权暂停（流已停、本行挂着待审批工具）：回合并未结束，折叠头不能显示
+    // 「已工作」并自动收起——那会把唯一可操作的审批面板一起藏掉。
+    if (interactiveToolApproval) return '等待授权'
     if (turnInterrupted) return '⏹ 已停止'
+    // 封存头带最后一步（「已工作 11 分 29 秒 · 执行工具 web_search」），
+    // 解析失败/无最后一步时退回原「已工作 X」。
+    const headWithStep = formatWorkedHeadLabel(durationLabel, lastStepLabel)
+    if (headWithStep) return headWithStep
     if (workedText) return `已工作 ${workedText}`
     return '已工作'
   })()
 
-  // 【调试】追踪 isStreaming 和齿轮渲染
-  const prevIsStreamingRef = useRef(isStreaming)
-  useEffect(() => {
-    const prev = prevIsStreamingRef.current
-    if (prev !== isStreaming) {
-      const now = new Date().toISOString()
-      console.log(
-        `[GearDebug] AssistantBubbleSlotView isStreaming: ${prev} → ${isStreaming}`,
-        '| timestamp:', now,
-        '| workedLabel:', workedLabel,
-        '| plan.slots.length:', plan.slots.length,
-        '| gear will show:', isStreaming,
-      )
-      prevIsStreamingRef.current = isStreaming
-    }
-  }, [isStreaming, workedLabel, plan.slots.length])
 
   const renderSlot = (slot: AssistantBubbleSlot, si: number): ReactNode => {
         switch (slot.kind) {
@@ -440,10 +460,18 @@ function AssistantBubbleSlotViewInner({
           key="turn-history-status"
           label={workedLabel}
           messageId={messageId}
-          // v5.10：折叠展开跟随齿轮同源条件（isStreaming || threadBusy）——
-          // sealing 窗口（RUN_FINISHED 后 final 落库前）isStreaming 已翻 false，
-          // threadBusy 仍亮，保持展开与齿轮直到线程真正空闲。
-          defaultOpen={isStreaming || threadBusy || isRecentlyStreamed(runId)}
+          // 工作中 / 等待授权：展开。
+          // 整段对话的最后一轮：还在调工具，或不是「单一正文 / 一段思考+正文」，保持展开。
+          // 更早的回合结束后默认折叠。
+          defaultOpen={shouldDefaultOpenTurnHistory({
+            isStreaming,
+            threadBusy,
+            interactiveToolApproval,
+            approvalLatch,
+            isLatestTurn,
+            toolsRunning: tools.some((tool) => isToolRunning(tool)),
+            slots: plan.slots,
+          })}
           // v5.3：已工作默认折叠时，最新一轮 piece 仍要外露。
           // body 永远渲染，由 children 自身用 CSS 决定哪些 piece 可见。
           bodyAlwaysRendered={!isStreaming && !threadBusy}
@@ -457,7 +485,7 @@ function AssistantBubbleSlotViewInner({
           {isStreaming || threadBusy ? (
             <StreamRunStatusLine
               key="stream-tail-spinner"
-              label="生成中"
+              label={resolveStreamTailLabel(liveActivityLabel)}
               showTip={false}
             />
           ) : null}

@@ -30,3 +30,23 @@ export function cuaAppKeyToIconRequest(
   if (!kind) return null;
   return { locators: [{ kind, value } as ApplicationIconRequest["locators"][number]] };
 }
+
+const LOCATOR_KIND_TO_APP_KEY_SCHEME: Record<string, string> = {
+  "darwin-bundle-id": "darwin",
+  "windows-aumid": "windows-aumid",
+  "windows-executable-path": "windows-exe",
+};
+
+/** 面板 kind:"cua" targetApp.iconLocators → producer appKey（供 Node REPL 卡复用）。 */
+export function cuaIconLocatorsToAppKey(
+  locators: ReadonlyArray<{ kind?: string; value?: string }> | null | undefined,
+): string | null {
+  if (!locators?.length) return null;
+  for (const locator of locators) {
+    const kind = typeof locator?.kind === "string" ? locator.kind : "";
+    const value = typeof locator?.value === "string" ? locator.value.trim() : "";
+    const scheme = LOCATOR_KIND_TO_APP_KEY_SCHEME[kind];
+    if (scheme && value) return `${scheme}:${value}`;
+  }
+  return null;
+}

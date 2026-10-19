@@ -1,5 +1,28 @@
 import { Fragment, memo, type ReactNode } from 'react'
 import type { ActivityPiece } from '../lib/exploring-activity-group.js'
+
+function mergeConsecutiveReasoningPieces(pieces: ActivityPiece[]): ActivityPiece[] {
+  const result: ActivityPiece[] = []
+  let buf: Extract<ActivityPiece, { kind: 'reasoning' }>[] = []
+  const flush = () => {
+    if (buf.length === 0) return
+    if (buf.length === 1) { result.push(buf[0]); buf = []; return }
+    const last = buf[buf.length - 1]
+    const first = buf[0]
+    result.push({
+      ...last,
+      text: buf.map(p => p.text).filter(t => String(t || '').trim()).join('\n\n'),
+      startedAtMs: first.startedAtMs,
+    })
+    buf = []
+  }
+  for (const piece of pieces) {
+    if (piece.kind === 'reasoning') buf.push(piece)
+    else { flush(); result.push(piece) }
+  }
+  flush()
+  return result
+}
 import {
   toolsForActivityPieces,
   reasoningPiecesInActivity,
@@ -90,7 +113,15 @@ function ExploringActivityChunkInner({
   hideSubagentInnerTools?: boolean
   showToolTiming?: boolean
   sessionKey?: string
-  onOpenFile?: (rawUrl: string, name?: string) => void
+  onOpenFile?: (
+    rawUrl: string,
+    name?: string,
+    opts?: {
+      line?: number
+      endLine?: number
+      annotation?: { title?: string; body?: string; priority?: number }
+    },
+  ) => void
   compareSessionKey?: string
   onOpenKnowledgeMap?: () => void
   hasFinalReplyBelow?: boolean
@@ -201,6 +232,7 @@ function ExploringActivityChunkInner({
               /* 轮内正文用正常 Markdown，勿走 msg-stream-plain 黑框纯文本 */
               isStreaming={false}
               onOpenWorkspaceFile={onOpenFile}
+              enableCodeComments
             />
           </div>
         )
@@ -233,14 +265,11 @@ function ExploringActivityChunkInner({
     return (
       <div className="msg-tool-activity-fold-inner">
         {(() => {
-          // 2026-10-10 反馈：v5.5「只留最后 text」体验割裂（折叠后只剩 1 段、其它全藏），
-          //   改为「折叠态全量显示」：所有 piece 标 latest，CSS 折叠时不再按 role 隐藏。
-          //   仍是 v5.4 单一折叠入口（外层 TurnHistoryFold 头部），不引入二级折叠。
-          //   注：CSS 仍保留 `[data-piece-role="history"] { display: none }` 规则作
-          //   「有显式 history 时仍可隐藏」逃生口；之后如要重新启用 v5.5 行为，
-          //   把这里改回「仅 last text → latest，其余 → history」即可。
-          return pieces.map((piece, pi) => {
-            const role: 'latest' | 'history' = 'latest'
+          // 对话结束后折叠，只显示最终正文（plain-body/live-tail slot）。
+          // ExploringActivityChunk 内所有 piece（text/tools/reasoning）标为 history，
+          // 折叠时由 CSS display:none 隐藏；展开时全部可见。
+          return mergeConsecutiveReasoningPieces(pieces).map((piece, pi) => {
+            const role: 'latest' | 'history' = 'history'
             const inner = renderPiece(piece, pi)
             if (inner == null) return null
             return (

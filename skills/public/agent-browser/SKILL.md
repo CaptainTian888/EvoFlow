@@ -40,7 +40,7 @@ terminal(command='agent-browser --session <name> click @e2')
 terminal(command='agent-browser --session <name> fill @e3 "search text"')
 terminal(command='agent-browser --session <name> press Enter')
 terminal(command='agent-browser --session <name> snapshot -c')   # page changed → refs stale
-terminal(command='agent-browser --session <name> screenshot /tmp/shot.png')  # optional pixels
+terminal(command='agent-browser --session <name> screenshot /tmp/shot.png')  # pixels auto-attach to your next context
 terminal(command='agent-browser --session <name> close')
 ```
 
@@ -77,8 +77,18 @@ browser. Pick a stable session name per thread (e.g. the chat UUID or
 | Need | Use |
 |------|-----|
 | Click, fill, read structure | `snapshot` |
-| CAPTCHA, dense layout, visual-only UI | `screenshot` (then read the file with `read_file` or `view_image`) |
+| CAPTCHA, dense layout, visual-only UI, verifying what the page looks like | `screenshot` — the pixels are **staged automatically** and attached to your next context, so you can judge the visual state right away (no second `read_file`/`view_image` step) |
 | Deliver a picture to the user | `screenshot` and reference the saved PNG path in the chat reply |
+
+Screenshot staging notes:
+
+- After a successful `agent-browser … screenshot <path>`, the harness detects the
+  saved file and stages it; the tool result will say so
+  (`staged for your next context — you will see the pixels`).
+- Staged pixels are budget-compressed (base64 ≤ 200KB) before injection, so use
+  `snapshot` for structure and `screenshot` when visual truth matters — both are cheap.
+- If the screenshot file could not be staged (e.g. model without vision), the result
+  falls back to the old text-only behavior; you can still `view_image` the path manually.
 
 ## Prerequisites (one-time, on the user's machine)
 
@@ -96,6 +106,40 @@ tools/agent-browser/node_modules/.bin/agent-browser install
 ```
 
 Do **not** invent alternate browsers or fall back to a generic Chromium.
+
+## Login state (real desktop browser)
+
+`agent-browser` drives the browser the user actually uses, so **logins persist
+naturally** — whatever the user has signed into (content platforms, admin panels)
+is already available to the agent. Before any scraping or account-bound task:
+
+1. Verify login state from the snapshot: look for the user avatar / personal-center
+   link. A visible「登录」/「Sign in」button means logged out.
+2. If logged out, stop and tell the user to sign in first — do **not** scrape a
+   logged-out page: sites serve truncated data and pop login modals mid-flow.
+3. A login modal appearing mid-task (e.g.「扫码登录」) means the session expired or
+   the site gated deeper pages. Stop, hand the modal to the user, resume after
+   they sign in.
+
+## Anti-bot etiquette (CAPTCHA & rate limits)
+
+- CAPTCHA/slider overlay (e.g. `second_verify` masks): **the human solves it**.
+  Screenshot it, tell the user, wait 1-2 minutes, re-snapshot. Never brute-retry —
+  retrying escalates risk control.
+- Frequency: for batch scraping keep it to a handful of sites/accounts per day,
+  pause between rounds, and stop for the day once risk control appears.
+- Account hygiene: run automation on a secondary account; risk control is tied to
+  the logged-in account, keep the primary for manual use.
+
+## When to write a script instead
+
+`agent-browser` is for interactive and exploratory tasks. A flow that runs
+unchanged every day (scheduled collection, monitoring) should be a **script**
+driven by `terminal`/`process_start` (Playwright-core over CDP, or plain HTTP),
+with the agent only calling it and interpreting results. Same browser, same
+login, but no per-step model round-trips. Domain example: a
+`douyin-blogger-analysis` style skill — profile → scroll → parse → POST to a
+local store.
 
 ## Tips
 

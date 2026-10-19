@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import {
   AlertTriangle,
   AppWindow,
@@ -70,7 +70,12 @@ import {
 import { AgentPickerModal } from './AgentPickerModal.js'
 import { ChartSizeGate } from './ChartSizeGate.js'
 import { ModelCatalogMenu } from './ModelCatalogMenu.js'
+import { PluginQuickPanel } from './PluginQuickPanel.js'
+import { type PluginPickerItem, type PluginSelection } from './PluginPickerModal.js'
 import { SkillPickerModal, type SkillPickerItem, type SkillSelection } from './SkillPickerModal.js'
+import { loadPluginCatalog, subscribePluginCatalog } from '../../lib/plugin-catalog.js'
+import { resolvePluginIconSource } from '../../zcode-ui/lib/pluginIconSource.js'
+import { PluginPillIcon } from './PluginPillIcon.js'
 
 type Props = {
   onPrompt?: (text: string) => void
@@ -296,8 +301,14 @@ export function EvoFlowHomeDashboard({ onPrompt, workspaceLabel = '', workspaceP
   const [modelsLoading, setModelsLoading] = useState(false)
   const [selectedModel, setSelectedModel] = useState<string>(() => readStoredModelName())
   const [modelOpen, setModelOpen] = useState(false)
-  const [moreOpen, setMoreOpen] = useState(false)
-  const [moreSubOpen, setMoreSubOpen] = useState<null | 'creative'>(null)
+  // 「+」快捷面板（与主对话 PluginQuickPanel 同款）：插件/添加/能力 一站式
+  const [pluginPanelOpen, setPluginPanelOpen] = useState(false)
+  const [pluginPanelStyle, setPluginPanelStyle] = useState<CSSProperties | null>(null)
+  const [pluginList, setPluginList] = useState<PluginPickerItem[]>([])
+  const [pluginListLoading, setPluginListLoading] = useState(false)
+  const [selectedPlugins, setSelectedPlugins] = useState<PluginSelection[]>([])
+  /** 已选插件 pills：仅在刚选择时展示，发送后隐藏（选择仍随任务注入） */
+  const [pluginComposerPillsVisible, setPluginComposerPillsVisible] = useState(false)
   const [voiceReplyEnabled, setVoiceReplyEnabled] = useState(() => getVoiceReplyEnabled())
   const [memoryEnabled, setMemoryEnabled] = useState(true)
   const [goalActive, setGoalActive] = useState(false)
@@ -313,7 +324,7 @@ export function EvoFlowHomeDashboard({ onPrompt, workspaceLabel = '', workspaceP
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const imageFileRef = useRef<HTMLInputElement>(null)
-  const moreRootRef = useRef<HTMLDivElement>(null)
+  const pluginPanelTriggerRef = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
     try {
@@ -430,32 +441,93 @@ export function EvoFlowHomeDashboard({ onPrompt, workspaceLabel = '', workspaceP
     return () => window.removeEventListener('evopanel:goal-ui', onGoalUi as EventListener)
   }, [])
 
+  // 首页就绪即预加载插件目录（与技能目录同模式；点「+」不再现拉）
   useEffect(() => {
-    if (!moreOpen) return
-    const onDown = (e: MouseEvent) => {
-      const t = e.target
-      if (!(t instanceof Node)) return
-      if (moreRootRef.current?.contains(t)) return
-      setMoreOpen(false)
-      setMoreSubOpen(null)
+    setPluginListLoading(true)
+    type PluginCatalogRow = {
+      id: string
+      name: string
+      label: string
+      description: string
+      version?: string
+      marketplace: string
+      componentTypes?: string[]
+      iconUrl?: string
+      enabled: boolean
     }
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        setMoreOpen(false)
-        setMoreSubOpen(null)
+    const toPickerItems = (rows: PluginCatalogRow[]): PluginPickerItem[] =>
+      rows
+        .filter((p) => p.enabled !== false)
+        .map((p) => ({
+          id: p.id,
+          name: p.name,
+          label: p.label,
+          description: p.description || '',
+          version: p.version,
+          marketplace: p.marketplace,
+          componentTypes: p.componentTypes,
+          iconUrl: p.iconUrl,
+        }))
+    const unsub = subscribePluginCatalog((rows: PluginCatalogRow[]) => {
+      setPluginList(toPickerItems(rows))
+      setPluginListLoading(false)
+    })
+    void loadPluginCatalog({ enabledOnly: true }).catch(() => {
+      setPluginList([])
+      setPluginListLoading(false)
+    })
+    return () => {
+      unsub()
+    }
+  }, [])
+
+  // 「+」面板定位：优先锚定按钮下方展开（首页输入框在页面中部，下方空间更充裕）；
+  // 下方放不下时回落到主对话同款「按钮上方」定位。
+  useLayoutEffect(() => {
+    if (!pluginPanelOpen || typeof window === 'undefined') {
+      setPluginPanelStyle(null)
+      return
+    }
+    const update = () => {
+      const btn = pluginPanelTriggerRef.current
+      if (!btn) return
+      const r = btn.getBoundingClientRect()
+      const gap = 10
+      const sidePad = 10
+      const width = 560
+      const left = Math.max(sidePad, Math.min(r.left, window.innerWidth - sidePad - (width + 60)))
+      const spaceBelow = window.innerHeight - r.bottom - gap - sidePad
+      if (spaceBelow >= 260) {
+        setPluginPanelStyle({
+          position: 'fixed',
+          left,
+          top: r.bottom + gap,
+          bottom: 'auto',
+          maxHeight: Math.min(window.innerHeight * 0.62, spaceBelow),
+          zIndex: 10060,
+        })
+      } else {
+        setPluginPanelStyle({
+          position: 'fixed',
+          left,
+          bottom: Math.max(sidePad, window.innerHeight - r.top + gap),
+          top: 'auto',
+          maxHeight: Math.max(160, Math.min(window.innerHeight * 0.62, r.top - gap - sidePad)),
+          zIndex: 10060,
+        })
       }
     }
-    document.addEventListener('mousedown', onDown)
-    document.addEventListener('keydown', onKey)
+    update()
+    window.addEventListener('resize', update)
+    window.addEventListener('scroll', update, true)
     return () => {
-      document.removeEventListener('mousedown', onDown)
-      document.removeEventListener('keydown', onKey)
+      window.removeEventListener('resize', update)
+      window.removeEventListener('scroll', update, true)
     }
-  }, [moreOpen])
+  }, [pluginPanelOpen])
 
-  const closeMoreMenu = useCallback(() => {
-    setMoreOpen(false)
-    setMoreSubOpen(null)
+  const closePluginPanel = useCallback(() => {
+    setPluginPanelOpen(false)
   }, [])
 
   const pickHomeImages = useCallback(() => {
@@ -480,6 +552,20 @@ export function EvoFlowHomeDashboard({ onPrompt, workspaceLabel = '', workspaceP
     )
     toast(next ? '已开启记忆' : '已关闭记忆', 'success')
   }, [memoryEnabled])
+
+  /** 「+」面板插件行：即点即存（与主对话一致，发送时随任务注入 Agent） */
+  const toggleHomePlugin = useCallback((item: PluginPickerItem) => {
+    setPluginComposerPillsVisible(true)
+    setSelectedPlugins((prev) => {
+      if (prev.some((p) => p.id === item.id)) {
+        return prev.filter((p) => p.id !== item.id)
+      }
+      return [
+        ...prev,
+        { id: item.id, label: item.label || item.name, iconUrl: item.iconUrl },
+      ]
+    })
+  }, [])
 
   const modelPillLabel = useMemo(() => {
     if (modelsLoading && !modelCatalog.length) return '加载中…'
@@ -684,6 +770,7 @@ export function EvoFlowHomeDashboard({ onPrompt, workspaceLabel = '', workspaceP
             text,
             agentCode: selectedAgent || '',
             skills: selectedSkills,
+            plugins: selectedPlugins,
             modelName: selectedModel || '',
             attachments,
             contextFiles: pendingContextFiles,
@@ -694,6 +781,7 @@ export function EvoFlowHomeDashboard({ onPrompt, workspaceLabel = '', workspaceP
       setChips([])
       setPendingFiles([])
       setPendingContextFiles([])
+      setPluginComposerPillsVisible(false)
       try {
         sessionStorage.removeItem('evopanel_home_composer_draft')
       } catch {
@@ -704,7 +792,7 @@ export function EvoFlowHomeDashboard({ onPrompt, workspaceLabel = '', workspaceP
     } finally {
       setActionBusy(null)
     }
-  }, [chips, draft, selectedAgent, selectedModel, selectedSkills, pendingFiles, pendingContextFiles])
+  }, [chips, draft, selectedAgent, selectedModel, selectedSkills, selectedPlugins, pendingFiles, pendingContextFiles])
 
   const runQuick = useCallback(
     async (id: string) => {
@@ -826,7 +914,6 @@ export function EvoFlowHomeDashboard({ onPrompt, workspaceLabel = '', workspaceP
           </button>
         </header>
 
-        {data.loading ? <div className="evo-home-banner evo-home-banner--loading">正在加载工作台数据…</div> : null}
         {data.error ? (
           <div className="evo-home-banner evo-home-banner--error">
             加载失败：{data.error}
@@ -882,6 +969,37 @@ export function EvoFlowHomeDashboard({ onPrompt, workspaceLabel = '', workspaceP
                       ×
                     </button>
                   </span>
+                ))}
+              </div>
+            ) : null}
+            {pluginComposerPillsVisible && selectedPlugins.length > 0 ? (
+              <div className="react-chat-skill-composer-pills" aria-label="已选插件">
+                <span className="react-chat-context-pills-label">
+                  已选 {selectedPlugins.length} 个插件，发送时自动注入 Agent
+                </span>
+                {selectedPlugins.map((pl) => (
+                  <button
+                    key={pl.id}
+                    type="button"
+                    className="react-chat-skill-composer-pill"
+                    title={`插件：${pl.label}（点击移除）`}
+                    onClick={() => {
+                      setPluginComposerPillsVisible(true)
+                      setSelectedPlugins((prev) => prev.filter((p) => p.id !== pl.id))
+                    }}
+                  >
+                    <span
+                      className="react-chat-skill-composer-pill-icon"
+                      aria-hidden
+                      style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}
+                    >
+                      <PluginPillIcon pluginId={pl.id} iconUrl={pl.iconUrl} />
+                    </span>
+                    <span className="react-chat-skill-composer-pill-label">{pl.label}</span>
+                    <span className="react-chat-skill-composer-pill-remove" aria-hidden>
+                      ×
+                    </span>
+                  </button>
                 ))}
               </div>
             ) : null}
@@ -1068,11 +1186,29 @@ export function EvoFlowHomeDashboard({ onPrompt, workspaceLabel = '', workspaceP
             />
             <div className="evo-home-composer__bar">
               <div className="evo-home-composer__tools">
+                {/* 「+」按钮：与主对话同款置于最左（主对话加号也在最左），点击弹出 PluginQuickPanel */}
+                <button
+                  type="button"
+                  className="react-chat-icon-attach-btn"
+                  ref={pluginPanelTriggerRef}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => {
+                    setModelOpen(false)
+                    setPluginPanelOpen(true)
+                  }}
+                  title="更多功能（插件 / 技能 / 目标 / 员工…）"
+                  aria-label="更多"
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="18" height="18" aria-hidden="true">
+                    <path d="M5 12h14" />
+                    <path d="M12 5v14" />
+                  </svg>
+                </button>
                 <ModelCatalogMenu
                   open={modelOpen}
                   onOpenChange={(open) => {
                     setModelOpen(open)
-                    if (open) closeMoreMenu()
+                    if (open) closePluginPanel()
                   }}
                   catalog={modelCatalog}
                   connNameMap={modelConnNameMap}
@@ -1099,7 +1235,7 @@ export function EvoFlowHomeDashboard({ onPrompt, workspaceLabel = '', workspaceP
                   type="button"
                   className="evo-home-btn evo-home-btn--chip"
                   onClick={() => {
-                    closeMoreMenu()
+                    closePluginPanel()
                     pickHomeAttachments()
                   }}
                 >
@@ -1110,7 +1246,7 @@ export function EvoFlowHomeDashboard({ onPrompt, workspaceLabel = '', workspaceP
                   type="button"
                   className="evo-home-btn evo-home-btn--chip"
                   onClick={() => {
-                    closeMoreMenu()
+                    closePluginPanel()
                     setAgentOpen(true)
                   }}
                 >
@@ -1127,143 +1263,13 @@ export function EvoFlowHomeDashboard({ onPrompt, workspaceLabel = '', workspaceP
                   type="button"
                   className="evo-home-btn evo-home-btn--chip"
                   onClick={() => {
-                    closeMoreMenu()
+                    closePluginPanel()
                     setSkillOpen(true)
                   }}
                 >
                   <CircleDot className="evo-home-ic" />
                   {selectedSkills.length ? `技能 ${selectedSkills.length}` : '技能'}
                 </button>
-                <div className="react-chat-bottom-pill-root react-chat-bottom-pill-root--down evo-home-more-root" ref={moreRootRef}>
-                  <button
-                    type="button"
-                    className={`react-chat-bottom-pill evo-home-more-pill${moreOpen ? ' react-chat-bottom-pill--open' : ''}`}
-                    title="更多：图片 / 语音 / 记忆 / 创意"
-                    aria-expanded={moreOpen}
-                    onClick={() => {
-                      setMoreOpen((prev) => {
-                        const next = !prev
-                        if (next) {
-                          setModelOpen(false)
-                          setMoreSubOpen(null)
-                        } else {
-                          setMoreSubOpen(null)
-                        }
-                        return next
-                      })
-                    }}
-                  >
-                    <svg
-                      className="react-chat-bottom-pill-icon"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      aria-hidden="true"
-                    >
-                      <circle cx="5" cy="12" r="1.5" />
-                      <circle cx="12" cy="12" r="1.5" />
-                      <circle cx="19" cy="12" r="1.5" />
-                    </svg>
-                    <span className="react-chat-bottom-pill-text">更多</span>
-                    <span className="react-chat-bottom-pill-caret">▾</span>
-                  </button>
-                  {moreOpen ? (
-                    <div
-                      className="react-chat-bottom-dropdown react-chat-bottom-dropdown--more evo-home-more-dropdown"
-                      role="menu"
-                    >
-                      <button
-                        type="button"
-                        role="menuitem"
-                        className="react-chat-bottom-dropdown-item"
-                        onClick={() => {
-                          closeMoreMenu()
-                          pickHomeImages()
-                        }}
-                      >
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true" style={{ width: 16, height: 16, flexShrink: 0 }}>
-                          <rect x="3" y="5" width="18" height="14" rx="2" />
-                          <circle cx="8.5" cy="10" r="1.5" />
-                          <path d="M21 16l-5.2-5.2a1.5 1.5 0 00-2.1 0L3 18" />
-                        </svg>
-                        <span>添加图片</span>
-                      </button>
-
-                      <div className="react-chat-bottom-dropdown-divider" role="separator" />
-
-                      <button
-                        type="button"
-                        role="menuitem"
-                        className={`react-chat-bottom-dropdown-item${voiceReplyEnabled ? ' react-chat-bottom-dropdown-item--active' : ''}`}
-                        onClick={() => {
-                          void toggleHomeVoiceReply()
-                        }}
-                      >
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ width: 16, height: 16, flexShrink: 0 }}>
-                          <path d="M11 5L6 9H2v6h4l5 4V5z" />
-                          <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
-                          <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
-                        </svg>
-                        <span>语音播报</span>
-                        <span className="react-chat-more-submenu-badge">{voiceReplyEnabled ? '开' : '关'}</span>
-                        {voiceReplyEnabled ? (
-                          <span className="react-chat-skill-item-check" aria-hidden>✓</span>
-                        ) : null}
-                      </button>
-                      <button
-                        type="button"
-                        role="menuitem"
-                        className={`react-chat-bottom-dropdown-item${memoryEnabled ? ' react-chat-bottom-dropdown-item--active' : ''}`}
-                        onClick={() => {
-                          toggleHomeMemory()
-                        }}
-                      >
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" aria-hidden="true" style={{ width: 16, height: 16, flexShrink: 0 }}>
-                          <path d="M12 3 4 7l8 4 8-4-8-4z" />
-                          <path d="M4 12l8 4 8-4" />
-                          <path d="M4 17l8 4 8-4" />
-                        </svg>
-                        <span>记忆</span>
-                        <span className="react-chat-more-submenu-badge">{memoryEnabled ? '开' : '关'}</span>
-                        {memoryEnabled ? (
-                          <span className="react-chat-skill-item-check" aria-hidden>✓</span>
-                        ) : null}
-                      </button>
-
-                      <div className="react-chat-more-submenu-item">
-                        <button
-                          type="button"
-                          className={`react-chat-more-submenu-header${moreSubOpen === 'creative' ? ' react-chat-more-submenu-header--open' : ''}`}
-                          onClick={() => setMoreSubOpen((p) => (p === 'creative' ? null : 'creative'))}
-                        >
-                          <Sparkles className="evo-home-ic" aria-hidden />
-                          <span className="react-chat-more-submenu-title">创意</span>
-                          <span className="react-chat-more-submenu-caret" aria-hidden>▸</span>
-                        </button>
-                        {moreSubOpen === 'creative' ? (
-                          <div className="react-chat-more-submenu-flyout react-chat-more-submenu-flyout--scroll" role="menu">
-                            {HOME_MORE_QUICK_PROMPTS.map((p) => (
-                              <button
-                                key={p.label}
-                                type="button"
-                                role="menuitem"
-                                className="react-chat-bottom-dropdown-item"
-                                onClick={() => {
-                                  closeMoreMenu()
-                                  setDraft((d) => (d.trim() ? `${d.trim()}\n${p.prompt}` : p.prompt))
-                                  inputRef.current?.focus()
-                                }}
-                              >
-                                {p.label}
-                              </button>
-                            ))}
-                          </div>
-                        ) : null}
-                      </div>
-                    </div>
-                  ) : null}
-                </div>
                 {workspaceLabel ? (
                   <button
                     type="button"
@@ -1832,6 +1838,65 @@ export function EvoFlowHomeDashboard({ onPrompt, workspaceLabel = '', workspaceP
           />
         </div>
       </HomeDrawer>
+
+      {/* 「+」快捷面板：与主对话同款；员工→智能体选择，预设角色/Agent 模式在首页无对应概念故隐藏，
+          记忆/创意（原「更多」下拉独有项）经注入区段保留 */}
+      <PluginQuickPanel
+        open={pluginPanelOpen}
+        onClose={() => setPluginPanelOpen(false)}
+        style={pluginPanelStyle}
+        plugins={pluginList}
+        loading={pluginListLoading}
+        selected={selectedPlugins}
+        onToggle={toggleHomePlugin}
+        onPickDocs={pickHomeAttachments}
+        onPickImages={pickHomeImages}
+        onOpenSkillPicker={() => setSkillOpen(true)}
+        onOpenGoal={openGoalPanel}
+        onOpenRolePicker={() => setAgentOpen(true)}
+        onOpenLegacyMenu={() => setPluginPanelOpen(false)}
+        onInsertText={(text) => setDraft((d) => `${d}${text}`)}
+        showVoice
+        voiceOn={voiceReplyEnabled}
+        onToggleVoice={() => void toggleHomeVoiceReply()}
+        showRole={false}
+        showLegacyMenu={false}
+        showHintBar={false}
+        onPickEmployee={() => setAgentOpen(true)}
+        extraAbilityRows={[
+          {
+            key: 'memory',
+            label: '记忆',
+            icon: (
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" strokeLinecap="round" aria-hidden="true">
+                <path d="M12 3 4 7l8 4 8-4-8-4z" />
+                <path d="M4 12l8 4 8-4" />
+                <path d="M4 17l8 4 8-4" />
+              </svg>
+            ),
+            run: toggleHomeMemory,
+            trailing: (
+              <span className="rounded-full bg-foreground/10 px-1.5 py-0.5 text-[10px] leading-4 text-foreground">
+                {memoryEnabled ? '开' : '关'}
+              </span>
+            ),
+          },
+        ]}
+        extraSections={[
+          {
+            title: '创意',
+            rows: HOME_MORE_QUICK_PROMPTS.map((p) => ({
+              key: `creative-${p.label}`,
+              label: p.label,
+              run: () => {
+                setPluginPanelOpen(false)
+                setDraft((d) => (d.trim() ? `${d.trim()}\n${p.prompt}` : p.prompt))
+                inputRef.current?.focus()
+              },
+            })),
+          },
+        ]}
+      />
 
       <AgentPickerModal
         open={agentOpen}

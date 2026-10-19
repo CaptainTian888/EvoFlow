@@ -8,6 +8,7 @@ pub mod assistant;
 pub mod backend;
 pub mod boot_cycle;
 pub mod browser_embed;
+pub mod browser_embed_bridge;
 #[cfg(target_os = "windows")]
 pub mod browser_cdp;
 #[cfg(target_os = "windows")]

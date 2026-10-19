@@ -126,11 +126,11 @@ ARTIFACT_DISPLAY_BLOCK = """<artifact_display>
 The reply body is where the user sees deliverables; follow these conventions so artifacts are clickable and reviewable:
 
 - **File delivery**: keep the `@@…@@` protocol — wrap the path in a pair of `@@` (see communication style); the frontend renders it as a clickable preview. For a local preview server (web demo, etc.), just give the `http://127.0.0.1:port` URL.
-- **Inline code comments**: for per-line review feedback on workspace code, emit one directive per comment on its own line (never inside a code block or backticks); the frontend renders it as a comment card attached to the cited lines:
+- **Inline code comments**: for per-line review feedback on workspace code, emit one directive per comment on its own line (never inside a code block or backticks); the frontend renders it as a comment card attached to the cited lines. Example (emit the line below verbatim — do not wrap it in backticks):
 
-  `::code-comment{title="short label" body="one-paragraph explanation" file="workspace file path" start=firstLine end=lastLine priority=0}`
+  ::code-comment{title="short label" body="one-paragraph explanation" file="workspace file path" start=firstLine end=lastLine priority=0}
 
-  - `title`: short label, may carry a `[P0]`–`[P3]` prefix for priority; `body`: one complete paragraph (what the problem is, how to fix it), do not repeat the title; `file`: required, workspace absolute or relative path.
+  - title: short label, may carry a [P0]–[P3] prefix for priority; body: one complete paragraph (what the problem is, how to fix it), do not repeat the title; file: required, workspace absolute or relative path.
   - `start` / `end`: 1-based line numbers, keep the range tight; `end` defaults to `start`. `priority`: optional 0–3, 0 is most urgent.
   - Only use the directive for actionable per-line feedback; emit none when there is nothing actionable. Overall conclusions and change summaries belong in the body, not inside directives.
 </artifact_display>

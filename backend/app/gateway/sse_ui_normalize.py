@@ -556,6 +556,40 @@ def _envelope_status_from_tool_content(content: Any) -> str | None:
     return st or None
 
 
+_CUA_DISPLAY_MARKER_PREFIX = "{evoflow-cua-display:"
+
+
+def _extract_cua_display(content: Any) -> tuple[Any, dict[str, Any] | None]:
+    """Split the trailing ``{evoflow-cua-display:...}`` marker from node_repl output.
+
+    ZCode 的截图/目标应用展示走独立结构化 display 通道，不随正文截断丢失。
+    这里把 node_repl js 结果尾部的标记解析成 ``cua_display`` 结构化字段附在
+    tool_result 上，正文剥离标记行（模型上下文与持久化原文不变，仅 UI 流变更）。
+    """
+    if not isinstance(content, str) or _CUA_DISPLAY_MARKER_PREFIX not in content:
+        return content, None
+    lines = content.splitlines()
+    marker_line = ""
+    payload_text = ""
+    for line in reversed(lines):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if not stripped.startswith(_CUA_DISPLAY_MARKER_PREFIX):
+            return content, None
+        marker_line = stripped
+        payload_text = stripped[len(_CUA_DISPLAY_MARKER_PREFIX) : -1]
+        break
+    try:
+        payload = json.loads(payload_text)
+    except ValueError:
+        return content, None
+    if not isinstance(payload, dict):
+        return content, None
+    cleaned = "\n".join(line for line in lines if line.strip() != marker_line).rstrip()
+    return cleaned, payload
+
+
 def _slim_tool_result_message(msg: dict[str, Any]) -> dict[str, Any]:
     """Keep fields ToolCallList / chat-normalize need for special tool UI (media, approval, paths)."""
     out: dict[str, Any] = {}
@@ -568,6 +602,14 @@ def _slim_tool_result_message(msg: dict[str, Any]) -> dict[str, Any]:
         out["role"] = "tool"
     tcid = str(out.get("tool_call_id") or out.get("id") or "").strip()
     tool_name = str(out.get("name") or out.get("tool_name") or "tool")
+    # EvoFlow CUA display：node_repl js 结果尾部的展示标记 → 结构化 cua_display。
+    # 必须在 slim 之前提取——AX 树正文未来若进入 offload/preview 名单，标记
+    # 也不能被截掉。
+    if "content" in out and isinstance(out.get("content"), str):
+        cleaned, cua_display = _extract_cua_display(out["content"])
+        if cua_display is not None:
+            out["content"] = cleaned
+            out["cua_display"] = cua_display
     payload = out.get("content_json") if isinstance(out.get("content_json"), dict) else None
     body = out.get("content") if payload is None else payload.get("content")
     if tcid and body is not None:
@@ -941,9 +983,12 @@ def _extract_write_fields_from_partial_args(raw: str) -> dict[str, str]:
     text = str(raw or "")
     path = ""
     for key in _PATH_ARG_KEYS:
-        # Keep growing path prefixes out of progress events; content may stream
-        # before the path, which becomes authoritative when its JSON string closes.
-        val = _extract_json_string_value_for_key(text, key, require_closed=True)
+        # Models often stream content before the path key. Use the growing
+        # (possibly unclosed) path prefix so the UI can anchor the target file
+        # immediately — a JSON string only grows while streaming, so the prefix
+        # is always a prefix of the final value, and the closed value becomes
+        # authoritative as soon as its quote arrives.
+        val = _extract_json_string_value_for_key(text, key, require_closed=False)
         if val and val.strip():
             path = val.strip()
             break
@@ -1312,6 +1357,12 @@ class UiStreamNormalizer:
         old_string = str(fields.get("old_string") or "")
         prev_content = str(prev.get("content") or "")
         prev_old = str(prev.get("old_string") or "")
+        # Body bytes already delivered to the wire.  content_delta needs an
+        # anchored path, so body streamed before the path key appears is not
+        # deliverable yet — cursor-based catch-up must flush it once the path
+        # is known, otherwise per-chunk growth deltas would lose that prefix.
+        prev_content_sent = int(prev.get("content_sent_len") or 0)
+        prev_old_sent = int(prev.get("old_string_sent_len") or 0)
         content_grew = len(content) > len(prev_content)
         old_grew = len(old_string) > len(prev_old)
         lines_changed = lines_added != prev_added or lines_removed != prev_removed
@@ -1321,13 +1372,18 @@ class UiStreamNormalizer:
         # final fragment with no further content growth — still must emit progress
         # so the UI / wire log get a non-empty path.
         path_arrived = bool(path_now) and path_now != path_prev
-        logger.debug(f"[SANITIZE_WRITE] stats: content_len={len(content)}, content_grew={content_grew}, lines_changed={lines_changed}, path_arrived={path_arrived}")
+        content_pending = bool(path_now) and len(content) > prev_content_sent
+        old_pending = bool(path_now) and len(old_string) > prev_old_sent
+        content_sent = prev_content_sent
+        old_sent = prev_old_sent
+        logger.debug(f"[SANITIZE_WRITE] stats: content_len={len(content)}, lines_changed={lines_changed}, path_arrived={path_arrived}")
         progress: dict[str, Any] | None = None
-        # Only emit progress when args actually arrive (content/old_string grows,
-        # lines change, or path becomes known). Do NOT emit on first sight alone —
-        # args may not have arrived yet, resulting in content_len=0 and empty path
-        # clobbering the correct event later.
-        if lines_changed or content_grew or old_grew or path_arrived:
+        # Only emit progress when args actually arrive (lines change, old_string grows,
+        # or path becomes known).  When path is not yet known, skip entirely —
+        # the actual tool_call arguments stream through TOOL_CALL_ARGS deltas, so
+        # the frontend sees everything it needs via that channel.  content_delta is
+        # only sent once path is confirmed to avoid un-anchored progress events.
+        if lines_changed or old_grew or path_arrived or content_pending or old_pending:
             wire_id = key if not key.startswith(("idx:", "anon:")) else str(merged.get("id") or merged.get("tool_call_id") or "").strip()
             progress = {
                 "type": "write_file_progress",
@@ -1339,11 +1395,14 @@ class UiStreamNormalizer:
                 "lines_removed": lines_removed,
                 "content_len": len(content),
             }
-            # Stream body via deltas (not TOOL_CALL_ARGS). Cap per event; large jumps
-            # send an absolute ``content`` snapshot so the UI does not lose the middle.
+            # Stream body via deltas from the last-sent cursor.  Large jumps send
+            # an absolute ``content`` snapshot so the UI does not lose the middle.
+            # The cursor (not per-chunk growth) is the unit of delivery: when the
+            # path arrives after the content finished streaming, the whole body
+            # flushes in the path-arrival event.
             _DELTA_MAX = 4096
-            if content_grew:
-                cdelta = content[len(prev_content) :]
+            if path_now and content_pending:
+                cdelta = content[prev_content_sent:]
                 if len(cdelta) <= _DELTA_MAX:
                     if cdelta:
                         progress["content_delta"] = cdelta
@@ -1355,13 +1414,15 @@ class UiStreamNormalizer:
                     progress["content"] = content
                     if tool_name.strip().lower() in {"replace", "str_replace", "replace_in_file"}:
                         progress["new_string"] = content
-            if old_grew:
-                odelta = old_string[len(prev_old) :]
+                content_sent = len(content)
+            if path_now and old_pending:
+                odelta = old_string[prev_old_sent:]
                 if len(odelta) <= _DELTA_MAX:
                     if odelta:
                         progress["old_string_delta"] = odelta
                 else:
                     progress["old_string"] = old_string
+                old_sent = len(old_string)
             logger.debug(f"[SANITIZE_WRITE] emitted progress: phase=args, content_len={len(content)}, has_delta={bool(progress.get('content_delta') or progress.get('content'))}")
         self.write_tool_wire_state[key] = {
             "_tc": merged,
@@ -1371,6 +1432,8 @@ class UiStreamNormalizer:
             "lines_removed": lines_removed,
             "content": content,
             "old_string": old_string,
+            "content_sent_len": content_sent,
+            "old_string_sent_len": old_sent,
         }
         sanitized = _build_slim_write_tool_call(merged, fields)
         logger.debug(f"[SANITIZE_WRITE] built sanitized: keys={list(sanitized.keys()) if isinstance(sanitized, dict) else type(sanitized)}")

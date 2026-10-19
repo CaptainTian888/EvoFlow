@@ -213,15 +213,17 @@ function parseDisplay(value: unknown): ToolResultDisplay | undefined {
           const mimeType = readOptionalString(item, "mimeType");
           const data = readOptionalString(item, "data");
           const artifactUri = readOptionalString(item, "artifactUri");
-          return mimeType && data !== null && artifactUri !== null
-            ? [
-                {
-                  mimeType,
-                  ...(data ? { data } : {}),
-                  ...(artifactUri ? { artifactUri } : {}),
-                },
-              ]
-            : [];
+          // Captain Work CUA 只带 artifactUri（落盘 URL）；ZCode 原生常带 data。
+          // 任一通道合法即可，缺键为 undefined（放行），类型错误才为 null（拒收）。
+          if (!mimeType || data === null || artifactUri === null) return [];
+          if (!data && !artifactUri) return [];
+          return [
+            {
+              mimeType,
+              ...(data ? { data } : {}),
+              ...(artifactUri ? { artifactUri } : {}),
+            },
+          ];
         })
       : undefined;
     const targetApp = parseCuaTargetApp(value.targetApp);
@@ -268,14 +270,17 @@ function parseDisplay(value: unknown): ToolResultDisplay | undefined {
 
 function parseCuaTargetApp(value: unknown): CuaToolResultDisplay["targetApp"] | undefined | null {
   if (value === undefined) return undefined;
-  if (!isRecord(value) || value.schemaVersion !== 1 || !Array.isArray(value.iconLocators)) {
+  if (!isRecord(value) || value.schemaVersion !== 1) {
     return null;
   }
+  // 缺省按空数组：仅有 displayName、暂无 locator 时仍可展示应用名。
+  const rawLocators = value.iconLocators === undefined ? [] : value.iconLocators;
+  if (!Array.isArray(rawLocators)) return null;
   const displayName = readOptionalString(value, "displayName");
   if (displayName === null || (displayName !== undefined && displayName.length > 512)) return null;
-  if (value.iconLocators.length > 3) return null;
+  if (rawLocators.length > 3) return null;
   const iconLocators: NonNullable<CuaToolResultDisplay["targetApp"]>["iconLocators"] =
-    value.iconLocators.flatMap((locator) => {
+    rawLocators.flatMap((locator) => {
       if (!isRecord(locator)) return [];
       const locatorValue = readOptionalString(locator, "value");
       if (
@@ -288,7 +293,7 @@ function parseCuaTargetApp(value: unknown): CuaToolResultDisplay["targetApp"] | 
       }
       return [{ kind: locator.kind, value: locatorValue }];
     });
-  if (iconLocators.length !== value.iconLocators.length) return null;
+  if (iconLocators.length !== rawLocators.length) return null;
   return {
     schemaVersion: 1,
     ...(displayName !== undefined ? { displayName } : {}),

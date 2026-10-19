@@ -323,17 +323,15 @@ def _row_doc(row: Any) -> dict[str, Any]:
 def _document_counts_by_kb(rows: list[Any]) -> dict[str, int]:
     """Count active documents per KB by opening each KB's own index DB.
 
-    Falls back to the central DB for KBs that have not been migrated yet, so the
-    count stays correct during a rolling migration.
+    ``db_for_kb`` resolves the default location when ``storage_dir`` is empty —
+    a KB created without one (e.g. the builtin user guide) still owns a per-KB
+    index DB after the split. Falls back to the central DB only when the
+    per-KB query fails, so the count stays correct during a rolling migration.
     """
     counts: dict[str, int] = {}
     pending: list[str] = []
     for r in rows:
         kid = str(r["id"] if isinstance(r, sqlite3.Row) else r[0])
-        sd = str((r["storage_dir"] if isinstance(r, sqlite3.Row) else "") or "").strip()
-        if not sd:
-            pending.append(kid)
-            continue
         try:
             with db_for_kb(kid) as conn:
                 counts[kid] = int(
@@ -842,6 +840,76 @@ def requeue_orphan_parse_docs(
         "orphanCount": len(orphans),
         "requeued": queued,
         "kbId": kb_id,
+    }
+
+
+def retry_document_parse(kb_id: str, doc_id: str) -> dict[str, Any]:
+    """Re-enqueue ``parse_index`` for a single failed/stuck document.
+
+    Used by the index-status banner's per-row "重试" button. Unlike
+    :func:`requeue_orphan_parse_docs` (which only touches docs that have no
+    active job), this entrypoint:
+
+    1. Verifies the document still exists in the KB (404 otherwise).
+    2. Cancels any in-flight ``parse_index`` job for this doc so a fresh
+       worker pick-up is not stomped by an old shell.
+    3. Resets the document's status columns to ``pending`` and clears the
+       cached ``error_message`` so the UI no longer flags it as failed.
+    4. Enqueues a brand-new ``parse_index`` job at priority 100.
+    """
+    ensure_owned_kb_worker_started()
+    kid = str(kb_id or "").strip()
+    did = str(doc_id or "").strip()
+    if not kid:
+        raise ValueError("kb_id is required")
+    if not did:
+        raise ValueError("doc_id is required")
+
+    with db_for_kb(kid) as conn:
+        row = conn.execute(
+            "SELECT id FROM kb_documents WHERE id=? AND kb_id=? AND deleted_at IS NULL",
+            (did, kid),
+        ).fetchone()
+        if not row:
+            raise ValueError("document not found")
+
+    now = utc_now()
+    # Cancel any queued/running jobs of this doc so the new enqueue is not
+    # de-duplicated away. We do this BEFORE updating the doc status so a
+    # worker that picked the old job up in the meantime sees a fresh state.
+    with db() as conn:
+        conn.execute(
+            """
+            UPDATE kb_jobs
+            SET state='cancelled', error_message='retried by user',
+                finished_at=?, updated_at=?, locked_by='', locked_at=NULL
+            WHERE kb_id=? AND doc_id=? AND state IN ('queued', 'running')
+            """,
+            (now, now, kid, did),
+        )
+
+    with db_for_kb(kid) as conn:
+        conn.execute(
+            """
+            UPDATE kb_documents
+            SET parse_status='pending',
+                index_status='pending',
+                keyword_status='pending',
+                vector_status='pending',
+                error_message='',
+                index_error='',
+                updated_at=?
+            WHERE id=? AND deleted_at IS NULL
+            """,
+            (now, did),
+        )
+
+    job = jobs.enqueue(kb_id=kid, doc_id=did, type="parse_index", priority=100)
+    return {
+        "ok": True,
+        "kbId": kid,
+        "docId": did,
+        "job": job,
     }
 
 
@@ -2178,6 +2246,9 @@ def delete_document(doc_id: str, *, record_activity: bool = True) -> None:
             (now, now, doc_id),
         )
         purge_document_index(conn, doc_id)
+    # Drop queued/running jobs for this document so the worker never picks up
+    # a deleted doc and burns retries on "document not found".
+    jobs.cancel_jobs_for_doc(doc_id, reason="document deleted")
     blob_store.delete_doc_blobs(kb_id, doc_id)
     _forget_doc_kb(doc_id)
     if record_activity:

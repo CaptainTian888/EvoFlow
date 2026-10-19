@@ -18,6 +18,7 @@ import {
   WorkProcessLiveNow,
   WorkProcessSummaryBar,
   type StatFilterKey,
+  type WorkProcessEventView,
 } from './ProactiveWorkProcessViews.js'
 
 export type DrawerRunMeta = {
@@ -228,7 +229,7 @@ export function ProactiveWorkProcessModal({
           </div>
           <div className="pro-wp-body">
             <WorkProcessEventList
-              events={filtered}
+              events={filtered as unknown as WorkProcessEventView[]}
               query={query}
               activeMatchId={activeMatchId}
               emptyText={
@@ -244,7 +245,7 @@ export function ProactiveWorkProcessModal({
 
         <footer className="pro-wp-drawer__foot">
           <WorkProcessExportActions
-            events={events}
+            events={events as unknown as WorkProcessEventView[]}
             title={taskName}
             summaryAgent={executor || agentCode}
             statusLabel={compositeStatus}

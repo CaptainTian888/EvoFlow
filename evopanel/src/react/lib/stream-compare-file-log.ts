@@ -1174,6 +1174,31 @@ export function buildToolCallListRenderDiag(opts: {
   }
 }
 
+const cuaPanelLogged = new Set<string>()
+
+/**
+ * v4 Node REPL / CUA 卡片实际画了什么。写入当前轮 ui-display.log，一行一条。
+ * 用来一次判定：应用名、截图 URL、图标是否取到。不进控制台。
+ */
+export function logCuaPanelDisplay(line: string): void {
+  if (!isStreamCompareFileLogOn()) return
+  const text = oneLine(line)
+  if (!text) return
+  const store = ensureStore()
+  const sessionLogId = resolveLogSessionId(store.activeSessionLogId)
+  if (!sessionLogId) return
+  const target = resolveLogTarget(sessionLogId)
+  if (!target) return
+  if (cuaPanelLogged.has(`${target.dedupeKey}|${text}`)) return
+  cuaPanelLogged.add(`${target.dedupeKey}|${text}`)
+  appendFileLine(
+    target.sessionLogId,
+    target.runLogId,
+    'ui-display',
+    formatCompareLine(target.sessionLogId, target.runLogId, `[cua-panel] ${text}`),
+  )
+}
+
 /** ToolCallList 渲染诊断（并入 ui-display） */
 export function logStreamCompareToolRender(opts: {
   sessionKey?: string

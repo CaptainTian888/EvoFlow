@@ -219,18 +219,19 @@ function normalizeOptions(raw: unknown): ClarifyOption[] {
         ? raw
         : []
   const options: ClarifyOption[] = optionsRaw
-    .map((o: unknown, idx: number) => {
+    .map((o: unknown, idx: number): ClarifyOption | null => {
       if (typeof o === 'string') {
         const label = String(o || '').trim()
         if (!label) return null
         return { id: `opt_${idx + 1}`, label }
       }
-      const oid = String(o?.id || '').trim() || `opt_${idx + 1}`
-      const label = String(o?.label || '').trim()
+      const rec = (o && typeof o === 'object' ? o : {}) as Record<string, unknown>
+      const oid = String(rec.id || '').trim() || `opt_${idx + 1}`
+      const label = String(rec.label || '').trim()
       if (!label) return null
       return { id: oid, label }
     })
-    .filter(Boolean) as ClarifyOption[]
+    .filter((opt): opt is ClarifyOption => Boolean(opt))
   return options
 }
 

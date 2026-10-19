@@ -1,4 +1,4 @@
-import { memo, useEffect, useId, useRef, useState, type ReactNode } from 'react'
+import { memo, useEffect, useId, useState, type ReactNode } from 'react'
 import { ChevronRight } from 'lucide-react'
 
 /**
@@ -38,38 +38,17 @@ function TurnHistoryFoldInner({
   const [manual, setManual] = useState<boolean | null>(null)
   const [closing, setClosing] = useState(false)
   const bodyId = useId()
-  // v5.6：auto-open 粘滞。回合在本会话流式期间展开过（defaultOpen=true），完成后
-  // defaultOpen 翻 false（含 isStreaming 抖动）时不得自动收起——已实时显示过的
-  // 工具/思考轨迹一旦消失就是用户报告的「工具显示一次就没了」。仅用户手动收起
-  // （manual=false）才进入 v5.5 折叠态（CSS 只露最新正文）。DB 历史行 defaultOpen
-  // 从未为 true，仍默认折叠。
-  const lastAutoOpenRef = useRef(defaultOpen)
-  if (defaultOpen) lastAutoOpenRef.current = true
   useEffect(() => {
     if (!closing) return
     const t = window.setTimeout(() => setClosing(false), 190)
     return () => window.clearTimeout(t)
   }, [closing])
   if (!label) return <>{children}</>
-  // 展开优先级: 手动 > 粘滞 defaultOpen。manual=null 跟随 defaultOpen。
-  const expanded =
-    manual === true || (manual === null && (defaultOpen || lastAutoOpenRef.current))
+  // 展开优先级: 手动 > defaultOpen。manual=null 跟随 defaultOpen。
+  // 对话结束后 defaultOpen=false → 自动折叠，只显示正文（CSS 隐藏执行过程）。
+  const expanded = manual === true || (manual === null && defaultOpen)
 
-  // 【调试】追踪折叠状态
-  const prevExpandedRef = useRef<boolean | null>(null)
-  useEffect(() => {
-    const prev = prevExpandedRef.current
-    const now = new Date().toISOString()
-    console.log(
-      `[GearDebug] TurnHistoryFold expanded: ${prev} → ${expanded}`,
-      '| label:', label,
-      '| defaultOpen:', defaultOpen,
-      '| manual:', manual,
-      '| lastAutoOpenRef:', lastAutoOpenRef.current,
-      '| timestamp:', now,
-    )
-    prevExpandedRef.current = expanded
-  }, [expanded, label, defaultOpen, manual])
+
   // v5.3：bodyAlwaysRendered=true 时，body 永远渲染，children 自身用 CSS 决定可见性。
   const showBody = (!headerOnly && (expanded || closing)) || bodyAlwaysRendered
   const toggle = () => {

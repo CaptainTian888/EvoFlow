@@ -102,6 +102,32 @@ if (Test-Path -LiteralPath $skillsPublic) {
   }
 }
 
+# Official product plugins: single in-package copy (PyInstaller datas).
+# Sidecar official-plugins-bundle next to the exe is intentionally not shipped.
+$officialBundle = Join-Path $GatewayDir "_internal\evoflow\plugins\bundled_official"
+$requiredOfficial = @(
+  "browser-use", "computer-use", "node-repl-host", "documents", "pdf",
+  "presentations", "spreadsheets", "image-search", "plugin-creator", "skill-creator"
+)
+$sidecarDup = Join-Path $GatewayDir "official-plugins-bundle"
+if (Test-Path -LiteralPath $sidecarDup) {
+  $errors.Add("duplicate official-plugins-bundle sidecar present (plugins must live only under _internal/evoflow/plugins/bundled_official)")
+}
+if (-not (Test-Path -LiteralPath $officialBundle)) {
+  $errors.Add("bundled_official missing under $GatewayDir (sync official-plugins-bundle before PyInstaller)")
+} else {
+  foreach ($name in $requiredOfficial) {
+    if (-not (Test-Path -LiteralPath (Join-Path $officialBundle $name))) {
+      $errors.Add("official plugin missing from bundled_official: $name")
+    }
+  }
+  $helperEntry = Join-Path $officialBundle "cua-helper\runtime\dist\windows-helper.js"
+  $helperAddon = Join-Path $officialBundle "cua-helper\runtime\build\Release\ax_native.node"
+  if (-not ((Test-Path -LiteralPath $helperEntry) -and (Test-Path -LiteralPath $helperAddon))) {
+    $errors.Add("cua-helper runtime incomplete under bundled_official (need windows-helper.js + ax_native.node)")
+  }
+}
+
 # Soft size guard: lean sidecar should stay well under ~800MB uncompressed.
 $totalSum = (Get-ChildItem -LiteralPath $GatewayDir -Recurse -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum
 $totalMb = if ($null -ne $totalSum) { [math]::Round($totalSum / 1MB, 1) } else { 0 }

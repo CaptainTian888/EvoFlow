@@ -1,7 +1,9 @@
 /**
  * 状态面板（对齐 ZCode 形态）
  *
- * 三态：hidden（不渲染） / capsule（右下胶囊浮层） / panel（右栏一条）。
+ * 三态：hidden（不渲染） / capsule（右侧气泡） / panel（右侧悬浮卡）。
+ * 布局：对话 | 右侧占位（同底色）；视觉：内容多高就多高的悬浮卡，非通栏块。
+ * 与专用 Right Stage 互斥。
  * 两区：
  * - 进程：terminal + 子智能体 + 协作子任务 聚合成一条有序列表
  * - 智能体：复用 AgentCapabilityTabs（技能 / 工具 / MCP / 知识库）
@@ -19,7 +21,6 @@ import {
   CircleSlash,
   CircleX,
   Ellipsis,
-  Maximize2,
   Minimize2,
   TriangleAlert,
   type LucideIcon,
@@ -63,7 +64,9 @@ type Props = {
   terminalStreams?: Record<string, TerminalStreamTask> | null
   subagentTasks?: Record<string, SubagentStreamTask> | null
   workflowSubtasks?: CollabSubtaskSnapshot[] | null
+  backgroundWorks?: Record<string, import('../chat-types.js').BackgroundWorkStreamItem> | null
   onOpenProcessItem?: (item: ProcessItem) => void
+  onStopProcessItem?: (item: ProcessItem) => void
 
   /** 智能体区（复用旧 AgentPane 载荷） */
   agentLabel: string
@@ -113,7 +116,7 @@ const PROCESS_STATE_ICON: Record<ProcessState, LucideIcon> = {
 const EXPAND_POLICY_OPTIONS: Array<{ id: ChatSummaryExpandPolicy; label: string }> = [
   { id: 'auto-expand', label: '运行时自动展开' },
   { id: 'sticky', label: '保持面板（不收起）' },
-  { id: 'sticky-collapsed', label: '保持收起为胶囊' },
+  { id: 'sticky-collapsed', label: '保持收起为气泡' },
 ]
 
 function ArtifactRows({
@@ -282,13 +285,34 @@ function MorePane({
   )
 }
 
+function formatElapsed(startedAt: number | undefined, now: number): string {
+  if (!startedAt) return ''
+  const sec = Math.max(0, Math.floor((now - startedAt) / 1000))
+  if (sec < 60) return `${sec}s`
+  const min = Math.floor(sec / 60)
+  const rem = sec % 60
+  if (min < 60) return `${min}m ${rem}s`
+  const hr = Math.floor(min / 60)
+  return `${hr}h ${min % 60}m`
+}
+
 function ProcessList({
   summary,
   onOpenItem,
+  onStopItem,
 }: {
   summary: ProcessSummary
   onOpenItem?: (item: ProcessItem) => void
+  onStopItem?: (item: ProcessItem) => void
 }) {
+  const [now, setNow] = useState(() => Date.now())
+  const hasRunning = summary.items.some((it) => it.state === 'running')
+  useEffect(() => {
+    if (!hasRunning) return
+    const timer = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [hasRunning])
+
   if (!summary.items.length) {
     return <div className="chat-summary-empty">当前没有运行中的进程。</div>
   }
@@ -296,8 +320,9 @@ function ProcessList({
     <ul className="chat-summary-process-list">
       {summary.items.map((it) => {
         const StateIcon = PROCESS_STATE_ICON[it.state]
+        const elapsed = it.state === 'running' ? formatElapsed(it.startedAt, now) : ''
         return (
-          <li key={it.id}>
+          <li key={it.id} className="chat-summary-process-row">
             <button
               type="button"
               className={`chat-summary-process-item is-${it.state}`}
@@ -307,9 +332,23 @@ function ProcessList({
               <StateIcon className="chat-summary-process-icon" data-state={it.state} aria-hidden />
               <span className="chat-summary-process-main">
                 <span className="chat-summary-process-label">{it.label}</span>
-                {it.detail ? <span className="chat-summary-process-detail">{it.detail}</span> : null}
+                <span className="chat-summary-process-detail">
+                  {elapsed || it.detail || PROCESS_STATE_LABEL[it.state]}
+                </span>
               </span>
             </button>
+            {it.state === 'running' && it.cancellable && it.workId && onStopItem ? (
+              <button
+                type="button"
+                className="chat-summary-process-stop"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onStopItem(it)
+                }}
+              >
+                停止
+              </button>
+            ) : null}
           </li>
         )
       })}
@@ -325,7 +364,9 @@ function ChatSummaryPanelInner({
   terminalStreams,
   subagentTasks,
   workflowSubtasks,
+  backgroundWorks,
   onOpenProcessItem,
+  onStopProcessItem,
   agentLabel,
   modelLabel,
   modelName,
@@ -394,26 +435,78 @@ function ChatSummaryPanelInner({
         terminalStreams,
         subagentTasks,
         workflowSubtasks,
+        backgroundWorks,
       }),
-    [terminalStreams, subagentTasks, workflowSubtasks],
+    [terminalStreams, subagentTasks, workflowSubtasks, backgroundWorks],
   )
 
   const pickPolicy = useCallback((next: ChatSummaryExpandPolicy) => {
     setPolicy(next)
     saveChatSummaryExpandPolicy(next)
+    setUserCollapsed(false)
     setPolicyOpen(false)
   }, [])
 
-  // 展开策略：胶囊态 + 有进程在跑时自动撑成面板
+  // 手动收起标记：auto-expand 策略下用户手动收起后，运行中不再强制撑开，
+  // 直到新进程启动（running 0→>0）或用户手动展开才恢复自动展开语义。
+  // 用 state 而非 ref：displayMode 已是 capsule 时点击收起，父级 setState 值不变
+  // 不触发重渲染，必须靠本组件自身 state 变化驱动 effectiveMode 重算。
+  // 初始跟 displayMode：收起后父级重挂气泡。
+  // 若这里仍从 false 起步，auto-expand 会立刻把卡片又撑开。
+  const [userCollapsed, setUserCollapsed] = useState(() => displayMode === 'capsule')
+  const prevRunningRef = useRef(summary.running)
+
+  const goPanel = useCallback(() => {
+    setUserCollapsed(false)
+    onDisplayModeChange('panel')
+  }, [onDisplayModeChange])
+  const goCapsule = useCallback(() => {
+    setUserCollapsed(true)
+    onDisplayModeChange('capsule')
+  }, [onDisplayModeChange])
+
+  // 新进程启动时清除手动收起标记，恢复 auto-expand 自动展开语义
+  useEffect(() => {
+    if (summary.running > 0 && prevRunningRef.current === 0) setUserCollapsed(false)
+    prevRunningRef.current = summary.running
+  }, [summary.running])
+
+  // 实时跳转：平台条目 / 产物发布时（ChatApp 侧 publishPlatformEntries /
+  // publishArtifacts 会更新 focus id），面板自动切到对应 tab 并撑开。
+  const prevPlatformFocusRef = useRef('')
+  useEffect(() => {
+    const focus = String(platformFocusEntryId || '').trim()
+    if (!focus || focus === prevPlatformFocusRef.current) return
+    prevPlatformFocusRef.current = focus
+    setPanelTab('platform')
+    if (displayMode === 'capsule') goPanel()
+  }, [platformFocusEntryId, displayMode, goPanel])
+
+  const prevArtifactFocusRef = useRef('')
+  useEffect(() => {
+    const focus = String(artifactFocusId || '').trim()
+    if (!focus || focus === prevArtifactFocusRef.current) return
+    prevArtifactFocusRef.current = focus
+    setPanelTab('artifacts')
+    if (displayMode === 'capsule') goPanel()
+  }, [artifactFocusId, displayMode, goPanel])
+
+  // 展开策略：胶囊态 + 有进程在跑时自动撑成面板（用户手动收起后尊重选择）。
+  // 仅会话 isRunning、尚无进程项时不撑开，避免「还没开终端」就弹出状态卡暗示终端调用。
   const effectiveMode = useMemo<ChatSummaryDisplayMode>(() => {
     if (displayMode === 'hidden') return 'hidden'
     if (displayMode === 'panel') return 'panel'
-    if (policy === 'auto-expand' && (summary.running > 0 || isRunning)) return 'panel'
+    if (policy === 'auto-expand' && !userCollapsed && summary.running > 0) return 'panel'
     return 'capsule'
-  }, [displayMode, policy, summary.running, isRunning])
+  }, [displayMode, policy, userCollapsed, summary.running])
 
-  const goPanel = useCallback(() => onDisplayModeChange('panel'), [onDisplayModeChange])
-  const goCapsule = useCallback(() => onDisplayModeChange('capsule'), [onDisplayModeChange])
+  // auto-expand 只改了 effectiveMode 时，通知父级切回 panel，
+  // 以便右侧空白从气泡撑成悬浮卡（并让出专用侧栏）。
+  useEffect(() => {
+    if (displayMode !== 'capsule') return
+    if (effectiveMode !== 'panel') return
+    onDisplayModeChange('panel')
+  }, [displayMode, effectiveMode, onDisplayModeChange])
 
   // 面板 tab：智能体固定在最前，产物 / 平台带计数，
   // 岗位 / 任务仅在员工会话且对应 pane 存在时出现，调试仅在观测开启时出现。
@@ -453,16 +546,61 @@ function ChatSummaryPanelInner({
     return panelTab
   }, [panelTab, obsEnabled, isEmployeeSession])
 
+  // 悬浮卡展开：先挂卡片 DOM（缩放起点），再下一帧加 is-open；
+  // 收起：先去掉 is-open 播完缩放，再换成气泡。
+  const wantExpanded = effectiveMode === 'panel'
+  const [cardOpen, setCardOpen] = useState(() => wantExpanded)
+  const [showBubble, setShowBubble] = useState(() => !wantExpanded)
+  const closeTimerRef = useRef(0)
+  const expandRafRef = useRef(0)
+
+  useEffect(() => {
+    if (effectiveMode === 'hidden') return
+    if (closeTimerRef.current) {
+      window.clearTimeout(closeTimerRef.current)
+      closeTimerRef.current = 0
+    }
+    if (expandRafRef.current) {
+      cancelAnimationFrame(expandRafRef.current)
+      expandRafRef.current = 0
+    }
+    if (wantExpanded) {
+      setShowBubble(false)
+      let cancelled = false
+      expandRafRef.current = requestAnimationFrame(() => {
+        expandRafRef.current = requestAnimationFrame(() => {
+          if (!cancelled) setCardOpen(true)
+          expandRafRef.current = 0
+        })
+      })
+      return () => {
+        cancelled = true
+        if (expandRafRef.current) cancelAnimationFrame(expandRafRef.current)
+      }
+    }
+    setCardOpen(false)
+    const reduce =
+      typeof window !== 'undefined' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    closeTimerRef.current = window.setTimeout(
+      () => {
+        setShowBubble(true)
+        closeTimerRef.current = 0
+      },
+      reduce ? 0 : 240,
+    )
+    return () => {
+      if (closeTimerRef.current) window.clearTimeout(closeTimerRef.current)
+    }
+  }, [wantExpanded, effectiveMode])
+
   if (effectiveMode === 'hidden') return null
 
-  const isCapsule = effectiveMode === 'capsule'
   const displayName = String(agentLabel || '').trim() || '未选择 Agent'
   const bio = String(agentDescription || '').trim()
   const modelText = String(modelLabel || modelName || '').trim()
   const sessionTitleText = String(sessionTitle || '').trim()
-
-  // 胶囊摘要：没有进程时退到会话标题，避免出现无意义的「空闲」
-  const capsuleText = summary.items.length ? summary.capsuleLabel : sessionTitleText || '空闲'
+  const bubbleTitle = summary.items.length ? summary.capsuleLabel : sessionTitleText || '状态'
 
   const CapsuleIcon =
     summary.capsuleState === 'running'
@@ -473,34 +611,26 @@ function ChatSummaryPanelInner({
 
   return (
     <aside
-      className={`chat-summary-panel ${isCapsule ? 'is-capsule' : 'is-panel'}`}
+      className={`chat-summary-float${cardOpen ? ' is-open' : ''}${showBubble ? ' is-bubble' : ''}`}
       data-testid="chat-summary-panel"
-      data-state={isCapsule ? 'capsule' : 'panel'}
+      data-state={showBubble ? 'capsule' : 'panel'}
       data-display-mode={effectiveMode}
       data-running-count={summary.running}
       aria-label="状态"
     >
-      {isCapsule ? (
-        <div className="chat-summary-capsule-hit-wrap">
-          <button
-            type="button"
-            className="chat-summary-capsule-hit"
-            aria-label="展开状态"
-            onClick={goPanel}
-          >
-            <span className="chat-summary-capsule-icon" aria-hidden>
-              <CapsuleIcon
-                style={{ color: 'var(--ef-color-success, #26875a)' }}
-              />
-              <Maximize2 style={{ color: 'var(--text-primary)' }} />
-            </span>
-            <span className="chat-summary-capsule-label">{capsuleText}</span>
-          </button>
-        </div>
+      {showBubble ? (
+        <button
+          type="button"
+          className="chat-summary-bubble"
+          data-state={summary.capsuleState}
+          aria-label="展开状态面板"
+          title={bubbleTitle}
+          onClick={goPanel}
+        >
+          <CapsuleIcon aria-hidden />
+        </button>
       ) : (
-        <>
-          {/* 头部：智能体 / 产物 / 平台 / 岗位 / 任务 / 调试 共用同一 tab 条，
-              右侧仍留 ··· / 收起。 */}
+        <div className="chat-summary-panel is-panel">
           <div className="chat-summary-panel-head">
             <div className="chat-summary-more-tabs" role="tablist" aria-label="状态面板">
               {panelTabs.map((t) => (
@@ -549,7 +679,7 @@ function ChatSummaryPanelInner({
                 type="button"
                 className="chat-summary-panel-icon-btn"
                 data-summary-action="collapse"
-                aria-label="收起为胶囊"
+                aria-label="收起"
                 onClick={goCapsule}
               >
                 <Minimize2 aria-hidden />
@@ -560,82 +690,85 @@ function ChatSummaryPanelInner({
           <div className="chat-summary-panel-scroll">
             {effectivePanelTab === 'agent' ? (
               <div className="chat-summary-agent-body">
-              <div
-                className={`chat-summary-agent-header${onEditAgent ? ' is-editable' : ''}`}
-                role={onEditAgent ? 'button' : undefined}
-                tabIndex={onEditAgent ? 0 : undefined}
-                title={onEditAgent ? '点击编辑此智能体' : undefined}
-                onClick={onEditAgent}
-                onKeyDown={
-                  onEditAgent
-                    ? (e) => {
-                        if (e.key === 'Enter' || e.key === ' ') {
-                          e.preventDefault()
-                          onEditAgent()
+                <div
+                  className={`chat-summary-agent-header${onEditAgent ? ' is-editable' : ''}`}
+                  role={onEditAgent ? 'button' : undefined}
+                  tabIndex={onEditAgent ? 0 : undefined}
+                  title={onEditAgent ? '点击编辑此智能体' : undefined}
+                  onClick={onEditAgent}
+                  onKeyDown={
+                    onEditAgent
+                      ? (e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault()
+                            onEditAgent()
+                          }
                         }
-                      }
-                    : undefined
-                }
-              >
-                <span className="chat-summary-agent-portrait">
-                  <AgentAvatar
-                    agent={agent}
-                    agentCode={agentCode || undefined}
-                    size={40}
-                    title={displayName}
-                  />
-                  <span className="chat-summary-agent-live" title={isRunning ? '执行中' : '在线'} />
-                </span>
-                <span className="chat-summary-agent-main">
-                  <span className="chat-summary-agent-name-row">
-                    <span className="chat-summary-agent-name" title={displayName}>
-                      {displayName}
+                      : undefined
+                  }
+                >
+                  <span className="chat-summary-agent-portrait">
+                    <AgentAvatar
+                      agent={agent}
+                      agentCode={agentCode || undefined}
+                      size={40}
+                      title={displayName}
+                    />
+                    <span className="chat-summary-agent-live" title={isRunning ? '执行中' : '在线'} />
+                  </span>
+                  <span className="chat-summary-agent-main">
+                    <span className="chat-summary-agent-name-row">
+                      <span className="chat-summary-agent-name" title={displayName}>
+                        {displayName}
+                      </span>
+                      {onSwitchAgent ? (
+                        <button
+                          type="button"
+                          className="chat-summary-panel-icon-btn"
+                          aria-label="切换 Agent"
+                          title="切换 Agent"
+                          onClick={onSwitchAgent}
+                          style={{ width: 20, height: 20 }}
+                        >
+                          <ChevronRight aria-hidden />
+                        </button>
+                      ) : null}
                     </span>
-                    {onSwitchAgent ? (
-                      <button
-                        type="button"
-                        className="chat-summary-panel-icon-btn"
-                        aria-label="切换 Agent"
-                        title="切换 Agent"
-                        onClick={onSwitchAgent}
-                        style={{ width: 20, height: 20 }}
-                      >
-                        <ChevronRight aria-hidden />
-                      </button>
+                    {modelText ? (
+                      <span className="chat-summary-agent-meta" title={modelText}>
+                        {modelText}
+                      </span>
                     ) : null}
                   </span>
-                  {modelText ? (
-                    <span className="chat-summary-agent-meta" title={modelText}>
-                      {modelText}
-                    </span>
-                  ) : null}
-                </span>
-              </div>
-              {bio ? (
-                <p className="chat-summary-agent-bio" title={bio}>
-                  {bio}
-                </p>
-              ) : null}
-              <AgentCapabilityTabs
-                skillNames={skillNames}
-                toolNames={toolNames}
-                mcpServers={mcpServers}
-                knowledgeVaultIds={knowledgeVaultIds}
-                modelName={String(modelName || modelText)}
-                editable={Boolean(onPatchCapabilities && agentCode)}
-                busy={capabilityBusy}
-                onPatch={onPatchCapabilities}
-              />
-              {onAssetQuickAction ? (
-                <AssetQuickActions onAction={onAssetQuickAction} busy={assetQuickBusy} />
-              ) : null}
-
+                </div>
+                {bio ? (
+                  <p className="chat-summary-agent-bio" title={bio}>
+                    {bio}
+                  </p>
+                ) : null}
+                <AgentCapabilityTabs
+                  skillNames={skillNames}
+                  toolNames={toolNames}
+                  mcpServers={mcpServers}
+                  knowledgeVaultIds={knowledgeVaultIds}
+                  modelName={String(modelName || modelText)}
+                  editable={Boolean(onPatchCapabilities && agentCode)}
+                  busy={capabilityBusy}
+                  onPatch={onPatchCapabilities}
+                />
+                {onAssetQuickAction ? (
+                  <AssetQuickActions onAction={onAssetQuickAction} busy={assetQuickBusy} />
+                ) : null}
               </div>
             ) : null}
 
             {effectivePanelTab === 'process' ? (
               <div className="chat-summary-process-body">
-                <ProcessList summary={summary} onOpenItem={onOpenProcessItem} />
+                <ProcessList
+                  summary={summary}
+                  onOpenItem={onOpenProcessItem}
+                  onStopItem={onStopProcessItem}
+                />
               </div>
             ) : null}
 
@@ -658,7 +791,7 @@ function ChatSummaryPanelInner({
               />
             ) : null}
           </div>
-        </>
+        </div>
       )}
     </aside>
   )

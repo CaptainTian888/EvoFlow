@@ -939,12 +939,26 @@ def _runtime_os_label() -> str:
 
 
 def _runtime_shell_label(*, prompt_language: str | None = None) -> str:
-    if resolve_prompt_language(prompt_language) == "en":
+    """Describe the shell the Bash tool actually uses (not the user's interactive console)."""
+    en = resolve_prompt_language(prompt_language) == "en"
+    git_bash = False
+    if sys.platform == "win32":
+        try:
+            from evoflow.tools.zcode_port.bash_tool import bash_shell
+
+            git_bash = bash_shell() is not None
+        except Exception:
+            git_bash = False
+    if en:
         if sys.platform == "win32":
-            return "PowerShell / cmd (default PowerShell; chain with ; not &&)"
+            if git_bash:
+                return "Git Bash / POSIX (Bash tool; chain with &&; prefer git -C)"
+            return "PowerShell / cmd (no Git Bash found; chain with ; not &&)"
         return "bash / zsh (resolved from runtime context)"
     if sys.platform == "win32":
-        return "PowerShell / cmd（默认 PowerShell；多条命令用 ; 串联，勿用 &&）"
+        if git_bash:
+            return "Git Bash / POSIX（Bash 工具；可用 && / 管道；优先 git -C）"
+        return "PowerShell / cmd（未找到 Git Bash；多条命令用 ; 串联，勿用 &&）"
     return "bash / zsh（由系统上下文最终决定）"
 
 

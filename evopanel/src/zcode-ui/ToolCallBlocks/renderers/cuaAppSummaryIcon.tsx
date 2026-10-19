@@ -1,7 +1,9 @@
+// NOT MOUNTED. 产品摘要图标在 react/components/CuaSummaryLeadingIcon.tsx。
 import { useEffect, useState, type ReactNode } from "react";
 import type { ApplicationIconRequest } from "@zcode/shared";
 import { cn } from "@/components/lib/utils.js";
 import { useOptionalPlatform } from "@/hooks/usePlatform.js";
+import { apiUrlAsync } from "@/lib/api-client.js";
 import { CUA_TOOL_ICON } from "@/ToolCallBlocks/renderers/cuaIcon.js";
 
 export function CuaAppSummaryIcon({
@@ -29,15 +31,46 @@ export function CuaAppSummaryIcon({
     let active = true;
     setIconDataUrl(null);
     const request = iconRequest ?? bundleId;
-    if (!request || !platform?.getApplicationIcon) return () => undefined;
-    void platform
-      .getApplicationIcon(request)
-      .then((result) => {
-        if (active) setIconDataUrl(result?.iconDataUrl ?? null);
-      })
-      .catch(() => {
-        if (active) setIconDataUrl(null);
-      });
+    if (!request) return () => undefined;
+    const resolve = async (): Promise<string | null> => {
+      // 平台原生 resolver 优先（ZCode 桌面语义）；Captain Work 无实现时兜底走网关
+      // /api/cua/app-icon（PowerShell 按 locator 提取）。字符串形式是旧 bundle_id，
+      // 无法构造 locator，交回调用方的 fallback 图形。
+      if (typeof request !== "string" && platform?.getApplicationIcon) {
+        try {
+          const result = await platform.getApplicationIcon(request);
+          if (result?.iconDataUrl) return result.iconDataUrl;
+        } catch {
+          // 平台实现失败 → 继续网关兜底
+        }
+      }
+      if (typeof request === "string") return null;
+      try {
+        // Tauri WebView 没有同端口静态站：相对 /api 会打到错误 origin。
+        // 与 CuaToolPreview 一致，经 apiUrlAsync 解析到本机 Gateway。
+        const response = await fetch(await apiUrlAsync("/cua/app-icon"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(request),
+        });
+        if (!response.ok) return null;
+        const result = (await response.json()) as { iconDataUrl?: string } | null;
+        return result?.iconDataUrl ?? null;
+      } catch {
+        return null;
+      }
+    };
+    void resolve().then((dataUrl) => {
+      if (active) setIconDataUrl(dataUrl);
+      const label = typeof request === "string" ? request : name;
+      void import("../../../react/lib/stream-compare-file-log.js")
+        .then((mod) =>
+          mod.logCuaPanelDisplay(
+            `icon app=${label} ${dataUrl ? "ok" : "miss"}`,
+          ),
+        )
+        .catch(() => undefined);
+    });
     return () => {
       active = false;
     };

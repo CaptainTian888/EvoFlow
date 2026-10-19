@@ -1,4 +1,5 @@
 import { apiUrlAsync } from './api-client.js'
+import { blog } from './browser-unified-log.js'
 
 export type BrowserEmbedInfo = {
   threadId: string
@@ -50,22 +51,38 @@ export async function browserEmbedUpsert(opts: {
   y: number
   width: number
   height: number
+  /** 页面 innerWidth/innerHeight。有值时 Rust 按客户区/视口把 CSS 像素换成物理像素。 */
+  viewportWidth?: number
+  viewportHeight?: number
+  /** 早处理器/引擎兜底的估算边界调用必须置 true：面板接管后估算值不得移动窗口。 */
+  respectManagedBounds?: boolean
+  /** 切签：用 location.replace，避免多标签共用 HWND 时污染后退栈。 */
+  replaceUrl?: boolean
 }): Promise<BrowserEmbedInfo | null> {
   if (!isDesktopTauri()) return null
+  blog(
+    'info',
+    `[client] upsert tid=${opts.threadId} bounds=(${opts.x},${opts.y} ${opts.width}x${opts.height}) url=${opts.url || 'about:blank'}${opts.respectManagedBounds ? ' managed-only' : ''}${opts.replaceUrl ? ' replace' : ''}`,
+  )
   try {
+    const url = String(opts.url || '').trim()
     return await invokeTauri<BrowserEmbedInfo>('browser_embed_upsert', {
       threadId: opts.threadId,
-      // Never send `null`: a null here used to come back as "invalid port
-      // number" from Tauri's URL handling. The panel legitimately has no page
-      // yet on first open, and `about:blank` expresses that without ambiguity.
-      url: String(opts.url || '').trim() || 'about:blank',
+      // 有地址才传：恢复显示时不带 url，避免把现有页导航成 about:blank。
+      // 新建窗口时 Rust 侧对 None 仍落到 about:blank。
+      url: url || null,
       x: opts.x,
       y: opts.y,
       width: opts.width,
       height: opts.height,
+      viewportWidth: opts.viewportWidth ?? null,
+      viewportHeight: opts.viewportHeight ?? null,
+      managedOnly: opts.respectManagedBounds === true ? true : null,
+      replaceUrl: opts.replaceUrl === true ? true : null,
     })
   } catch (err) {
     console.warn('[browser-embed] upsert failed', err)
+    blog('warn', `[client] upsert failed tid=${opts.threadId} err=${err}`)
     return null
   }
 }
@@ -76,23 +93,68 @@ export async function browserEmbedSetBounds(opts: {
   y: number
   width: number
   height: number
-}): Promise<void> {
-  if (!isDesktopTauri()) return
+  viewportWidth?: number
+  viewportHeight?: number
+  /** 当前右栏就是这个浏览器页。false 时 Rust 不会把窗口再显示出来。 */
+  present?: boolean
+}): Promise<boolean> {
+  if (!isDesktopTauri()) return false
+  // 贴位很密，默认不打 info，避免拖动时日志拖慢 IPC。
   try {
-    await invokeTauri('browser_embed_set_bounds', {
+    return await invokeTauri<boolean>('browser_embed_set_bounds', {
       threadId: opts.threadId,
       x: opts.x,
       y: opts.y,
       width: opts.width,
       height: opts.height,
+      viewportWidth: opts.viewportWidth ?? null,
+      viewportHeight: opts.viewportHeight ?? null,
+      present: opts.present === true,
     })
-  } catch {
-    // ignore resize races while panel animates
+  } catch (err) {
+    console.warn('[browser-embed] setBounds failed', err)
+    return false
+  }
+}
+
+/** 内嵌页 ZoomFactor（0.5–2.5）。与页面内 Ctrl+滚轮同一套缩放。 */
+export async function browserEmbedSetZoom(threadId: string, factor: number): Promise<boolean> {
+  const tid = String(threadId || '').trim()
+  if (!isDesktopTauri() || !tid) return false
+  const scale = Math.min(2.5, Math.max(0.5, Number(factor) || 1))
+  try {
+    const ok = await invokeTauri<boolean>('browser_embed_set_zoom', {
+      threadId: tid,
+      factor: scale,
+    })
+    if (!ok) {
+      console.warn('[browser-embed] setZoom returned false', { tid, scale })
+      blog('warn', `[client] setZoom missed tid=${tid} factor=${scale}`)
+    }
+    return ok
+  } catch (err) {
+    console.warn('[browser-embed] setZoom failed', err)
+    blog('warn', `[client] setZoom failed tid=${tid} err=${err}`)
+    return false
+  }
+}
+
+/** 非当前标签：把原生窗口挪出屏幕，不销毁（CDP 仍可用）。 */
+export async function browserEmbedPark(threadId: string): Promise<void> {
+  const tid = String(threadId || '').trim()
+  if (!isDesktopTauri() || !tid) return
+  blog('info', `[client] park tid=${tid}`)
+  try {
+    await invokeTauri('browser_embed_park', { threadId: tid })
+  } catch (err) {
+    console.warn('[browser-embed] park failed', err)
+    blog('warn', `[client] park failed tid=${tid} err=${err}`)
   }
 }
 
 export async function browserEmbedClose(threadId: string): Promise<void> {
   if (!isDesktopTauri()) return
+  blog('info', `[client] close tid=${threadId}`)
   try {
     await invokeTauri('browser_embed_close', { threadId })
   } catch {
@@ -116,6 +178,7 @@ export async function registerBrowserEmbedCdp(threadId: string, cdpUrl: string):
     return res.ok
   } catch (err) {
     console.warn('[browser-embed] register cdp failed', err)
+    blog('warn', `[client] register cdp failed tid=${tid} err=${err}`)
     return false
   }
 }

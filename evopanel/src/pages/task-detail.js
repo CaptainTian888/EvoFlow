@@ -621,11 +621,12 @@ function renderTaskOutcomePanel(page, state) {
     cards.push(`
       <section class="td-card">
         <h2 class="td-card-title">本岗交付物</h2>
+        <p class="td-card-sub">优先看带「最终交付」标记的文件；过程产物默认收起，可按节点来源核对。</p>
         ${renderOutputItemCardsHtml(primary, escapeHtml, { enablePreview: true })}
         ${
           process.length
             ? `<details class="td-process-fold">
-                <summary class="td-process-summary">过程产物（${process.length}）</summary>
+                <summary class="td-process-summary">过程产物（${process.length}）· 中间节点产出</summary>
                 ${renderOutputItemCardsHtml(process, escapeHtml, { enablePreview: true })}
               </details>`
             : ''
@@ -963,12 +964,16 @@ function renderTaskDecisionPanel(page, state) {
     el.innerHTML = `
       <div class="task-decision-copy">
         <strong>执行失败</strong>
-        <p>可查看失败原因后重试；删除请用右上角「更多」。</p>
+        <p>可重试失败步骤（仅补跑失败子任务，已完成的不动），或重新执行整个任务；删除请用右上角「更多」。</p>
       </div>
       <div class="task-decision-actions">
-        <button type="button" class="btn btn-primary" data-review-act="restart">再跑一次</button>
+        <button type="button" class="btn btn-primary" data-review-act="retry-failed">重试失败步骤</button>
+        <button type="button" class="btn btn-secondary" data-review-act="restart">重新执行</button>
         ${isChat ? '<button type="button" class="btn btn-secondary" id="btn-view-workflow-fail">查看工作流</button>' : ''}
       </div>`
+    el.querySelector('[data-review-act="retry-failed"]')?.addEventListener('click', () => {
+      void handleRetryFailedTask(page, state)
+    })
     el.querySelector('[data-review-act="restart"]')?.addEventListener('click', () => {
       void handleRestartTask(page, state)
     })
@@ -1233,7 +1238,7 @@ function renderExecTimeline(page, state) {
     <ol class="td-timeline-list">${items}</ol>
     <div class="td-timeline-actions">
       ${isTaskPausableStatus(task.status) || normalizeTaskStatusKey(task.status) === 'paused'
-        ? `<button type="button" class="btn btn-sm btn-warning" data-timeline-act="pause">${normalizeTaskStatusKey(task.status) === 'paused' ? '继续' : '暂停'}</button>`
+        ? `<button type="button" class="btn btn-sm btn-warning" data-timeline-act="pause">${normalizeTaskStatusKey(task.status) === 'paused' ? '恢复执行' : '暂停'}</button>`
         : ''}
       ${isTaskCancellableStatus(task.status)
         ? '<button type="button" class="btn btn-sm btn-secondary" data-timeline-act="cancel">取消</button>'
@@ -1400,6 +1405,19 @@ async function handleCopyRecreateFromDetail(page, state) {
       }
     },
   })
+}
+
+async function handleRetryFailedTask(page, state) {
+  const yes = await showConfirm('将仅重试失败的子任务，已完成的子任务保留不动。确定继续？')
+  if (!yes) return
+  try {
+    toast('正在重试失败步骤…', 'info')
+    await api.retryTask(state.taskId, { retryAllFailed: true })
+    toast('失败步骤已重新排队', 'success')
+    await loadTaskDetail(page, state)
+  } catch (e) {
+    toast('重试失败步骤出错：' + e, 'error')
+  }
 }
 
 async function handleRestartTask(page, state) {
@@ -2863,7 +2881,7 @@ function updateButtons(page, state) {
     btnPause.className = 'btn btn-warning btn-sm'
   } else if (taskStatus === 'paused') {
     btnPause.style.display = 'inline-flex'
-    btnPause.textContent = '▶ 继续'
+    btnPause.textContent = '▶ 恢复执行'
     btnPause.className = 'btn btn-success btn-sm'
   } else {
     btnPause.style.display = 'none'
@@ -3092,10 +3110,10 @@ async function handlePauseButton(page, state) {
       state.task.status = 'paused'
       toast('任务已暂停', 'success')
     } else if (taskStatus === 'paused') {
-      btnPause.textContent = '▶ 继续中...'
+      btnPause.textContent = '▶ 恢复中...'
       const resp = await api.resumeTask(state.taskId)
       state.task.status = resp?.status || resp?.data?.status || 'planned'
-      toast('任务已继续', 'success')
+      toast('任务已恢复执行', 'success')
     }
     updateButtons(page, state)
     setupOutputPolling(page, state)

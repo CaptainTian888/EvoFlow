@@ -181,7 +181,11 @@ function dispatchAgUiWireFrame(self, key, runId, data, lane) {
     const name = String(data.name || '')
     const value = data.value
     if (name === 'display_segments' && Array.isArray(value) && value.length) {
-      lane.authoritativeDisplaySegments = value
+      // 后端 block ledger 派生可能缺 pending ToolMessage 的 tools 段,补齐(审批卡住 bug)。
+      lane.authoritativeDisplaySegments = ensurePendingApprovalToolsSegments(
+        value,
+        lane.aguiMessagesSnapshot,
+      )
       flushFinalAfterAgUiEvent = true
       sfLog('agui-wire display_segments', {
         sessionKey: key,
@@ -623,18 +627,28 @@ export function isDesktopDirectApiMode() {
   }
 }
 
-let _cachedGwBaseUrl = null
-
-/** 获取 Gateway 后端地址（缓存结果，避免重复 invoke） */
+/**
+ * Gateway base for chat/SSE. Must match ``tauri-api.js`` resolution
+ * (env / runtime / trusted URL) — a private invoke-only cache used to pin a
+ * dead port (e.g. 8912) while uvicorn sits on 8070, which surfaces as the
+ * opaque toast「服务连接异常，请确认服务已启动后重试」.
+ */
 async function _getGatewayBaseUrl() {
-  if (_cachedGwBaseUrl !== null) return _cachedGwBaseUrl
-  if (isEvoflowTauri()) {
-    const { invoke } = await import('@tauri-apps/api/core')
-    _cachedGwBaseUrl = await invoke('get_gateway_base_url')
-  } else {
-    _cachedGwBaseUrl = ''
+  try {
+    const { getGatewayBaseUrl } = await import('./tauri-api.js')
+    return String((await getGatewayBaseUrl()) || '').trim().replace(/\/+$/, '')
+  } catch (e) {
+    console.warn('[evoflow] getGatewayBaseUrl via tauri-api failed; falling back', e)
   }
-  return _cachedGwBaseUrl
+  if (isEvoflowTauri()) {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core')
+      return String((await invoke('get_gateway_base_url')) || '').trim().replace(/\/+$/, '')
+    } catch (e) {
+      console.warn('[evoflow] get_gateway_base_url invoke failed', e)
+    }
+  }
+  return ''
 }
 
 /** 合并 WebUI JWT（切换用户 / SSO 后按登录身份访问 Gateway）。 */
@@ -1029,11 +1043,44 @@ export async function evoflowFetchStream(url, options = {}) {
   // DEV 模式 或 桌面端直连 API 模式：直走浏览器 fetch，DevTools Network 可见
   const shouldUseDirectFetch = import.meta.env.DEV || isDesktopDirectApiMode()
   if (shouldUseDirectFetch) {
-    transportLog('sse transport=direct-api-fetch', pathOnly)
-    return _gatewayAuthFetch(
-      (await _getGatewayBaseUrl()) + url,
-      options
-    )
+    const base = await _getGatewayBaseUrl()
+    // Empty base → same-origin / Vite proxy (1521→8070). Never fetch "undefined/…".
+    const fullUrl = base ? `${base}${url}` : url
+    transportLog('sse transport=direct-api-fetch', pathOnly, { base: base || '(vite-proxy)' })
+    try {
+      return await _gatewayAuthFetch(fullUrl, options)
+    } catch (err) {
+      const diag = _diagTransportErr('direct-api-fetch', err)
+      const isChatSend = isRunsStream
+      // panel-stream reconnects every few seconds while Gateway is down — don't
+      // flood DevTools with identical console.error stacks (chat send still logs).
+      _logTransportDiag('runs-stream/direct-api-fetch/fail', {
+        id: diagRunId,
+        path: pathOnly,
+        base: base || '',
+        fullUrl: String(fullUrl).slice(0, 160),
+        ...diag,
+      })
+      if (isChatSend) {
+        console.error('[evoflow] direct Gateway fetch failed', { base, fullUrl, err })
+      }
+      // Absolute 8070 refused → one shot via Vite proxy (survives brief bind races).
+      if (
+        base &&
+        /failed to fetch|err_connection_refused|networkerror/i.test(String(err?.message || err || ''))
+      ) {
+        try {
+          transportLog('sse transport=direct-api-fetch-vite-fallback', pathOnly)
+          return await _gatewayAuthFetch(url, options)
+        } catch (err2) {
+          if (isChatSend) {
+            console.error('[evoflow] Vite-proxy Gateway fallback also failed', err2)
+          }
+          throw err2
+        }
+      }
+      throw err
+    }
   }
 
   let forcePipeChat = false
@@ -2177,6 +2224,7 @@ const SESSION_USER_PREF_KEYS = [
   'workspace_user_pinned',
   'preferred_skills',
   'preferred_skill',
+  'preferred_plugins',
 ]
 
 function isWorkspaceUserPinned(ctx) {
@@ -4016,6 +4064,20 @@ function finalTextFromDisplaySegments(segs) {
   return mergeTurnAssistantTextsForDisplay(parts)
 }
 
+/** 解析工具结果内容里的 ``_evoflow_tool`` 信封状态；非信封返回 null。 */
+function parseToolApprovalEnvelopeStatus(content) {
+  const t = String(content || '').trim()
+  if (!t || t[0] !== '{') return null
+  try {
+    const obj = JSON.parse(t)
+    const meta = obj && typeof obj === 'object' ? obj._evoflow_tool : null
+    const st = meta && typeof meta === 'object' ? String(meta.status || '').trim().toLowerCase() : ''
+    return st || null
+  } catch {
+    return null
+  }
+}
+
 export function agUiDisplaySegmentsFromMessagesSnapshot(messages) {
   if (!Array.isArray(messages) || !messages.length) return []
   const segs = []
@@ -4027,13 +4089,26 @@ export function agUiDisplaySegmentsFromMessagesSnapshot(messages) {
     const role = String(msg.role || '').trim().toLowerCase()
     const content = String(msg.content || '').trim()
     const toolCalls = msg.toolCalls || msg.tool_calls
-    if (!id) continue
-
-    // role:tool rows are tool results — never assistant body text
-    if (role === 'tool' || role === 'toolresult' || role === 'tool_result') continue
-
     const wireSeq =
       typeof msg.seq === 'number' && Number.isFinite(msg.seq) ? msg.seq : null
+    if (!id) continue
+
+    // role:tool rows are tool results — never assistant body text.
+    // 授权挂起例外:审批暂停时 pending ToolMessage 是独立的 role:tool 行
+    // (assistant 快照消息不带 tool_calls),必须产出 tools 段,否则 final
+    // 落行后审批卡片会从实时视图消失(工具审批卡住 bug,2026-10-15)。
+    if (role === 'tool' || role === 'toolresult' || role === 'tool_result') {
+      if (parseToolApprovalEnvelopeStatus(content) === 'pending_approval') {
+        const tcId = String(msg.toolCallId || msg.tool_call_id || '').trim()
+        if (tcId) {
+          const seq = wireSeq ?? ++fallbackSeq
+          fallbackSeq = Math.max(fallbackSeq, seq)
+          segs.push({ id, seq, kind: 'tools', ids: [tcId], block_kind: 'tools', blockKind: 'tools' })
+        }
+      }
+      continue
+    }
+
     const blockKindRaw = String(msg.blockKind || msg.block_kind || '').trim()
 
     if (Array.isArray(toolCalls) && toolCalls.length) {
@@ -4061,6 +4136,72 @@ export function agUiDisplaySegmentsFromMessagesSnapshot(messages) {
     }
   }
   return segs.sort((a, b) => (a?.seq ?? 0) - (b?.seq ?? 0))
+}
+
+/** 从快照消息提取 pending-approval 工具行（tool_call_id + seq）。 */
+function pendingApprovalToolRowsFromSnapshot(messages) {
+  if (!Array.isArray(messages)) return []
+  const rows = []
+  for (const msg of messages) {
+    if (!msg || typeof msg !== 'object') continue
+    const role = String(msg.role || '').trim().toLowerCase()
+    if (role !== 'tool' && role !== 'toolresult' && role !== 'tool_result') continue
+    if (parseToolApprovalEnvelopeStatus(msg.content) !== 'pending_approval') continue
+    const tcId = String(msg.toolCallId || msg.tool_call_id || '').trim()
+    if (tcId) {
+      rows.push({
+        tcId,
+        seq: typeof msg.seq === 'number' && Number.isFinite(msg.seq) ? msg.seq : null,
+        msgId: String(msg.id || '').trim(),
+      })
+    }
+  }
+  return rows
+}
+
+/**
+ * 保证权威显示段包含审批挂起的工具段。
+ *
+ * 后端 ``display_segments``（block ledger 派生）与旧版快照派生都可能缺
+ * pending ToolMessage 的 tools 段——缺了它，final 落行后审批卡片从实时
+ * 视图消失，用户无按钮可点（工具审批卡住 bug，2026-10-15）。
+ * 按 seq 有序插入，已覆盖的 tool_call_id 不重复。
+ */
+export function ensurePendingApprovalToolsSegments(segments, snapshotMessages) {
+  const list = Array.isArray(segments) ? segments : []
+  const rows = pendingApprovalToolRowsFromSnapshot(snapshotMessages)
+  if (!rows.length) return list
+  const covered = new Set()
+  for (const s of list) {
+    if (s && s.kind === 'tools' && Array.isArray(s.ids)) {
+      for (const x of s.ids) covered.add(String(x))
+    }
+  }
+  const missing = rows.filter((r) => !covered.has(r.tcId))
+  if (!missing.length) return list
+  let maxSeq = 0
+  for (const s of list) {
+    const q = Number(s && s.seq)
+    if (Number.isFinite(q) && q > maxSeq) maxSeq = q
+  }
+  const out = [...list]
+  for (const r of missing) {
+    const seg = {
+      id: r.msgId || `pending-approval-${r.tcId}`,
+      seq: r.seq != null ? r.seq : maxSeq + 0.5,
+      kind: 'tools',
+      ids: [r.tcId],
+      block_kind: 'tools',
+      blockKind: 'tools',
+    }
+    let at = out.length
+    if (r.seq != null) {
+      at = out.findIndex((s) => Number(s && s.seq) > r.seq)
+      if (at < 0) at = out.length
+    }
+    out.splice(at, 0, seg)
+  }
+  return out
 }
 
 function clearAgUiDeferredStreamFinalTimer(lane) {
@@ -4879,6 +5020,15 @@ function dispatchLangGraphCustomStreamChunk(self, key, runId, chunk) {
       runId: String(runId),
       state: 'terminal',
       terminalEvent: chunk,
+    })
+    return
+  }
+  if (t === 'background_work') {
+    self._emitEvent('chat', {
+      sessionKey: key,
+      runId: String(runId),
+      state: 'background_work',
+      backgroundWorkEvent: chunk,
     })
     return
   }
@@ -6099,6 +6249,23 @@ export class WsClient {
         if (one) preferredSkillsArr = [one]
       }
     }
+    // ZCode 插件语义：composer 选择的插件（preferred_plugins）随 run context 下发，
+    // 后端按轮注入插件 commands/skills；粘性回退与会话 context 一致。
+    const preferredPluginsRaw =
+      opts && typeof opts === 'object'
+        ? (opts.preferredPlugins || opts.preferred_plugins)
+        : ''
+    let preferredPluginsArr = Array.isArray(preferredPluginsRaw)
+      ? preferredPluginsRaw.map((s) => String(s || '').trim()).filter(Boolean)
+      : String(preferredPluginsRaw || '')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean)
+    if (!preferredPluginsArr.length && Array.isArray(sessionContext.preferred_plugins)) {
+      preferredPluginsArr = sessionContext.preferred_plugins
+        .map((s) => String(s || '').trim())
+        .filter(Boolean)
+    }
     const runContext = applySessionUserPrefsToRunContext(
       {
         ...defaultContext,
@@ -6137,6 +6304,7 @@ export class WsClient {
           ? { evf_prior_assistant_message_id: priorAssistantMessageId }
           : {}),
         ...(preferredSkillsArr.length ? { preferred_skills: preferredSkillsArr } : {}),
+        ...(preferredPluginsArr.length ? { preferred_plugins: preferredPluginsArr } : {}),
         ...(opts &&
         typeof opts === 'object' &&
         (opts.voiceInitiated || opts.voiceReply)
@@ -7401,6 +7569,15 @@ export class WsClient {
               })
               return
             }
+            if (t === 'background_work') {
+              this._emitEvent('chat', {
+                sessionKey: key,
+                runId,
+                state: 'background_work',
+                backgroundWorkEvent: chunk,
+              })
+              return
+            }
             if (t === 'agent_activity') {
               emitAgentActivityChat(this, key, runId, {
                 kind: chunk.kind,
@@ -7511,7 +7688,7 @@ export class WsClient {
         } catch (readErr) {
           if (isStreamReadTimeoutError(readErr) && !controller.signal.aborted) {
             streamReadTimedOut = true
-            console.warn(`[STREAM-DIAG] ⏰ read-loop TIMEOUT totalFrames=${sseFrameCount} runEndSeen=${!!evfLane?.evfRunEndSeen}`)
+
             try {
               await reader.cancel()
             } catch {
@@ -7522,7 +7699,7 @@ export class WsClient {
           throw readErr
         }
         if (done) {
-          console.info(`[STREAM-DIAG] ✅ SSE done=true (stream 自然结束) totalFrames=${sseFrameCount} runEndSeen=${!!evfLane?.evfRunEndSeen} finalEmitted=${!!evfLane?.finalEmitted}`)
+
           break
         }
         if (streamSilentWarned) {
@@ -7534,42 +7711,11 @@ export class WsClient {
         for (const frame of frames) {
           sseQueue.push(frame)
         }
-        // [STREAM-DIAG] read-loop 主循环每读一段打 1 行
-        if (typeof performance !== 'undefined') {
-          const _n = frames.length
-          const _b = value && value.byteLength ? value.byteLength : 0
-          const _t = Date.now()
-          if (!window.__evoflowLastSseLog || _t - window.__evoflowLastSseLog > 250) {
-            window.__evoflowLastSseLog = _t
-            console.info(
-              `[STREAM-DIAG] read-loop got frames=${_n} bytes=${_b} totalFrames=${typeof sseFrameCount === 'number' ? sseFrameCount : '?'} runEndSeen=${!!evfLane?.evfRunEndSeen} finalEmitted=${!!evfLane?.finalEmitted} tailDrainMsLeft=${runEndTailStartedAt ? Math.max(0, RUN_END_TAIL_DRAIN_MS - (_t - runEndTailStartedAt)) : RUN_END_TAIL_DRAIN_MS}`
-            )
-          }
-        }
-        // [STREAM-DIAG] 检测到 frame 列表里的 event 名 (会打断节流)
-        for (const f of frames) {
-          const _m = String(f || '').match(/^event:\s*(.+)$/m)
-          if (_m) {
-            const _en = _m[1].trim()
-            if (_en === 'evf' || _en === 'agui' || /^(run|state|values|messages|messages-tuple|end|error|complete|final|tool|tool_calls)$/i.test(_en)) {
-              console.info(`[STREAM-DIAG] event-name=${_en} totalFrames=${sseFrameCount} tailDrainMsLeft=${runEndTailStartedAt ? Math.max(0, RUN_END_TAIL_DRAIN_MS - (Date.now() - runEndTailStartedAt)) : RUN_END_TAIL_DRAIN_MS}`)
-            }
-          }
-        }
-        // [STREAM-DIAG] 检测到 frame 列表里的 event 名 (会打断节流)
-        for (const f of frames) {
-          const _m = String(f || '').match(/^event:\s*(.+)$/m)
-          if (_m) {
-            const _en = _m[1].trim()
-            if (_en === 'evf' || _en === 'agui' || /^(run|state|values|messages|messages-tuple|end|error|complete|final|tool|tool_calls)$/i.test(_en)) {
-              console.info(`[STREAM-DIAG] event-name=${_en} totalFrames=${sseFrameCount} tailDrainMsLeft=${runEndTailStartedAt ? Math.max(0, RUN_END_TAIL_DRAIN_MS - (Date.now() - runEndTailStartedAt)) : RUN_END_TAIL_DRAIN_MS}`)
-            }
-          }
-        }
+
         if (evfLane?.evfRunEndSeen && evfLane?.finalEmitted) {
           runEndTailStartedAt = runEndTailStartedAt ?? Date.now()
           if (Date.now() - runEndTailStartedAt >= RUN_END_TAIL_DRAIN_MS) {
-            console.warn(`[STREAM-DIAG] ⛔ TAIL-DRAIN-TIMEOUT — reader.cancel() after ${Date.now() - runEndTailStartedAt}ms (limit=${RUN_END_TAIL_DRAIN_MS}ms) totalFrames=${sseFrameCount}`)
+
             try {
               await reader.cancel()
             } catch {
@@ -7578,18 +7724,17 @@ export class WsClient {
             break
           }
         }
-        // Silent stream warning: if no events arrived for STREAM_SILENT_WARN_MS,
-        // let the user know the stream is still alive.
-        if (!streamSilentWarned && Date.now() - streamLastEventTs > STREAM_SILENT_WARN_MS) {
-          streamSilentWarned = true
-          this._emitEvent('chat', {
-            sessionKey: key,
-            runId,
-            state: 'stream_health',
-            status: 'silent',
-            message: '模型仍在分析中，请耐心等待…',
-          })
-        }
+        // Silent stream warning disabled
+        // if (!streamSilentWarned && Date.now() - streamLastEventTs > STREAM_SILENT_WARN_MS) {
+        //   streamSilentWarned = true
+        //   this._emitEvent('chat', {
+        //     sessionKey: key,
+        //     runId,
+        //     state: 'stream_health',
+        //     status: 'silent',
+        //     message: '模型仍在分析中，请耐心等待…',
+        //   })
+        // }
       }
       sseQueue.flush()
       if (buffer.trim()) {
@@ -7597,15 +7742,16 @@ export class WsClient {
       }
       }
 
-      if (streamReadTimedOut && !evfLane?.evfRunEndSeen && !controller.signal.aborted) {
-        this._emitEvent('chat', {
-          sessionKey: key,
-          runId,
-          state: 'stream_health',
-          status: 'silent',
-          message: '流读取超时，请刷新会话后查看进度',
-        })
-      }
+      // Stream read timeout warning disabled
+      // if (streamReadTimedOut && !evfLane?.evfRunEndSeen && !controller.signal.aborted) {
+      //   this._emitEvent('chat', {
+      //     sessionKey: key,
+      //     runId,
+      //     state: 'stream_health',
+      //     status: 'silent',
+      //     message: '流读取超时，请刷新会话后查看进度',
+      //   })
+      // }
 
       finalText = evfLane.finalText || finalText
       const turnHumanIdx = findLastNonCollabHumanIndex(lastStreamDisplayMessages)

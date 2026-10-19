@@ -1,6 +1,12 @@
-# 将自己的项目安装为 EvoFlow UI 扩展
+# 将自己的项目安装为 EvoFlow Agent应用
 
-> 本文档面向**项目开发者**：你想把自研的 Web 应用（React/Vue/静态页/任何 http 服务）嵌入 EvoPanel，让它在侧栏「扩展」分组里出现，点击就能打开。
+> **先分清智能体和员工**
+>
+> 1. **区别**：智能体管「会什么」（人设、模型、工具、技能、连接器 MCP）。员工管「何时主动干」（岗位、职责、部门与上级、上班时间、转交审批、工作空间、绑定知识库、预算）。聊天里 @ 智能体不会自动值班。
+> 2. **员工能配什么**：加人时填岗位名称、职责、部门、上级、知识库；更多设置里有能力来源、工作空间、关注子路径、工作模型、转交审批（全自动 / 平衡型 / 谨慎型）、自动上班。编辑岗位还可配工作方式、模型思考、系统提示词注入、知识库检索和预算。工具、技能、连接器到「智能体」页改。
+> 3. **怎么操作**：侧栏「员工」→「加人」→ 填岗位和至少一条职责 →「确认加人」→ 打开自动上班，或点「现在开始工作」，急活用小V 派活。交工后到任务中心确认或打回。字段见 [智能体员工](smart-employees.md)。
+
+> 本文档面向**项目开发者**：你想把自研的 Web 应用（React/Vue/静态页/任何 http 服务）嵌入 EvoPanel，让它在侧栏「Agent应用」分组里出现，点击就能打开。
 
 ---
 
@@ -20,7 +26,7 @@
 
 ### 第 1 步：写 `evoflow.extension.json`
 
-在你的项目根目录创建一个 `evoflow.extension.json`，这是 EvoFlow 识别扩展的唯一依据。
+在你的项目根目录创建一个 `evoflow.extension.json`，这是 EvoFlow 识别Agent应用的唯一依据。
 
 **最小示例（纯远程页面）：**
 
@@ -54,7 +60,7 @@
 
 ### 第 2 步：安装到 EvoFlow
 
-打开 EvoPanel → **设置 → 扩展**，根据你的场景选择：
+打开 EvoPanel → **设置 → Agent应用**，根据你的场景选择：
 
 | 按钮 | 适用场景 |
 |------|----------|
@@ -66,7 +72,7 @@
 
 ### 第 3 步：打开
 
-安装后侧栏「扩展」分组里就会出现你的入口，点击即可在右侧 iframe 中打开你的页面。
+安装后侧栏「Agent应用」分组里就会出现你的入口，点击即可在右侧 iframe 中打开你的页面。
 
 ---
 
@@ -134,7 +140,7 @@
 
 - 前后端一体项目，需要 `npm run dev` 或 `python main.py` 启动
 - 不希望用户手动敲命令，想让 EvoFlow 一键启动
-- 多个扩展共享同一个后端服务（如 ContentOS `:3001`）
+- 多个Agent应用共享同一个后端服务（如 ContentOS `:3001`）
 
 ### 示例：React 项目（Vite）
 
@@ -264,13 +270,25 @@
 ```
 
 - `link: true`：安装时**不复制**目录，只记录路径。适合 monorepo 场景。
-- `link: false` 或不写：安装时会把整个目录复制到 `~/.evoflow/ui-extensions/<id>/`。
+- `link: false` 或不写：安装时会把整个目录复制到 `<EvoFlow 配置目录>/ui-extensions/<id>/`。
+
+### 安装目录到底在哪
+
+Agent应用根目录跟随 EvoFlow 配置目录（与技能/数据库同一套隔离规则）：
+
+| 环境 | 注册表与安装目录 |
+|------|----------------|
+| 正式版面板 | `~/.evoflow/ui-extensions/`（注册表 `~/.evoflow/ui-extensions/registry.json`） |
+| debug 构建 / 开发隔离 | `~/.evoflow-dev/ui-extensions/`（注册表 `~/.evoflow-dev/ui-extensions/registry.json`） |
+| 设了 `EVOFLOW_CONFIG_DIR` | `<EVOFLOW_CONFIG_DIR>/ui-extensions/` |
+
+「文档写 `~/.evoflow` 但实测在 `~/.evoflow-dev`」就是因为跑的是 debug 构建。设置页Agent应用卡片上的「目录」按钮永远打开当前真实目录。
 
 ### 安装方式
 
 点 **「选择本地文件夹」** → 选你项目根目录 → 安装后 EvoPanel 会自动读 `evoflow.extension.json`。
 
-打开扩展时，EvoFlow 会：
+打开Agent应用时，EvoFlow 会：
 1. 检测 `healthcheck.url` 是否已通 → 已通则直接打开（复用已有进程）
 2. 不通则执行 `start` 命令启动进程
 3. 等待健康检查通过（超时 `timeout_ms` 毫秒）
@@ -333,7 +351,7 @@
 | 字段 | 说明 | 示例 |
 |------|------|------|
 | `schema` | 固定为 `1` | `1` |
-| `id` | 扩展唯一标识，小写 kebab-case，1-64 字符 | `"my-ops"` |
+| `id` | Agent应用唯一标识，小写 kebab-case，1-64 字符 | `"my-ops"` |
 | `name` | 显示名称，1-80 字符 | `"我的运营页"` |
 | `version` | 版本号 | `"1.0.0"` |
 | `ui.kind` | 固定 `"webview"` | `"webview"` |
@@ -377,7 +395,7 @@
 
 ## 6. Bridge 协议：让页面与 EvoFlow 通信
 
-你的扩展页面可以通过 `postMessage` 与 EvoPanel 宿主通信。
+你的Agent应用页面可以通过 `postMessage` 与 EvoPanel 宿主通信。
 
 ### 调用方式
 
@@ -400,7 +418,7 @@ function callEvoFlow(method, params = {}) {
     window.parent.postMessage({
       channel: 'evoflow-extension',
       v: 1,
-      extensionId: 'my-ops-dashboard',  // 替换为你的扩展 id
+      extensionId: 'my-ops-dashboard',  // 替换为你的Agent应用 id
       requestId: requestId,
       method: method,
       params: params
@@ -421,7 +439,7 @@ await callEvoFlow('tasks.dispatch', {
   content: '分析这个视频'
 })
 
-// 打开另一个扩展
+// 打开另一个Agent应用
 await callEvoFlow('extensions.open', {
   id: 'contentos-trending'
 })
@@ -433,7 +451,7 @@ iframe 加载后，宿主需要知道你的页面已就绪才能管理 Bridge �
 
 ### origin_allowlist（安全限制）
 
-`bridge.origin_allowlist` 限制了哪些 origin 的页面可以通过 Bridge 通信。不在白名单里的 origin 发来的 `postMessage` 会被宿主演略。
+`bridge.origin_allowlist` 限制了哪些 origin 的页面可以通过 Bridge 通信。不在白名单里的 origin 发来的 `postMessage` 会被宿主忽略。
 
 示例：
 
@@ -454,15 +472,15 @@ iframe 加载后，宿主需要知道你的页面已就绪才能管理 Bridge �
 ### Q: 安装后侧栏没出现入口？
 
 检查：
-- 扩展是否已启用（设置 → 扩展 → 查看开关状态）
+- Agent应用是否已启用（设置 → Agent应用 → 查看开关状态）
 - `evoflow.extension.json` 的 `nav.title` 和 `nav.group` 是否正确
-- 在设置页「扩展」列表里点「刷新」
+- 在设置页「Agent应用」列表里点「刷新」
 
 ### Q: 提示「suite.members 为空」？
 
-这说明你选了 `evoflow.suite.json`（套件文件）而不是 `evoflow.extension.json`（扩展文件）。
+这说明你选了 `evoflow.suite.json`（套件文件）而不是 `evoflow.extension.json`（Agent应用文件）。
 
-- 安装单个扩展 → 选含 `evoflow.extension.json` 的目录
+- 安装单个Agent应用 → 选含 `evoflow.extension.json` 的目录
 - 安装套件 → 点「安装套件文件夹」按钮，选含 `evoflow.suite.json` 的目录
 
 ### Q: 服务启动失败「健康检查超时」？
@@ -478,9 +496,9 @@ iframe 加载后，宿主需要知道你的页面已就绪才能管理 Bridge �
 - 检查 `sandbox` 是否限制了必要的权限（至少 `allow-scripts` 和 `allow-same-origin`）
 - 查看页面控制台是否有跨域错误
 
-### Q: 如何在单个项目里搞多个扩展（monorepo）？
+### Q: 如何在单个项目里搞多个Agent应用（monorepo）？
 
-在 `evoflow.extension.json` 中设置 `service.link: true`，让多个扩展指向同一个共享目录：
+在 `evoflow.extension.json` 中设置 `service.link: true`，让多个Agent应用指向同一个共享目录：
 
 ```json
 {
@@ -500,33 +518,67 @@ iframe 加载后，宿主需要知道你的页面已就绪才能管理 Bridge �
 }
 ```
 
-这样多个扩展共享同一个端口和进程，`healthcheck` 已通就不会重复启动，能实现「多入口、单服务」的效果。
+这样多个Agent应用共享同一个端口和进程，`healthcheck` 已通就不会重复启动，能实现「多入口、单服务」的效果。
 
 ### Q: 安装后目录被复制到哪了？
 
-默认复制到 `~/.evoflow/ui-extensions/<id>/`。点设置页扩展卡片上的「目录」按钮可以打开文件夹查看。
+复制到当前 EvoFlow 配置目录的 `ui-extensions/<id>/`（正式版 `~/.evoflow/ui-extensions/`，debug/开发隔离 `~/.evoflow-dev/ui-extensions/`，见上文「安装目录到底在哪」）。点设置页Agent应用卡片上的「目录」按钮可以打开文件夹查看。
+
+### Q: AI / 脚本怎么自动安装Agent应用？
+
+面板 UI 之外还有一条 **Gateway API 通道**，AI 可以全自动接入（注册表与面板共享，写入后面板列表实时可见）：
+
+```bash
+# 1) 注册本地目录Agent应用（folder-link：不复制，直接登记路径，适合 monorepo）
+curl -X POST http://127.0.0.1:<port>/api/ui-extensions \
+  -H "Content-Type: application/json" \
+  -d '{"path": "D:/dev/my-project"}'
+
+# 2) 复制安装（默认，等价于面板「选择本地文件夹」且 manifest 无 service.link）
+curl -X POST http://127.0.0.1:<port>/api/ui-extensions \
+  -H "Content-Type: application/json" \
+  -d '{"path": "D:/dist/my-extension", "link": false}'
+
+# 3) 查看已注册Agent应用与注册表路径
+curl http://127.0.0.1:<port>/api/ui-extensions
+
+# 4) 启用 / 禁用 / 卸载
+curl -X PUT http://127.0.0.1:<port>/api/ui-extensions/my-ops/enabled \
+  -H "Content-Type: application/json" -d '{"enabled": false}'
+curl -X DELETE http://127.0.0.1:<port>/api/ui-extensions/my-ops
+```
+
+说明：
+
+- `POST` 也可直接传 `{"manifest": {...}, "install_path": "..."}` 登记远程入口（等价面板「添加远程入口」）。
+- 写操作需要组织管理员权限；`id` 必须是小写 kebab-case。
+- gateway 的端口见 profile 目录下的 `backend-runtime.json`（`baseUrl` 字段）。
+
+> **手写 / 脚本写 registry.json 的格式要求**：UTF-8 **无 BOM** 的 JSON **数组**（单条也写成 `[ { … } ]`）。PowerShell 5.1 的 `Set-Content -Encoding UTF8` 会带 BOM，且管道会把单元素数组拆成裸对象——两者都会让旧版面板静默不显示Agent应用（新版面板/网关已兼容读取，但落盘仍应规范：`[IO.File]::WriteAllText($f, $json, [Text.UTF8Encoding]::new($false))`，数组用 `ConvertTo-Json -InputObject`）。
+>
+> **更推荐的整包方式**：如果Agent应用要和技能/员工/知识库一起分发，打成资源包（`evoflow.organization.json` 的 `extensions` 原语），导入一次全装好——见 [[guides/configuration/resource-packs|资源包与资源市场]]。
 
 ### Q: 如何卸载？
 
-设置 → 扩展 → 目标扩展卡片 → 点「卸载」按钮。
+设置 → Agent应用 → 目标Agent应用卡片 → 点「卸载」按钮。
 
 ---
 
 ## 附录：完整示例对比
 
-仓库公开源码树**不再内置** ContentOS 等示例扩展包；装扩展走资源市场 / 自行打包安装。形态对照如下：
+仓库公开源码树**不再内置** ContentOS 等示例Agent应用包；装Agent应用走资源市场 / 自行打包安装。形态对照如下：
 
 | 场景 | 清单文件 | 说明 |
 |------|---------|------|
 | 纯远程页面 | `evoflow.extension.json`（仅 `url`） | 无本地服务 |
 | 带本地服务（Python） | 同上 + `runtime` 启动命令 | 如 `python main.py` |
 | 带本地服务（Node.js） | 同上 | 如 `pnpm dev`，可共享端口 |
-| 套件（多扩展打包） | `evoflow.suite.json` | 一次安装多个扩展成员 |
+| 套件（多Agent应用打包） | `evoflow.suite.json` | 一次安装多个Agent应用成员 |
 ---
 
 ## 相关阅读
 
-- [[guides/configuration/evopanel-guide|EvoFlow 桌面端使用指南]] — 侧栏与扩展入口
-- [[guides/configuration/tools-mcp|工具与 MCP]] — 扩展可用的 Bridge 协议
-- [[guides/configuration/settings|面板设置]] — 扩展管理与配置
-- [[tutorials/create-agent|创建智能体教程]] — 扩展与角色协作
+- [[guides/configuration/evopanel-guide|EvoFlow 桌面端使用指南]] — 侧栏与Agent应用入口
+- [[guides/configuration/tools-mcp|工具与 MCP]] — Agent应用可用的 Bridge 协议
+- [[guides/configuration/settings|面板设置]] — Agent应用管理与配置
+- [[tutorials/create-agent|创建智能体教程]] — Agent应用与角色协作

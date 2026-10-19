@@ -1,66 +1,80 @@
 /* 状态面板（ChatSummaryPanel）
  *
- * 对齐 ZCode 浮层形态：常驻右下的胶囊 / 可展开面板，两态靠 .is-capsule 切换。
- * 面板态仍参与右栏布局（替换原 ChatWorkspaceInfoRail 的 340px 位置）。
+ * 布局：对话列 | 右侧占位（同底色、无分割线），宽度跟卡片走。
+ * 视觉：顶对齐的悬浮卡（内容多高就多高），不是通栏侧栏块。
+ * 与专用 Right Stage 互斥。
  *
  * 令牌纪律：一律 --ef-text-* 字号，不写裸 px font-size。
  */
 
-.chat-summary-panel {
-  pointer-events: auto;
-  position: relative;
+.chat-summary-float {
+  --chat-summary-card-width: 360px;
+  --chat-summary-region-collapsed: 48px;
+  box-sizing: border-box;
+  flex: 0 0 auto;
+  width: var(--chat-summary-region-collapsed);
+  /* 纵向贴顶，高度跟卡片走，不拉成整列侧栏 */
+  align-self: flex-start;
+  min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
+  align-items: flex-end;
+  padding: 10px 20px 0 0;
+  overflow: visible;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  transition: width 280ms cubic-bezier(0.22, 1, 0.36, 1);
+  z-index: 5;
+}
+
+.chat-summary-float.is-open {
+  width: calc(var(--chat-summary-card-width) + 20px);
+  align-items: stretch;
+}
+
+.chat-summary-float.is-bubble {
+  width: calc(var(--chat-summary-region-collapsed) + 12px);
+  padding: 10px 20px 0 0;
+  align-items: flex-end;
+}
+
+.chat-summary-float .chat-summary-panel {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 auto;
+  width: var(--chat-summary-card-width);
+  min-width: 0;
+  /* 内容多高就多高；太长再封顶内滚 */
+  height: auto;
+  max-height: min(560px, calc(100vh - 120px));
+  min-height: 0;
   overflow: hidden;
   color: var(--text-primary);
-
-  /* 首层容器按 DESIGN.md 用 xl(12px)，不用 2xl */
   border: 1px solid var(--border-default, #e6e8ec);
   border-radius: 12px;
   background: var(--bg-elevated, #ffffff);
-  box-shadow: var(--shadow-md, 0 4px 12px rgba(32, 33, 36, 0.06));
-
+  box-shadow:
+    0 1px 2px rgba(15, 23, 42, 0.04),
+    0 12px 32px rgba(15, 23, 42, 0.1);
+  transform-origin: top right;
+  transform: scale(0.96) translateY(-4px);
+  opacity: 0;
   transition:
-    border-radius 300ms ease-in-out,
-    padding 300ms ease-in-out,
-    background-color 300ms ease-in-out,
-    box-shadow 300ms ease-in-out;
+    transform 240ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 200ms ease;
 }
 
-/* ── 面板态：占据右栏一条 ───────────────────────────── */
-/* 高度贴合内容：面板按自身内容收缩，超过父容器高度后内部滚动。
-   之前用 align-self:stretch 会被父级 align-items:stretch 拉满，
-   内容只有 160px 时也占满 854px，右侧留一大片空白。 */
-.chat-summary-panel.is-panel {
-  flex: 0 0 var(--agent-panel-width, 340px);
-  width: var(--agent-panel-width, 340px);
-  max-width: 360px;
-  min-width: 320px;
-  /* 不写 align-self，继承父容器的 stretch（默认）；
-     高度由 .is-panel 的 max-height + 父级 align-items:stretch 决定，
-     让面板真正延伸到容器底部，避免底部出现「空条」。 */
-  align-self: stretch;
-  /* 卡片四周留呼吸：顶部 8px、右侧 8px。
-     右侧留白让卡片不贴死容器右边，和 left 的对话区之间有个间隔；
-     flex-basis 固定 340px，margin 是在此之外额外加的，不会把卡片挤窄。 */
-  margin: 8px 8px 0 0;
-  max-height: calc(100% - 8px);
-  z-index: 4;
+.chat-summary-float.is-open .chat-summary-panel {
+  transform: scale(1) translateY(0);
+  opacity: 1;
 }
 
-/* ── 胶囊态：右下角浮层小条，不参与布局 ───────────────── */
-/* 胶囊态：右上角浮层小条，不参与布局。
-   从右下移到右上：右下角和输入区/发送按钮抢位置，
-   收起态的入口贴在那儿容易被误触，也挡住最后一条消息。
-   top 要让开 .react-chat-header（48px），否则胶囊压在顶栏上盖住标题/按钮。 */
-.chat-summary-panel.is-capsule {
-  position: fixed;
-  right: 16px;
-  top: calc(48px + 8px);
-  width: auto;
-  min-width: 180px;
-  max-width: min(320px, calc(100vw - 1.5rem));
-  z-index: 40;
+.chat-summary-float .chat-summary-panel-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 /* ── 头部操作区（tab 条 / ··· / 收起） ─────────────────────── */
@@ -133,6 +147,72 @@
   overflow-x: hidden;
   overflow-y: auto;
   padding: 4px 8px 8px;
+  /* 细、淡、上下内缩：默认完全透明，悬停/拖动时再淡显（与对话区滚动条一致） */
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+.chat-summary-panel-scroll:hover {
+  scrollbar-color: rgba(15, 23, 42, 0.28) transparent;
+}
+
+.chat-summary-panel-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+
+.chat-summary-panel-scroll::-webkit-scrollbar-track {
+  background: transparent;
+  /* 轨道只留在中段，避免滑块顺着整栏拉得很长 */
+  margin-block: 22vh;
+}
+
+.chat-summary-panel-scroll::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 999px;
+  border: 10px solid transparent;
+  background-clip: padding-box;
+}
+
+.chat-summary-panel-scroll:hover::-webkit-scrollbar-thumb {
+  background: rgba(15, 23, 42, 0.16);
+}
+
+.chat-summary-panel-scroll::-webkit-scrollbar-thumb:hover,
+.chat-summary-panel-scroll::-webkit-scrollbar-thumb:active {
+  background: rgba(15, 23, 42, 0.32);
+  border: 10px solid transparent;
+  background-clip: padding-box;
+}
+
+html[data-theme='dark'] .chat-summary-panel-scroll,
+html.dark .chat-summary-panel-scroll {
+  scrollbar-color: transparent transparent;
+}
+
+html[data-theme='dark'] .chat-summary-panel-scroll:hover,
+html.dark .chat-summary-panel-scroll:hover {
+  scrollbar-color: rgba(255, 255, 255, 0.28) transparent;
+}
+
+html[data-theme='dark'] .chat-summary-panel-scroll::-webkit-scrollbar-thumb,
+html.dark .chat-summary-panel-scroll::-webkit-scrollbar-thumb {
+  background: transparent;
+  border: 10px solid transparent;
+  background-clip: padding-box;
+}
+
+html[data-theme='dark'] .chat-summary-panel-scroll:hover::-webkit-scrollbar-thumb,
+html.dark .chat-summary-panel-scroll:hover::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+html[data-theme='dark'] .chat-summary-panel-scroll::-webkit-scrollbar-thumb:hover,
+html[data-theme='dark'] .chat-summary-panel-scroll::-webkit-scrollbar-thumb:active,
+html.dark .chat-summary-panel-scroll::-webkit-scrollbar-thumb:hover,
+html.dark .chat-summary-panel-scroll::-webkit-scrollbar-thumb:active {
+  background: rgba(255, 255, 255, 0.32);
+  border: 10px solid transparent;
+  background-clip: padding-box;
 }
 
 /* ── 折叠分区 ───────────────────────────────────────── */
@@ -270,9 +350,33 @@
   padding: 0;
 }
 
+.chat-summary-process-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.chat-summary-process-stop {
+  flex: 0 0 auto;
+  align-self: center;
+  margin-right: 6px;
+  border: 0;
+  background: transparent;
+  color: var(--text-tertiary);
+  font-size: var(--ef-text-sm);
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 6px;
+}
+
+.chat-summary-process-stop:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover, #dde3ea);
+}
+
 .chat-summary-process-item {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 8px;
   min-height: 32px;
   padding: 6px 8px;
@@ -541,7 +645,52 @@
   border-radius: 6px;
 }
 
-/* ── 胶囊态 ─────────────────────────────────────────── */
+/* ── 收起气泡 ───────────────────────────────────────── */
+.chat-summary-bubble {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--border-default, #e6e8ec);
+  border-radius: 999px;
+  background: var(--bg-elevated, #ffffff);
+  box-shadow:
+    0 1px 2px rgba(15, 23, 42, 0.04),
+    0 8px 20px rgba(15, 23, 42, 0.1);
+  color: var(--ef-color-success, #26875a);
+  cursor: pointer;
+  transition:
+    transform 180ms ease,
+    background-color 150ms ease,
+    box-shadow 180ms ease;
+}
+
+.chat-summary-bubble[data-state='running'] {
+  color: var(--accent, #635bff);
+}
+
+.chat-summary-bubble[data-state='failed'] {
+  color: var(--ef-color-danger, #d14343);
+}
+
+.chat-summary-bubble svg {
+  width: 16px;
+  height: 16px;
+}
+
+.chat-summary-bubble:hover {
+  background: var(--bg-hover, #dde3ea);
+  transform: scale(1.06);
+}
+
+.chat-summary-bubble:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--border-focus, rgba(99, 91, 255, 0.2));
+}
+
+/* 旧胶囊条样式保留选择器，避免外部残留引用失去命中 */
 .chat-summary-capsule-hit {
   display: flex;
   align-items: center;
@@ -658,29 +807,18 @@
   color: var(--accent, #635bff);
 }
 
-/* ── 窄屏：面板态也退化为浮层，不挤压对话列 ─────────── */
-@media (max-width: 1280px) {
-  .chat-summary-panel.is-panel {
-    position: absolute;
-    top: 0;
-    right: 0;
-    bottom: 0;
-    flex: none;
-    box-shadow: -8px 0 24px color-mix(in srgb, #0f172a 8%, transparent);
+@media (max-width: 720px) {
+  .chat-summary-float {
+    --chat-summary-card-width: 300px;
+    --chat-summary-region-collapsed: 44px;
+    padding: 8px 16px 0 0;
   }
 }
 
-@media (max-width: 720px) {
-  .chat-summary-panel.is-panel {
-    left: 8px;
-    right: 8px;
-    width: auto;
-    min-width: 0;
-    max-width: none;
-  }
-
-  .chat-summary-panel.is-capsule {
-    right: 8px;
-    top: calc(48px + 8px);
+@media (prefers-reduced-motion: reduce) {
+  .chat-summary-float,
+  .chat-summary-float .chat-summary-panel,
+  .chat-summary-bubble {
+    transition: none;
   }
 }

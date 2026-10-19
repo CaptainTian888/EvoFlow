@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import shutil
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,8 @@ from evoflow.persistence import config_repositories as cfg_repo
 from evoflow.skills import load_skills
 from evoflow.skills.installer import SkillAlreadyExistsError, install_skill_from_archive
 from evoflow.skills.loader import clear_skills_cache, get_skills_root_path
+
+logger = logging.getLogger(__name__)
 
 
 def _skill_row(skill: Any) -> dict[str, Any]:
@@ -61,7 +64,18 @@ def _prune_empty_parents_under_custom(skill_dir: Path, custom_root: Path) -> Non
 
 def list_skills(*, enabled_only: bool = False) -> dict[str, Any]:
     skills = load_skills(enabled_only=enabled_only)
-    return {"skills": [_skill_row(s) for s in skills]}
+    out: dict[str, Any] = {"skills": [_skill_row(s) for s in skills]}
+    # 生效根 + 多根告警：帮助发现「装在 ~/.evoflow/skills/custom 但 gateway 读 profiles/<id>/skills」类错位。
+    try:
+        from evoflow.skills.loader import describe_skills_root_context
+
+        ctx = describe_skills_root_context()
+        out["skills_root"] = ctx.get("active")
+        if ctx.get("warnings"):
+            out["warnings"] = ctx["warnings"]
+    except Exception:
+        logger.debug("describe_skills_root_context failed", exc_info=True)
+    return out
 
 
 def get_skill(name: str) -> dict[str, Any]:

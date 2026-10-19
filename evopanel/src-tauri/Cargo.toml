@@ -1,12 +1,12 @@
 [package]
 name = "evopanel"
-version = "1.0.8"
+version = "1.1.1"
 edition = "2021"
 description = "Captain Work 桌面端 — 面向长任务的原生 Agent Runtime 与控制平面"
 authors = ["EvovexAI"]
 repository = "https://github.com/EvovexAI/EvoFlow"
 homepage = "https://www.evovexai.com"
-license = "LicenseRef-PolyForm-Noncommercial-1.0.0"
+
 license-file = "../../LICENSE"
 
 [lib]

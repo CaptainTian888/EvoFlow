@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { normalizeRightStageKind } from '../../lib/right-stage/right-stage-types.js'
 
 /** kind → 16px 线性图标（lucide 风格，stroke 用 currentColor）。 */
@@ -34,10 +34,36 @@ const KIND_TAB_ICONS: Record<string, ReactNode> = {
   workspace: (
     <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
   ),
+  'workspace-browse': (
+    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+  ),
   write: (
     <>
       <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
       <polyline points="14 2 14 8 20 8" />
+    </>
+  ),
+  file: (
+    <>
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+      <polyline points="14 2 14 8 20 8" />
+      <line x1="8" y1="13" x2="16" y2="13" />
+      <line x1="8" y1="17" x2="14" y2="17" />
+    </>
+  ),
+  summary: (
+    <>
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+      <polyline points="14 2 14 8 20 8" />
+      <line x1="16" y1="13" x2="8" y2="13" />
+      <line x1="16" y1="17" x2="8" y2="17" />
+      <line x1="10" y1="9" x2="8" y2="9" />
+    </>
+  ),
+  terminal: (
+    <>
+      <polyline points="4 17 10 11 4 5" />
+      <line x1="12" y1="19" x2="20" y2="19" />
     </>
   ),
   'platform-feedback': (
@@ -54,8 +80,28 @@ const KIND_TAB_ICONS: Record<string, ReactNode> = {
   ),
 }
 
-export function KindTabIcon({ kind }: { kind: string }) {
+export function KindTabIcon({ kind, faviconUrl }: { kind: string; faviconUrl?: string | null }) {
   const k = normalizeRightStageKind(kind)
+  const src = String(faviconUrl || '').trim()
+  const [failed, setFailed] = useState(false)
+  useEffect(() => {
+    setFailed(false)
+  }, [src])
+  if (k === 'browser' && src && !failed) {
+    return (
+      <span className="react-chat-stage-tab-icon" aria-hidden="true">
+        <img
+          key={src}
+          src={src}
+          alt=""
+          className="react-chat-stage-tab-favicon"
+          draggable={false}
+          referrerPolicy="no-referrer"
+          onError={() => setFailed(true)}
+        />
+      </span>
+    )
+  }
   return (
     <span className="react-chat-stage-tab-icon" aria-hidden="true">
       <svg

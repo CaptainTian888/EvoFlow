@@ -11,12 +11,13 @@
 | 口语 / 简称 | 正式名 | 仓库 / 站点 | 本文中的角色 |
 |-------------|--------|-------------|--------------|
 | **爱马仕** | Hermes Agent | [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) | 网关 / IM / 技能 / 记忆插件向的参考实现 |
-| **Codex** | OpenAI Codex（CLI / Agent tooling） | [openai/codex](https://github.com/openai/codex) | 本地编码 Agent 循环、沙箱与 CLI UX 参考 |
+| **Codex** | OpenAI Codex（CLI / Agent tooling） | [openai/codex](https://github.com/openai/codex) | 本地编码 Agent |
+| **WorkBuddy** | 腾讯 WorkBuddy | [cloud.tencent.com/product/workbuddy](https://cloud.tencent.com/product/workbuddy) | 说一句话就交办公成果的桌面工作台 |
 | **小龙虾** | OpenClaw | [openclaw/openclaw](https://github.com/openclaw/openclaw) | 多渠道个人助手 + 技能包装参考 |
 | **DF** | DeerFlow | [bytedance/deer-flow](https://github.com/bytedance/deer-flow) | EvoFlow 早期工程基线之一（MIT 致谢，见 [NOTICE](../../../NOTICE)） |
 | **当前活动项目** | **EvoFlow**（桌面 EvoPanel + Gateway + Harness） | 本仓库 | 面向长任务的 **Agent Runtime + 控制平面**产品 |
 
-**关系一句话（务必读）**
+给用户看的选择说明（Codex / WorkBuddy / EvoFlow，按这周的活怎么选）见 [和 Codex、WorkBuddy 差在哪](vs-codex-workbuddy.md)。下面仍是和 DeerFlow、爱马仕、小龙虾、Codex 的能力地图。
 
 | 关系 | 说明 |
 |------|------|
@@ -69,7 +70,7 @@ EvoFlow 控制平面
 │   ├── 运维观测（会话 / 工具 / 模型 / 请求热点）
 │   └── 安全中心（沙箱 · 默认权限 · 终端策略 · 审计）
 └── 扩展与分发
-    ├── 资源中心 / 资源市场（资源包 · 扩展应用安装）
+    ├── 资源中心 / 资源市场（资源包 · Agent应用安装）
     ├── 多模型（设置 → 模型）
     └── IM 渠道（飞书 / 微信 / Slack / Telegram 等）
 ```
@@ -92,7 +93,7 @@ EvoFlow 控制平面
 | 费用统计 | Token 与费用账本 | 设置 → 使用统计 · 员工健康面板成本 |
 | 运维观测 | 会话时间线、工具/模型、Gateway 热点 | `#/observability` · 任务可观测 |
 | 安全中心 | OS 沙箱、默认权限、终端策略、审计 | 设置 → 安全中心 |
-| 资源市场与扩展 | 本机资源包、市场安装、扩展应用 | 设置 → 资源中心（含资源市场） |
+| 资源市场与扩展 | 本机资源包、市场安装、Agent应用 | 设置 → 资源中心（含资源市场） |
 | 渠道 | 飞书等 IM 统一线程 | 设置 → IM 通信 |
 | 交付形态 | **桌面安装包 + 源码自托管** | Releases / README |
 
@@ -133,7 +134,7 @@ EvoFlow 控制平面
 | **费用统计** | ●（使用统计账本） | ○ / 弱 | ○ | ○ | ◐ |
 | **运维观测面板** | ●（`/observability` 等） | ◐ | ◐ | ◐ | ◐ |
 | **安全中心（策略 · 审计）** | ●（产品设置页） | ◐（沙箱配置向） | ◐ | ◐ | ◐（沙箱策略向） |
-| **资源市场 / 扩展应用** | ●（资源中心 + 市场） | ◐ | ◐（插件生态） | ◐（技能生态） | ○ |
+| **资源市场 / Agent应用** | ●（资源中心 + 市场） | ◐ | ◐（插件生态） | ◐（技能生态） | ○ |
 | **IM 多渠道** | ● | ◐（App 层渠道） | ●（强项之一） | ●（强项之一） | ○ |
 | **编码专用深度** | ◐（工作空间 + 索引 + 可外接编码 Agent） | ◐ | ○ | ○ | ● |
 | **研究向默认技能** | ◐（技能包） | ●（历史 Deep Research 基因） | ◐ | ◐ | ○ |
@@ -209,7 +210,7 @@ DeerFlow 公开定位是 **super agent harness**：Lead 编排子代理、技能
 4. **自我进化**：资产中心经验沉淀、反思过程、画像 / 记忆  
 5. **工作空间 + 代码索引** 作为工程上下文一等能力  
 6. **治理套件**：多账号/SSO、费用统计、运维观测、安全中心  
-7. **资源市场与扩展应用**（资源中心）  
+7. **资源市场与Agent应用**（资源中心）  
 8. **桌面控制平面**开箱（模型、任务、费用、安全同一壳）  
 
 ### EvoFlow **不假装取代**的

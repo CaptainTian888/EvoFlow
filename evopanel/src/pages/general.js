@@ -61,6 +61,12 @@ import {
   formatShortcutDisplay,
   getShortcutBinding,
 } from '../lib/keyboard-shortcuts.js'
+import { isDesktopNotifyEnabled, setDesktopNotifyEnabled } from '../lib/desktop-notification.js'
+import {
+  isTaskNotificationSoundEnabled,
+  playTaskNotificationSound,
+  setTaskNotificationSoundEnabled,
+} from '../lib/task-notification-sound.js'
 
 const THEME_PREF_EVENT = 'evopanel-theme-pref-changed'
 
@@ -127,6 +133,31 @@ const GENERAL_INNER_HTML = `
         <span class="switch-slider"></span>
       </label>
       <p class="form-hint">关闭后右下角紫色 V 球会隐藏。可随时在此重新打开，或按 Ctrl+Shift+M（可在「快捷键」页修改）。</p>
+    </div>
+  </div>
+
+  <div class="settings-group" id="general-notify-group">
+    <div class="settings-group-header">
+      <div class="settings-group-title">通知</div>
+      <div class="settings-group-desc">任务完成/失败时的系统通知与提示音（仅桌面端生效）</div>
+    </div>
+    <div class="config-section">
+      <div class="config-section-title">桌面系统通知</div>
+      <label class="switch-row">
+        <span class="switch-label">任务状态变化时发送系统通知</span>
+        <input id="general-desktop-notify-toggle" type="checkbox" />
+        <span class="switch-slider"></span>
+      </label>
+      <p class="form-hint">关闭后不再向 Windows/macOS 通知中心推送任务通知，提示音一并停用。</p>
+    </div>
+    <div class="config-section">
+      <div class="config-section-title">任务提示音</div>
+      <label class="switch-row">
+        <span class="switch-label">通知展示时播放提示音（气泡声）</span>
+        <input id="general-task-sound-toggle" type="checkbox" />
+        <span class="switch-slider"></span>
+      </label>
+      <p class="form-hint">任务通知展示时播放提示音（气泡声），前台后台都会响；关闭系统通知后提示音一并停用。</p>
     </div>
   </div>
 
@@ -254,6 +285,7 @@ export async function mountGeneralInto(container) {
   renderPathMode(root)
   renderMemoryDefaultToggle(root)
   renderKnowledgeMapToggle(root)
+  renderNotificationToggles(root)
   void renderXiaomiFabToggle(root)
   void renderVisionModelSelector(root)
   await renderDataWorkspaceSettings(root)
@@ -467,6 +499,17 @@ export async function mountGeneralInto(container) {
       })()
       return
     }
+    if (t.id === 'general-desktop-notify-toggle') {
+      setDesktopNotifyEnabled(!!t.checked)
+      toast(t.checked ? '桌面通知已开启' : '桌面通知已关闭', 'success')
+      return
+    }
+    if (t.id === 'general-task-sound-toggle') {
+      setTaskNotificationSoundEnabled(!!t.checked)
+      // 开启时立即试听一次，让设置效果可感知。
+      if (t.checked) void playTaskNotificationSound()
+      return
+    }
     if (t.id === 'general-vision-model-select') {
       void patchPanelSettings({ defaultVisionModel: t.value || '' }).then(() => {
         toast('默认视觉模型已保存', 'success')
@@ -486,6 +529,16 @@ function renderKnowledgeMapToggle(root) {
   const el = root.querySelector('#general-knowledge-map-toggle')
   if (!(el instanceof HTMLInputElement)) return
   el.checked = getPanelSetting('knowledgeMapEnabled', true) !== false
+}
+
+function renderNotificationToggles(root) {
+  const notifyEl = root.querySelector('#general-desktop-notify-toggle')
+  if (notifyEl instanceof HTMLInputElement) notifyEl.checked = isDesktopNotifyEnabled()
+  const soundEl = root.querySelector('#general-task-sound-toggle')
+  if (soundEl instanceof HTMLInputElement) soundEl.checked = isTaskNotificationSoundEnabled()
+  // 系统通知与提示音都依赖 Tauri 通知链路；Web 模式下整组隐藏，避免展示无效开关。
+  const group = root.querySelector('#general-notify-group')
+  if (group && !isTauriDesktop()) group.style.display = 'none'
 }
 
 async function renderXiaomiFabToggle(root) {

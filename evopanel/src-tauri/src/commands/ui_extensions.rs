@@ -44,14 +44,26 @@ fn ensure_root() -> Result<PathBuf, String> {
     Ok(root)
 }
 
+/// Windows 工具链（PowerShell 5.1 `Set-Content -Encoding UTF8` 等）常写出带 BOM 的
+/// UTF-8；serde_json 不接受 BOM，会导致「脚本装了、面板不显示」。
+fn strip_utf8_bom(s: &str) -> &str {
+    s.strip_prefix('\u{feff}').unwrap_or(s)
+}
+
 fn read_registry() -> Result<Vec<Value>, String> {
     let path = registry_path();
     if !path.exists() {
         return Ok(vec![]);
     }
     let text = fs::read_to_string(&path).map_err(|e| format!("读取注册表失败: {e}"))?;
-    let v: Value = serde_json::from_str(&text).map_err(|e| format!("注册表 JSON 无效: {e}"))?;
-    Ok(v.as_array().cloned().unwrap_or_default())
+    let v: Value = serde_json::from_str(strip_utf8_bom(&text))
+        .map_err(|e| format!("注册表 JSON 无效: {e}"))?;
+    // 容忍「单对象当注册表」的历史写法（PS 管道会把单元素数组拆成裸对象）。
+    Ok(match v {
+        Value::Array(rows) => rows,
+        row @ Value::Object(_) => vec![row],
+        _ => vec![],
+    })
 }
 
 fn write_registry(rows: &[Value]) -> Result<(), String> {
@@ -113,8 +125,8 @@ fn read_manifest_file(dir: &Path) -> Result<Value, String> {
     if !path.is_file() {
         return Err("目录内未找到 evoflow.extension.json".into());
     }
-    let text = fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    serde_json::from_str(&text).map_err(|e| format!("Manifest JSON 无效: {e}"))
+    let text = fs::read_to_string(&path).map_err(|e| format!("读取 Manifest 失败: {e}"))?;
+    serde_json::from_str(strip_utf8_bom(&text)).map_err(|e| format!("Manifest JSON 无效: {e}"))
 }
 
 fn upsert_row(manifest: Value, install_path: String, source: &str) -> Result<Value, String> {
@@ -306,8 +318,8 @@ fn read_suite_file(dir: &Path) -> Result<Value, String> {
     if !path.is_file() {
         return Err("目录内未找到 evoflow.suite.json".into());
     }
-    let text = fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    serde_json::from_str(&text).map_err(|e| format!("Suite JSON 无效: {e}"))
+    let text = fs::read_to_string(&path).map_err(|e| format!("读取 Suite 失败: {e}"))?;
+    serde_json::from_str(strip_utf8_bom(&text)).map_err(|e| format!("Suite JSON 无效: {e}"))
 }
 
 fn resolve_under(base: &Path, rel: &str) -> PathBuf {
@@ -837,6 +849,9 @@ fn kill_ports(ports: &[u16]) {
             let mut cmd = Command::new("powershell");
             cmd.args([
                 "-NoProfile",
+                "-WindowStyle",
+                "Hidden",
+                "-NonInteractive",
                 "-Command",
                 &format!(
                     "Get-NetTCPConnection -LocalPort {port} -State Listen -ErrorAction SilentlyContinue | ForEach-Object {{ Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }}"

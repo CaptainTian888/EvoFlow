@@ -122,6 +122,10 @@ def _resolve_entity(
             return ent
         if ent.entity_type == "agent":
             return _user_entity()
+        if ent.entity_type == "employee" and act == "note":
+            current_agent = _agent_from_runtime(runtime)
+            if current_agent and current_agent.lower() != eid.lower():
+                return EntityRef("employee", current_agent).normalized()
         return ent
     agent = _agent_from_runtime(runtime) or None
     if act == "read" and rel.startswith("profile/"):

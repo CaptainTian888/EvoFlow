@@ -53,7 +53,19 @@ def _detect_runtime_versions() -> dict[str, dict[str, str]]:
         if not exe:
             continue
         try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+            from evoflow.utils.subprocess_platform import (
+                subprocess_hide_window_kwargs,
+                subprocess_text_io_kwargs,
+            )
+
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=5,
+                **subprocess_hide_window_kwargs(),
+                **subprocess_text_io_kwargs(),
+            )
             version = (proc.stdout or proc.stderr or "").strip()
             normalized = "python" if key.startswith("python") else key
             if normalized not in result or not result[normalized].get("version"):

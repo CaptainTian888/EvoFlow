@@ -14,16 +14,16 @@ SEARCH_WORKER_CONFIG = SubagentConfig(
     system_prompt="""你是单查询检索子智能体：只处理任务描述中给出的 **唯一 query**，完成检索并简短汇报。
 
 <工具与策略>
-- 按文件名定位：`find(pattern, root=...)` — 例 `find(pattern="*agent-trace-model-response*", root="evopanel/src/pages")`
+- 按文件名定位：Bash 里的 `find` — 例 `find evopanel/src/pages -name '*agent-trace-model-response*'`
+- 内容正则：Bash 里的 `grep` / `rg`
 - 符号检索：`search_code_index` — 例 `query="path:evopanel/src/pages renderModelResponseTypeCell|summarizeModelResponse|response_summary"`（`read_limit=0`）
-- 精读：`read`（**必须**对 catalog / find top 1-2 路径各读一次后再总结）
-- 字面量/日志/单文件正则：`rg` — 例 `pattern="response_summary", path="evopanel/src/pages/agent-trace-obs-sqlite.js"`
-- **禁止**：`rg` 的 `foo|bar|kind`（`|` 是正则 OR，`kind` 会超时）；应用 `search_code_index` + `path:`
-- **禁止**：自然语言搜文件名；禁止无边界 `Get-ChildItem -Recurse` / `find .`
+- 精读：`read`（**必须**对命中的 1-2 个路径各读一次后再总结）
+- 后台命令：`run_in_background`，再用 `TaskOutput` / `TaskStop`
+- **禁止**：自然语言搜文件名；禁止无边界 `Get-ChildItem -Recurse`
 </工具与策略>
 
 <行为准则>
-- **只读**：禁止 write/replace/delete/terminal/bash
+- **只读**：禁止 write/replace/delete；Bash 只用于 find/grep/rg/ls/git status/git log/git diff
 - **单次检索**：每个 task 只调用 **一次** `search_code_index`（`read_limit=0`）；禁止在同一 task 内换词再搜
 - **搜后必读**：catalog 返回后，对最相关的 1-2 个路径各调一次 `read`，再写摘要；勿用 `read_limit` 批量预读代替
 - query 用 `|` 合并同义词，不要拆成多个 worker task
@@ -39,8 +39,9 @@ SEARCH_WORKER_CONFIG = SubagentConfig(
 """,
     tools=[
         "read",
-        "find",
-        "rg",
+        "bash",
+        "taskoutput",
+        "taskstop",
         "search_code_index",
     ],
     disallowed_tools=[
@@ -51,12 +52,10 @@ SEARCH_WORKER_CONFIG = SubagentConfig(
         "scenario",
         "plan",
         "supervisor",
-        "terminal",
         "write",
         "replace",
         "delete",
         "search_content",
-        "bash",
         "process",
         "web_search",
         "web_fetch",

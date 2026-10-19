@@ -116,6 +116,23 @@ describe('toolOmitFromChatPanel (chat bubble denylist)', () => {
     expect(toolOmitFromChatPanel({ name: 'create_agent' })).toBe(false)
     expect(toolOmitFromChatPanel({ name: 'update_agent' })).toBe(false)
   })
+  it('never hides pending_approval tools (approval card must stay visible)', () => {
+    // 工具审批卡住 bug(2026-10-15):提交行工具名在管道中退化为通用名 "tool",
+    // denylist 把 pending 工具从聊天面板滤掉 → 审批卡消失,用户无按钮可点。
+    // 授权入口是必须可见的交互面,任何名称退化都不得隐藏它。
+    expect(
+      toolOmitFromChatPanel({ name: 'tool', status: 'pending_approval', tool_call_id: 'c1' }),
+    ).toBe(false)
+    expect(
+      toolOmitFromChatPanel({
+        name: 'tool',
+        status: 'pending_approval',
+        output: JSON.stringify({ _evoflow_tool: { status: 'pending_approval' } }),
+      }),
+    ).toBe(false)
+    // 非 pending 的通用名工具仍照旧隐藏
+    expect(toolOmitFromChatPanel({ name: 'tool' })).toBe(true)
+  })
   it('hides scheduler internal tools and prefetch reads', () => {
     expect(toolOmitFromChatPanel({ name: 'scheduler:post_search_read' })).toBe(true)
     expect(
@@ -1874,6 +1891,36 @@ describe('chat image path normalization', () => {
     expect(src).toContain(encodeURIComponent('D:/github/EvoFlow'))
     expect(src).toContain(encodeURIComponent('D:/github/EvoFlow/outputs/cat.png'))
   })
+
+  it('resolveChatImageSrc maps local browser_snapshots path to gateway URL', async () => {
+    const { resolveChatImageSrc } = await import('../src/lib/chat-image-src.js')
+    const src = resolveChatImageSrc(
+      'C:/Users/admin/.evoflow-dev/browser_snapshots/b9f10489-5967-449e-ae91-bff079c41feb/9a3ac91947414d75.png',
+    )
+    expect(src).toContain('/api/threads/b9f10489-5967-449e-ae91-bff079c41feb/browser-snapshots/9a3ac91947414d75')
+  })
+
+  it('stripBrowserSnapshotFileMentions drops model-cited snapshot paths', async () => {
+    const { stripBrowserSnapshotFileMentions } = await import('../src/lib/chat-image-src.js')
+    const out = stripBrowserSnapshotFileMentions(
+      '已完成。\n\n截图文件：@@C:\\Users\\admin\\.evoflow-dev\\browser_snapshots\\t1\\aaa35130e2da4b3f.png@@\n\n需要再说一声。',
+    )
+    expect(out).not.toContain('browser_snapshots')
+    expect(out).not.toContain('截图文件')
+    expect(out).not.toContain('aaa35130e2da4b3f.png')
+    expect(out).toContain('已完成')
+    expect(out).toContain('需要再说一声')
+  })
+
+  it('stripBrowserSnapshotFileMentions drops @@browser-snapshots API cites', async () => {
+    const { stripBrowserSnapshotFileMentions } = await import('../src/lib/chat-image-src.js')
+    const out = stripBrowserSnapshotFileMentions(
+      '看这里 @@/api/threads/t1/browser-snapshots/abcdef1234567890@@ 即可。',
+    )
+    expect(out).not.toContain('browser-snapshots')
+    expect(out).toContain('看这里')
+    expect(out).toContain('即可')
+  })
 })
 
 describe('linkifyWorkspaceAtMentions images', () => {
@@ -2048,6 +2095,109 @@ describe('unwrapAssistantContentJsonEnvelope', () => {
 })
 
 describe('relaxMarkdownLineBreaks', () => {
+  it('keeps leading hashtags and hash-prefixed account paths as text', async () => {
+    const { renderMarkdown, relaxMarkdownLineBreaks } = await import('../src/lib/markdown.js')
+    const raw = `定位和你高度重合（AI 实战方法论 + 官方活动标签（
+#ai新星计划
+#抖音前沿科技首发计划
+#抖音精选）拿流量扶持
+
+| 看板 | http://127.0.0.1:8787/ |
+#/account/%E5%B0%8F天fotos-969304610 |
+
+数据全景`
+    const relaxed = relaxMarkdownLineBreaks(raw)
+    const html = renderMarkdown(raw)
+    expect(html).not.toContain('<h1>ai新星计划</h1>')
+    expect(html).not.toContain('<h1>/account/')
+    expect(html).toContain('ai新星计划')
+    expect(html).toContain('/account/')
+  })
+
+  it('renders real 小天fotos report without promoting hashtags or hash URLs to <h1>', async () => {
+    const { renderMarkdown, relaxMarkdownLineBreaks } = await import('../src/lib/markdown.js')
+    const raw = `✅ **采集分析完成，已入库并顺手修了脚本两个 bug。**
+
+## 博主档案：小天fotos
+
+| 项目 | 数据 |
+|---|---|
+| 抖音号 | 969304610 · 男 · IP陕西 · 关注 2 |
+| 粉丝 / 获赞 | **14.0万 / 55.2万** |
+| 简介 | 「输出一手实战型AI生产力方法论，不卖课，不收徒，不回私信，mcn勿扰」 |
+| 作品 | 主页计数 84，公开展示 26（差额=私密/不可见老作品，已记入 notes） |
+| 看板 | http://127.0.0.1:8787/#/account/%E5%B0%8F%E5%A4%A9fotos-969304610 |
+
+## 数据全景（18 条有效卡面数据）
+
+- **均赞 6568 · 中位 2130**，爆款 3 条（12%），赞合计 12.5万（剩余获赞来自不可见的 58 条老作品）
+- **发布节奏**：2021 年就是老号，但 **2026 年 6 月才转型发力**——8 月 7 条、9 月 8 条、10 月 3 条，是典型的「老号重启 + 高频更新」路径
+- **TOP3**：豆包工作体验 3.5万 / RTX 5090 本地AI中枢 2.4万 / Seedance 2.5 实测 2.4万——全部是**蹭大厂首发热点**的实测内容
+
+## 洞察（对你最有用的部分）
+
+1. **定位和你高度重合**（AI 实战方法论、不卖课），他 14 万粉的打法：大厂热点工具首发实测（豆包/Seedance/Google I/O）+ 官方活动标签（#ai新星计划 #抖音前沿科技首发计划 #抖音精选）拿流量扶持
+2. **钩子组合**：数字型（五倍提速/500刀）+ 测评型（后悔了/绝了/扒光底）+ 悬念型（还抽什么卡）——标题先抛冲突再给干货
+3. **风险面**：10 月两条新发仅 105/1343 赞，热点选题波动大，非首发热点内容回落明显；他靠「开源作品」（HyperFrames、安卓AI助理）维持信任度
+
+## 四账号对比
+
+| 账号 | 粉丝 | 均赞 | 爆款率 | 涨粉效率/条 |
+|---|---|---|---|---|
+| 柱子哥TzFilm | 22.2万 | 13233 | 34% | 2155 |
+| **小天fotos** | **14.0万** | **6568** | **16%** | **5385** ← 最高 |
+| AI邪修•黎小小 | 6.8万 | 5419 | 17% | 2267 |
+| 银泰AI实战 | 5485 | 549 | 0% | 171 |
+
+## 过程说明（修了什么）
+
+首跑翻车两次，根因：抖音主页内嵌 JSON 里**登录号和博主数据共存**，脚本全局搜第一个 nickname 抓到了你的采集小号（脏数据已删）。已修复：昵称/数据改以页头 DOM 为准、JSON 按 secUid 定位博主段，坑点已补进 SKILL.md 第 9 条，下次采集直接可用。
+
+下一步建议：过一两周让我重采一次小天fotos，看热点爆款后的涨粉转化，顺便验证脚本复采刷新。`
+    const html = renderMarkdown(raw)
+
+    // Headings: only the real 博主档案 / 数据全景 / 洞察 / 四账号对比 / 过程说明 五段。
+    expect(html).toContain('<h2>博主档案：小天fotos</h2>')
+    expect(html).toContain('<h2>数据全景（18 条有效卡面数据）</h2>')
+    expect(html).toContain('<h2>洞察（对你最有用的部分）</h2>')
+    expect(html).toContain('<h2>四账号对比</h2>')
+    expect(html).toContain('<h2>过程说明（修了什么）</h2>')
+
+    // 这条历史消息里之前被误升成 h1 的内容必须全部留在正文里。
+    expect(html).not.toMatch(/<h[1-6]>[^<]*ai新星计划/)
+    expect(html).not.toMatch(/<h[1-6]>[^<]*抖音前沿科技首发计划/)
+    expect(html).not.toMatch(/<h[1-6]>[^<]*\/account\//)
+    expect(html).not.toMatch(/<h[1-6]>[^<]*#\/account\//)
+    expect(html).toContain('ai新星计划')
+    expect(html).toContain('抖音前沿科技首发计划')
+    expect(html).toContain('抖音精选')
+    expect(html).toContain('/account/%E5%B0%8F%E5%A4%A9fotos-969304610')
+
+    // 看板链接必须保留为完整 URL（带 hash 路由），不能被后面的 hashtag/路径行拆开。
+    expect(html).toContain('http://127.0.0.1:8787/#/account/%E5%B0%8F%E5%A4%A9fotos-969304610')
+
+    // 表格必须正常渲染：表头 + 至少 4 行。
+    expect(html).toContain('<th>账号</th>')
+    expect(html).toContain('<th>粉丝</th>')
+    expect(html).toContain('<td>柱子哥TzFilm</td>')
+    expect(html).toContain('<td>银泰AI实战</td>')
+
+    // 同样的 raw 进入 relaxMarkdownLineBreaks 后也不能让裸 /account/... 行升级为标题。
+    // URL 内的 fragment 段（#/account/...）保护由 renderMarkdown 阶段的 fragment slot
+    // 负责；relax 阶段产物允许保留这种 "URL + 后续 hashtag/路径行" 的中间形态。
+    const relaxed = relaxMarkdownLineBreaks(raw)
+    // 最终 HTML 才是用户看到的产品形态；只断言这里。
+    void relaxed
+  })
+
+  it('renders URL containing #/path fragment without being promoted to <h1>', async () => {
+    const { renderMarkdown } = await import('../src/lib/markdown.js')
+    const raw = '看板： http://127.0.0.1:8787/#/account/%E5%B0%8F%E5%A4%A9fotos-969304610 下一步。'
+    const html = renderMarkdown(raw)
+    expect(html).not.toMatch(/<h[1-6]>[^<]*\/account\//)
+    expect(html).toContain('http://127.0.0.1:8787/#/account/%E5%B0%8F%E5%A4%A9fotos-969304610')
+  })
+
   it('inserts newlines before glued headings', async () => {
     const { relaxMarkdownLineBreaks, renderMarkdown } = await import('../src/lib/markdown.js')
     const raw = '介绍。---##一、整体定位'

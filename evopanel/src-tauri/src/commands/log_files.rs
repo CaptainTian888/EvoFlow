@@ -211,11 +211,63 @@ pub fn prune_stream_compare_logs(root: &Path) -> Result<usize, String> {
         }
 
         for run_dir in run_dirs {
-            let Some(mtime) = newest_mtime_secs_in_dir(&run_dir) else {
-                continue;
+            let mtime = newest_mtime_secs_in_dir(&run_dir);
+            // 空 run 目录（没有 .log 文件）fallback 到目录自身的 mtime；
+            // 如果目录创建后从未写入过文件或文件已被删光，
+            // 用目录 mtime 判断是否超过保留窗口。
+            let mtime = match mtime {
+                Some(m) => m,
+                None => run_dir
+                    .metadata()
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(i64::MAX),
             };
             if mtime < cutoff_secs {
                 if fs::remove_dir_all(&run_dir).is_ok() {
+                    removed += 1;
+                }
+            }
+        }
+    }
+    // 清理空 session 目录（不再含任何 run 子目录）。
+    if let Ok(entries) = fs::read_dir(root) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if !p.is_dir() {
+                continue;
+            }
+            // 判断是否为 session 目录（没有直接 .log 且无子 run 目录）
+            let has_log = fs::read_dir(&p)
+                .map(|d| {
+                    d.flatten().any(|e| {
+                        e.path()
+                            .extension()
+                            .map(|x| x == "log")
+                            .unwrap_or(false)
+                    })
+                })
+                .unwrap_or(false);
+            if has_log {
+                continue; // 这是 run 目录，已在上面处理
+            }
+            let has_subdir = fs::read_dir(&p)
+                .map(|d| d.flatten().any(|e| e.path().is_dir()))
+                .unwrap_or(false);
+            if has_subdir {
+                continue; // 还有 run 子目录，留着
+            }
+            // 空 session 目录 → 用目录自身的 mtime 判断是否过期
+            let dir_mtime = p.metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(i64::MAX);
+            if dir_mtime < cutoff_secs {
+                if fs::remove_dir(&p).is_ok() {
                     removed += 1;
                 }
             }

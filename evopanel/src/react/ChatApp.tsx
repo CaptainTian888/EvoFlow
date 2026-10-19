@@ -18,7 +18,7 @@ import {
   startTransition,
 } from 'react'
 import { createPortal, flushSync } from 'react-dom'
-import { ChevronDown, Folder, FolderOpen, PanelRightOpen, Share } from 'lucide-react'
+import { ChevronDown, Folder, FolderOpen, Globe, PanelRightClose, PanelRightOpen, Share } from 'lucide-react'
 import {
   wsClient,
   enqueuePendingInject,
@@ -125,6 +125,10 @@ import { basenameFromPath } from './lib/workspace-mention.js'
 import { GoalModePanel } from './components/GoalModePanel.js'
 import { GoalProposalDock } from './components/GoalProposalDock.js'
 import { SkillPickerModal, type SkillSelection } from './components/SkillPickerModal.js'
+import { PluginQuickPanel } from './components/PluginQuickPanel.js'
+import type { PluginSelection } from './components/PluginPickerModal.js'
+
+import { PluginPillIcon } from './components/PluginPillIcon.js'
 import { ShareSessionModal } from './components/ShareSessionModal.js'
 import { AgentPickerModal } from './components/AgentPickerModal.js'
 import { PlanExecConfirm } from './components/PlanExecConfirmDock.js'
@@ -141,9 +145,12 @@ import {
 import {
   fetchGlobalToolApprovalPolicy,
   fetchSessionToolApprovalPolicy,
+  getCachedGlobalToolApprovalPolicy,
   isEffectiveToolApprovalGrantAll,
   // @ts-ignore
   isEffectiveToolApprovalSession,
+  isToolApprovalDisabled,
+  patchGlobalToolApprovalPolicy,
   TOOL_APPROVAL_POLICY_CHANGED,
   TOOL_APPROVAL_SESSION_POLICY_CHANGED,
   // @ts-ignore
@@ -164,7 +171,11 @@ import {
   logToolApprovalUserAction,
 } from '../lib/tool-approval-trace.js'
 import { CollabExecutionPanel } from './components/CollabExecutionPanel.js'
-import { BrowserPanel } from './components/BrowserPanel.js'
+import {
+  RightStagePanel,
+  buildDefaultRightStageLauncherItems,
+} from './components/RightStagePanel.js'
+import { switchRightStageSession } from '../lib/right-stage/right-stage-session-memory.js'
 import { KnowledgeMapPanel } from './components/KnowledgeMapPanel.js'
 import { ChatSummaryPanel } from './components/ChatSummaryPanel.js'
 import {
@@ -180,16 +191,22 @@ import {
   type ChatSummaryDisplayMode,
 } from './lib/chat-summary-panel-prefs.js'
 import type { ProcessItem } from './lib/chat-summary-panel-model.js'
-import { RightStageExtensionsToolbar } from './components/RightStageExtensionsToolbar.js'
 import { SidePanelBootShell } from './components/SidePanelBootShell.js'
 import { applyRightStageAgUiCustom, applyStageSetFromToolCall, STAGE_SET_APPLIED_EVENT, type StageSetPayload } from '../lib/right-stage/right-stage-agui.js'
 import { syncBrowserPanelFromAgUiEvent, isBrowserToolWireName } from '../lib/browser-panel-agui.js'
 import {
+  applyBrowserCommandResponse,
   closeBrowserStage,
+  ensureBrowserStage,
+  NODE_REPL_BRIDGE_THREAD_ID,
+  resetBrowserStageSwitchTracking,
   setBrowserPanelThreadId,
 } from '../lib/browser-panel-store.js'
 import { dbgLog } from '../lib/browser-debug-log.js'
 import { hideRightStageIfKind, rightStageStore } from '../lib/right-stage/right-stage-store.js'
+import { closeSummaryStage } from '../lib/right-stage/ensure-summary-stage.js'
+import { ensureTerminalStage } from '../lib/right-stage/ensure-terminal-stage.js'
+import { filterRightStageTabsForSession } from '../lib/right-stage/right-stage-session-visibility.js'
 import {
   normalizeWriteStreamMode,
   shouldOpenWriteStreamPanel,
@@ -215,7 +232,10 @@ import { useDragResize } from './hooks/useDragResize.js'
 import {
   clampBottomDockHeight,
   clampRightPanelWidth,
+  defaultNarrowRightPanelWidth,
+  RIGHT_PANEL_NARROW_LEGACY_PX,
   defaultRightPanelWidth,
+  defaultWideRightPanelWidth,
   loadChatLayoutPrefs,
   applyBottomAreaHeightDelta,
   measureBottomAreaNaturalHeight,
@@ -224,7 +244,8 @@ import {
 import { SessionSidebar, type SubtaskTranscriptModalPayload } from './components/SessionSidebar.js'
 import { WorkspaceFileTree, type ContextFileEntry } from './components/WorkspaceFileTree.js'
 import { MemoryRecallChip } from './components/MemoryRecallChip.js'
-import { WorkspaceFilePreviewModal } from './components/WorkspaceFilePreviewModal.js'
+import { WorkspaceFilePreviewPanel } from './components/WorkspaceFilePreviewPanel.js'
+import { TerminalStagePanel } from './components/TerminalStagePanel.js'
 import { ImagePreviewModal, type ImagePreviewItem } from './components/ImagePreviewModal.js'
 import { isImagePathLike, resolveChatImageSrc } from '../lib/chat-image-src.js'
 import {
@@ -387,6 +408,12 @@ import {
 import { requestManualContextCompaction } from './lib/manual-context-compaction.js'
 import { mergeSubagentStreamEvent, normalizeSubagentStreamEvent } from './subagent-stream-merge.js'
 import { cloneTerminalStreamTask, cloneTerminalStreamsMap, mergeTerminalIntoTool, mergeTerminalStreamEvent } from './terminal-stream-merge.js'
+import { mergeBackgroundWorkEvent } from './lib/background-work-merge.js'
+import {
+  fetchBackgroundBashOutput,
+  listBackgroundBashWorks,
+  stopBackgroundBashWork,
+} from './lib/background-bash-api.js'
 import { collabDagDebug, collabDagDebugBannerOnce } from '../lib/collab-dag-debug.js'
 import { isSubtaskStreamDebugEnabled, subtaskStreamDebugBannerOnce } from '../lib/subtask-stream-debug.js'
 import { resetStreamMirrorDedupe } from './stream-console-mirror.js'
@@ -524,7 +551,10 @@ import {
   sfSummarizeSegments,
   sfSummarizeRowsTail,
 } from './lib/stream-final-debug.js'
-import { shouldManualRefreshResumeStream } from './lib/stream-resume-gate.js'
+import {
+  shouldManualRefreshResumeStream,
+  shouldSuppressAutoReattach,
+} from './lib/stream-resume-gate.js'
 import {
   clearStreamReattachCooldown,
   isSessionRecoveryCooldownActive,
@@ -1458,6 +1488,7 @@ export default function ChatApp() {
     refreshSessionsRef,
     scheduleRefreshSessions,
     scheduleRefreshSessionsRef,
+    syncSessionRowRef,
     workspaceSummaries,
     workspacePagination,
     ensureWorkspaceExpanded,
@@ -1482,6 +1513,8 @@ export default function ChatApp() {
     return String(wsClient.getSessionThreadId(sk) || '').trim()
   }, [selectedSessionKey, sessions])
   const streamRef = useRef<StreamState>(emptyStream())
+  /** 有后台 bash 在跑时才继续拉列表；空闲时由 background_work 事件再叫醒。 */
+  const watchBackgroundBashRef = useRef<(() => void) | null>(null)
   /**
    * stream-snapshot-store seq 计数器：每次 commit 都递增，让 React 端
    * ``useStreamSnapshotSeq`` 能感知 mutable streamRef 内部 mutation。
@@ -1928,7 +1961,7 @@ export default function ChatApp() {
   const [engineReady, setEngineReady] = useState(() => {
     // Desktop UI-first: unlock send on Gateway liveness ; LG may still warm.
     try {
-      if (typeof window !== 'undefined' && window.__TAURI_INTERNALS__) return false
+      if (typeof window !== 'undefined' && (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) return false
     } catch {
       /* ignore */
     }
@@ -2333,10 +2366,31 @@ export default function ChatApp() {
     closeStream: closeRightStageStream,
     surface: rightStageSurface,
     snapshot: rightStageSnapshot,
+    tabs: rightStageTabs,
+    activeKey: rightStageActiveKey,
+    recentClosed: rightStageRecentClosed,
+    activateTab: activateRightStageTab,
+    closeTab: closeRightStageTab,
+    reorderTab: reorderRightStageTab,
+    reopenClosedTab: reopenRightStageTab,
+    expand: expandRightStage,
+    collapse: collapseRightStage,
+    toggleCollapsed: toggleRightStageCollapsed,
     rightPanelLayoutKind: rightStageLayoutKind,
     mainBodyStageClasses,
     isOpen: rightStageOpen,
   } = useRightStageChatBridge()
+  const rightStageSessionKeyRef = useRef(String(selectedSessionKey || '').trim())
+  // 切会话时冻结 / 恢复右栏 tabs（浏览器标签式缓存）
+  useEffect(() => {
+    const nextKey = String(selectedSessionKey || '').trim()
+    const prevKey = rightStageSessionKeyRef.current
+    // 换会话前清掉 browser:primary 去重，否则 A/B 同 id 时 HWND 不会跟到新会话 URL。
+    if (prevKey !== nextKey) resetBrowserStageSwitchTracking()
+    // 同 key 也要登记「当前 UI 会话」，否则后台 agent 开浏览器无法判断归属。
+    switchRightStageSession(prevKey, nextKey)
+    rightStageSessionKeyRef.current = nextKey
+  }, [selectedSessionKey])
   const [knowledgeMapRefreshKey, setKnowledgeMapRefreshKey] = useState(0)
   const bumpKnowledgeMapRefresh = useCallback(() => {
     setKnowledgeMapRefreshKey((k) => k + 1)
@@ -2347,15 +2401,6 @@ export default function ChatApp() {
   /** 切换会话后首次观测到 collab phase 时只记 baseline，不自动展开工作流 */
   const collabExecSessionBaselinedRef = useRef('')
   const [workspaceTreePinned, setWorkspaceTreePinned] = useState(false)
-  const [filePreviewModal, setFilePreviewModal] = useState<{
-    path: string
-    name: string
-    poll: boolean
-    /** 代码评论定位行（1-based）；无则普通预览 */
-    focusLine?: number
-    focusEndLine?: number
-    focusAnnotation?: { title?: string; body?: string; priority?: number }
-  } | null>(null)
   /** Chat @@dir/@@ → open workspace tree at this path */
   const [workspaceBrowseFocusPath, setWorkspaceBrowseFocusPath] = useState<string | null>(null)
   /** Filled after workspace roots resolve; used by early file-open handlers */
@@ -2477,7 +2522,6 @@ export default function ChatApp() {
     setStreamingWritePreview(null)
     lastStreamWritePathRef.current = null
     lastWriteStreamLenRef.current = 0
-    setFilePreviewModal(null)
     setChatOverlayDefer('workspace', false)
     rightStageUserPinnedRef.current = null
     hideRightStageIfKind('workspace-browse', 'write')
@@ -2502,26 +2546,18 @@ export default function ChatApp() {
   const openCollabExecPanel = useCallback(
     (opts?: { clearDismiss?: boolean }) => {
       cancelPendingStreamUiBumpsRef.current()
-      setChatOverlayDefer('workspace', false)
-      setChatOverlayDefer('knowledge-map', false)
       setChatOverlayDefer('workflow', true)
       if (opts?.clearDismiss !== false) {
         const key = collabExecPanelDismissKey()
         if (key) collabExecDismissedKeysRef.current.delete(key)
       }
       flushSync(() => {
-        setWorkspacePanelOpen(false)
-        setWorkspaceTreePinned(false)
-        setStreamingWritePreview(null)
-        lastStreamWritePathRef.current = null
-        setFilePreviewModal(null)
-        setKnowledgeMapPanelOpen(false)
         bumpSubtasksApiRefresh()
         rightStageUserPinnedRef.current = 'collab-workflow'
         setCollabExecPanelOpen(true)
       })
     },
-    [collabExecPanelDismissKey, bumpSubtasksApiRefresh],
+    [collabExecPanelDismissKey, bumpSubtasksApiRefresh, setCollabExecPanelOpen],
   )
 
   const closeCollabExecPanel = useCallback(() => {
@@ -2536,9 +2572,9 @@ export default function ChatApp() {
   }, [collabExecPanelDismissKey])
 
   // ★ 性能优化：稳定化回调引用，避免每次 re-render 生成新函数破坏 HistoryMessageRow memo
-  const handleQuickPrompt = useCallback((text: string) => { void handleSend(text) }, [handleSend])
   const handleSendRef = useRef(handleSend)
   handleSendRef.current = handleSend
+  const handleQuickPrompt = useCallback((text: string) => { void handleSendRef.current(text) }, [])
   const startNewChatWithPresetAgentRef = useRef<(code: string) => Promise<void>>(async () => {})
   const setModelNameRef = useRef<(name: string) => void>(() => {})
   useEffect(() => {
@@ -2547,6 +2583,7 @@ export default function ChatApp() {
         text?: string
         agentCode?: string
         skills?: SkillSelection[]
+        plugins?: PluginSelection[]
         modelName?: string
         attachments?: ChatAttachment[]
         contextFiles?: ContextFileEntry[]
@@ -2559,6 +2596,7 @@ export default function ChatApp() {
       if (!text && !attachments?.length && !homeCtx.length) return
       void (async () => {
         if (Array.isArray(detail?.skills)) setSelectedSkills(detail.skills)
+        if (Array.isArray(detail?.plugins)) setSelectedPlugins(detail.plugins)
         const modelName = String(detail?.modelName || '').trim()
         if (modelName) {
           setModelNameRef.current(modelName)
@@ -2591,6 +2629,7 @@ export default function ChatApp() {
         if (homeCtx.length) attachContextFilesRef.current?.(homeCtx)
         await handleSendRef.current(text, attachments, homeCtx.length ? homeCtx : undefined, {
           skillsOverride: Array.isArray(detail?.skills) ? detail.skills : undefined,
+          pluginsOverride: Array.isArray(detail?.plugins) ? detail.plugins : undefined,
         })
       })()
     }
@@ -2638,9 +2677,9 @@ export default function ChatApp() {
     const lastUserRow = [...rowsRef.current].reverse().find((r) => r.role === 'user')
     if (lastUserRow) {
       const { text } = resolveUserMessageSkillDisplay(lastUserRow)
-      void handleSend(String(text || ''))
+      void handleSendRef.current(String(text || ''))
     }
-  }, [handleSend])
+  }, [])
   const handleEditMessage = useCallback(
     (text: string, messageId?: string, images?: Array<{ mediaType: string; data?: string; url?: string }>) => {
       void handleEditMessageRef.current?.(text, messageId, images)
@@ -2675,21 +2714,13 @@ export default function ChatApp() {
   const openKnowledgeMapPanel = useCallback(() => {
     if (!knowledgeMapEnabled) return
     cancelPendingStreamUiBumpsRef.current()
-    setChatOverlayDefer('workspace', false)
-    setChatOverlayDefer('workflow', false)
     setChatOverlayDefer('knowledge-map', true)
     flushSync(() => {
-      setWorkspacePanelOpen(false)
-      setWorkspaceTreePinned(false)
-      setStreamingWritePreview(null)
-      lastStreamWritePathRef.current = null
-      setFilePreviewModal(null)
-      setCollabExecPanelOpen(false)
       setKnowledgeMapRefreshKey((k) => k + 1)
       rightStageUserPinnedRef.current = 'mind-map'
       setKnowledgeMapPanelOpen(true)
     })
-  }, [knowledgeMapEnabled])
+  }, [knowledgeMapEnabled, setKnowledgeMapPanelOpen])
 
   const closeKnowledgeMapPanel = useCallback(() => {
     setChatOverlayDefer('knowledge-map', false)
@@ -2736,7 +2767,6 @@ export default function ChatApp() {
       setStreamingWritePreview(null)
       lastStreamWritePathRef.current = null
     }
-    setFilePreviewModal(null)
     setWorkspaceTreePinned(kind === 'workspace-browse')
     if (kind === 'mind-map') {
       setKnowledgeMapRefreshKey((k) => k + 1)
@@ -2793,7 +2823,6 @@ export default function ChatApp() {
         setWorkspaceTreePinned(false)
         setStreamingWritePreview(null)
         lastStreamWritePathRef.current = null
-        setFilePreviewModal(null)
         setCollabExecPanelOpen(false)
         setKnowledgeMapPanelOpen(false)
         writeStreamDismissedRef.current = false
@@ -2844,11 +2873,11 @@ export default function ChatApp() {
           const row =
             rowRaw && typeof rowRaw === 'object' ? (rowRaw as Record<string, unknown>) : null
           if (!row) {
-            toast('扩展未安装', 'error')
+            toast('Agent应用未安装', 'error')
             return
           }
           if (row.enabled === false) {
-            toast('扩展已禁用，请先在扩展应用中心启用', 'warning')
+            toast('Agent应用已禁用，请先在Agent应用中心启用', 'warning')
             return
           }
           const manifest =
@@ -2872,7 +2901,7 @@ export default function ChatApp() {
           }
           if (ready?.entry) entry = String(ready.entry).trim() || entry
           if (!entry) {
-            toast('扩展缺少入口地址（ui.entry）', 'error')
+            toast('Agent应用缺少入口地址（ui.entry）', 'error')
             return
           }
           const sandbox = Array.isArray(ui.sandbox)
@@ -2893,7 +2922,6 @@ export default function ChatApp() {
             setWorkspaceTreePinned(false)
             setStreamingWritePreview(null)
             lastStreamWritePathRef.current = null
-            setFilePreviewModal(null)
             setCollabExecPanelOpen(false)
             setKnowledgeMapPanelOpen(false)
             writeStreamDismissedRef.current = false
@@ -2982,42 +3010,44 @@ export default function ChatApp() {
   }, [knowledgeMapEnabled, knowledgeMapPanelOpen, closeKnowledgeMapPanel])
 
   const toggleWorkspacePanel = useCallback(() => {
-    const next = !workspacePanelOpenRef.current
-    if (next) {
-      cancelPendingStreamUiBumpsRef.current()
-      setChatOverlayDefer('knowledge-map', false)
-      setChatOverlayDefer('workflow', false)
-      setChatOverlayDefer('workspace', true)
-    } else {
-      setChatOverlayDefer('workspace', false)
-    }
-    flushSync(() => {
-      syncShellAsideForWorkspacePanel(next)
-      if (next) {
-        rightStageUserPinnedRef.current = 'workspace-browse'
-        setWorkspacePanelOpen(true)
-        setCollabExecPanelOpen(false)
-        setKnowledgeMapPanelOpen(false)
-        setWorkspaceTreePinned(true)
-        // 点文件夹浏览：结束 Agent 写入预览，恢复文件树
-        if (!streamingWritePreviewRef.current?.streaming) {
-          setFilePreviewModal(null)
+    const snap = rightStageStore.getSnapshot()
+    const existing = snap.tabs.find((t) => {
+      const k = normalizeRightStageKind(t.kind)
+      return k === 'workspace-browse' || k === 'write'
+    })
+    if (existing) {
+      const key = `${normalizeRightStageKind(existing.kind)}:${existing.id}`
+      if (snap.activeKey === key) {
+        setChatOverlayDefer('workspace', false)
+        flushSync(() => {
+          rightStageUserPinnedRef.current = null
+          hideRightStageIfKind('workspace-browse', 'write')
           setStreamingWritePreview(null)
           lastStreamWritePathRef.current = null
+          setWorkspaceTreePinned(false)
+          syncShellAsideForWorkspacePanel(false)
+        })
+        if (!isChatOverlayDeferActive()) {
+          scheduleBumpRef.current?.({ immediate: true })
         }
-      } else {
-        rightStageUserPinnedRef.current = null
-        hideRightStageIfKind('workspace-browse', 'write')
+        return
+      }
+      rightStageStore.activateTab(key)
+      return
+    }
+    cancelPendingStreamUiBumpsRef.current()
+    setChatOverlayDefer('workspace', true)
+    flushSync(() => {
+      syncShellAsideForWorkspacePanel(true)
+      rightStageUserPinnedRef.current = 'workspace-browse'
+      setWorkspacePanelOpen(true)
+      setWorkspaceTreePinned(true)
+      if (!streamingWritePreviewRef.current?.streaming) {
         setStreamingWritePreview(null)
         lastStreamWritePathRef.current = null
-        setFilePreviewModal(null)
-        setWorkspaceTreePinned(false)
       }
     })
-    if (!next && !isChatOverlayDeferActive()) {
-      scheduleBumpRef.current?.({ immediate: true })
-    }
-  }, [syncShellAsideForWorkspacePanel])
+  }, [setWorkspacePanelOpen, syncShellAsideForWorkspacePanel])
 
   useEffect(() => {
     syncShellAsideForWorkspacePanel(workspacePanelOpen)
@@ -3039,7 +3069,7 @@ export default function ChatApp() {
   const userExtensionPanelOpen =
     rightStageOpen && isUserStageExtensionKind(rightStageSurface?.kind)
 
-  /** 子任务工作流 / 思维导图 / 扩展场景展开 → 收起左侧菜单 */
+  /** 子任务工作流 / 思维导图 / Agent应用场景展开 → 收起左侧菜单 */
   useEffect(() => {
     if (
       collabExecPanelOpen ||
@@ -3073,17 +3103,28 @@ export default function ChatApp() {
     ) => {
       const target = resolveWorkspacePreviewTarget(rawUrl, { name: opts?.name })
       if (!target?.path) return
-      cancelPendingStreamUiBumpsRef.current()
-      setChatOverlayDefer('file-preview', true)
-      // Open modal immediately; if cite is a directory, resolve to a primary file then update.
-      setFilePreviewModal({
-        path: target.path,
-        name: target.name,
-        poll: !!opts?.poll,
-        focusLine: opts?.focusLine,
-        focusEndLine: opts?.focusEndLine,
-        focusAnnotation: opts?.focusAnnotation,
-      })
+      // 流式中打开文件预览勿取消 bump，否则工具/思考衔接会停一拍再跳。
+      const fileId = String(target.path || '').replace(/\\/g, '/')
+      const showFileTab = (path: string, name: string) => {
+        const id = String(path || '').replace(/\\/g, '/')
+        rightStageStore.show({
+          kind: 'file',
+          id,
+          title: name || id.split('/').filter(Boolean).pop() || '文件',
+          layout: 'wide',
+          sessionKey: rightStageSessionKeyRef.current || undefined,
+          data: {
+            path: id,
+            name: name || '',
+            poll: !!opts?.poll,
+            focusLine: opts?.focusLine,
+            focusEndLine: opts?.focusEndLine,
+            focusAnnotation: opts?.focusAnnotation || null,
+          },
+        })
+      }
+      // 右栏标签打开；目录 cite 先落临时路径，解析到可打开文件后再换页。
+      showFileTab(fileId, target.name)
       void (async () => {
         try {
           const scope = workspaceOpenScopeRef.current
@@ -3102,16 +3143,13 @@ export default function ChatApp() {
             },
           })
           if (!openable?.path || openable.path === target.path) return
-          setFilePreviewModal((prev) => {
-            if (!prev || prev.path !== target.path) return prev
-            return {
-              ...prev,
-              path: openable.path,
-              name: openable.name || prev.name,
-            }
-          })
+          const nextId = String(openable.path || '').replace(/\\/g, '/')
+          if (nextId !== fileId) {
+            rightStageStore.closeTab(`file:${fileId}`)
+          }
+          showFileTab(nextId, openable.name || target.name)
         } catch {
-          /* keep original path; modal will surface read errors */
+          /* 保留原路径；预览面板会展示读取错误 */
         }
       })()
     },
@@ -3146,11 +3184,14 @@ export default function ChatApp() {
   // 撤销执行器：把变更日志里的快照写回工作区（有快照=还原内容；代理新建=删除）。
   // 只覆盖文件工具产生的变更，终端命令等绕过工具的写入不在快照里。
   useEffect(() => {
+    let cancelled = false
     setWorkspaceRevertExecutor(
       async (
         sessionKey: string,
         entries: Array<{ path: string; beforeContent: string | null; existed: boolean; deleted: boolean }>,
       ) => {
+        const { api } = await import('../lib/tauri-api.js')
+        if (cancelled) return { restored: [], skipped: entries.map((e) => e.path) }
         const scope = workspaceOpenScopeRef.current
         const root = String(scope.root || '').trim()
         const tid = root
@@ -3180,7 +3221,10 @@ export default function ChatApp() {
         return { restored, skipped }
       },
     )
-    return () => setWorkspaceRevertExecutor(null)
+    return () => {
+      cancelled = true
+      setWorkspaceRevertExecutor(null)
+    }
   }, [])
   const openWorkspaceFilePreviewRef = useRef(openWorkspaceFilePreview)
   openWorkspaceFilePreviewRef.current = openWorkspaceFilePreview
@@ -3826,17 +3870,15 @@ export default function ChatApp() {
 
   useEffect(() => {
     const knowledgeMapVisible = knowledgeMapEnabled && knowledgeMapPanelOpen
-    const anySidePanelOpen =
-      rightStageOpen ||
-      workspacePanelOpen ||
-      knowledgeMapVisible ||
-      collabExecPanelOpen ||
-      !!filePreviewModal
+    // 右栏文件/终端与对话并排，取消 bump 会冻住流式绘制并在恢复时跳动；
+    // 仅遮罩对话区的侧栏才暂停 bump。
+    const coveringOverlay =
+      workspacePanelOpen || knowledgeMapVisible || collabExecPanelOpen
     setChatOverlayDefer('workspace', workspacePanelOpen)
     setChatOverlayDefer('knowledge-map', knowledgeMapVisible)
     setChatOverlayDefer('workflow', collabExecPanelOpen)
-    setChatOverlayDefer('file-preview', !!filePreviewModal)
-    if (anySidePanelOpen) {
+    setChatOverlayDefer('file-preview', false)
+    if (coveringOverlay) {
       cancelPendingStreamUiBumpsRef.current()
     }
   }, [
@@ -3845,7 +3887,6 @@ export default function ChatApp() {
     knowledgeMapEnabled,
     knowledgeMapPanelOpen,
     collabExecPanelOpen,
-    filePreviewModal,
   ])
 
   useEffect(() => {
@@ -4064,36 +4105,74 @@ export default function ChatApp() {
   }, [isMobileChat, mobileChatPane])
 
   const anyRightPanelOpen = rightStageOpen
-
-  const rightPanelLayoutKind = rightStageLayoutKind
-  const lastRightPanelLayoutKindRef = useRef<typeof rightPanelLayoutKind | null>(null)
+  // 摘要默认窄宽；当前对话第一次打开浏览器再抬到系统默认宽（45%），之后尊重用户拖拽。
+  const rightPanelWasOpenRef = useRef(false)
+  const browserWideSeededRef = useRef(false)
+  const browserWideSeedSessionRef = useRef(String(selectedSessionKey || ''))
+  if (browserWideSeedSessionRef.current !== String(selectedSessionKey || '')) {
+    browserWideSeedSessionRef.current = String(selectedSessionKey || '')
+    browserWideSeededRef.current = false
+  }
 
   useLayoutEffect(() => {
-    if (!anyRightPanelOpen || !layoutResizeEnabled) return
+    if (!anyRightPanelOpen || !layoutResizeEnabled) {
+      rightPanelWasOpenRef.current = false
+      return
+    }
     const el = mainBodyRef.current
     if (!el) return
-    const def = defaultRightPanelWidth(el.clientWidth, rightPanelLayoutKind)
-    const prevKind = lastRightPanelLayoutKindRef.current
-    const firstOpen = prevKind == null
-    const kindChanged = !firstOpen && prevKind !== rightPanelLayoutKind
-    lastRightPanelLayoutKindRef.current = rightPanelLayoutKind
+    const bodyW = el.clientWidth
+    const opening = !rightPanelWasOpenRef.current
+    rightPanelWasOpenRef.current = true
+    let shouldPersist = false
     setRightPanelWidthPx((prev) => {
-      if (prev == null || kindChanged) {
-        layoutSizesRef.current.rightPanelWidthPx = def
-        return def
-      }
-      // 首次打开：文件树勿继承工作流/半屏留下的过宽偏好
-      if (firstOpen) {
-        const isBrowse =
-          rightPanelLayoutKind === 'workspace-browse' || rightPanelLayoutKind === 'narrow'
-        if (isBrowse && (prev < 220 || prev > 340)) {
-          layoutSizesRef.current.rightPanelWidthPx = def
-          return def
+      if (prev != null && Number.isFinite(prev) && prev > 0) {
+        // 仍停在旧摘要默认 340：抬到新窄栏，避免卡片继续贴边
+        const seed = prev === RIGHT_PANEL_NARROW_LEGACY_PX
+          ? defaultNarrowRightPanelWidth(bodyW)
+          : prev
+        const clamped = clampRightPanelWidth(seed, bodyW)
+        if (clamped !== prev) {
+          layoutSizesRef.current.rightPanelWidthPx = clamped
+          shouldPersist = true
         }
+        return clamped
       }
-      return prev
+      if (!opening && prev != null) return prev
+      // 对话默认摘要：窄栏；不要一上来半屏
+      const def = defaultNarrowRightPanelWidth(bodyW)
+      layoutSizesRef.current.rightPanelWidthPx = def
+      shouldPersist = true
+      return def
     })
-  }, [anyRightPanelOpen, rightPanelLayoutKind, layoutResizeEnabled])
+    if (shouldPersist) saveChatLayoutPrefs(layoutSizesRef.current)
+  }, [anyRightPanelOpen, layoutResizeEnabled])
+
+  // 本会话首次出现 browser 标签：一次性抬到宽栏默认；第 2+ 次打开不改用户拖过的宽度。
+  const hasBrowserStageTab = rightStageTabs.some(
+    (t) => normalizeRightStageKind(t.kind) === 'browser',
+  )
+  useLayoutEffect(() => {
+    if (!anyRightPanelOpen || !layoutResizeEnabled) return
+    if (!hasBrowserStageTab) return
+    if (browserWideSeededRef.current) return
+    const el = mainBodyRef.current
+    if (!el) return
+    browserWideSeededRef.current = true
+    const wide = defaultWideRightPanelWidth(el.clientWidth)
+    setRightPanelWidthPx((prev) => {
+      // 已比宽默认更宽（或接近）则不动，避免把用户更大的栏缩回去
+      if (prev != null && Number.isFinite(prev) && prev >= wide - 8) {
+        return prev
+      }
+      layoutSizesRef.current.rightPanelWidthPx = wide
+      saveChatLayoutPrefs({
+        ...layoutSizesRef.current,
+        rightPanelWidthPx: wide,
+      })
+      return wide
+    })
+  }, [anyRightPanelOpen, layoutResizeEnabled, hasBrowserStageTab])
 
   useEffect(() => {
     layoutSizesRef.current = { rightPanelWidthPx, bottomDockHeightPx }
@@ -4103,19 +4182,16 @@ export default function ChatApp() {
     saveChatLayoutPrefs(layoutSizesRef.current)
   }, [])
 
-  const onRightPanelDragDelta = useCallback(
-    (delta: number) => {
-      const el = mainBodyRef.current
-      if (!el) return
-      setRightPanelWidthPx((prev) => {
-        const current = prev ?? defaultRightPanelWidth(el.clientWidth, rightPanelLayoutKind)
-        const next = clampRightPanelWidth(current - delta, el.clientWidth)
-        layoutSizesRef.current.rightPanelWidthPx = next
-        return next
-      })
-    },
-    [rightPanelLayoutKind],
-  )
+  const onRightPanelDragDelta = useCallback((delta: number) => {
+    const el = mainBodyRef.current
+    if (!el) return
+    setRightPanelWidthPx((prev) => {
+      const current = prev ?? defaultRightPanelWidth(el.clientWidth)
+      const next = clampRightPanelWidth(current - delta, el.clientWidth)
+      layoutSizesRef.current.rightPanelWidthPx = next
+      return next
+    })
+  }, [])
 
   const onBottomDockDragDelta = useCallback((delta: number) => {
     const natural = bottomAreaNaturalHeightRef.current
@@ -4370,9 +4446,15 @@ export default function ChatApp() {
   const [modelConnNameMap, setModelConnNameMap] = useState<Record<string, string>>({})
   const [bottomMoreOpen, setBottomMoreOpen] = useState(false)
   /** 右侧信息 Drawer：默认关闭；与 Right Stage 互斥 */
-  const [infoRailOpen, setInfoRailOpen] = useState(true)
+  const [, setInfoRailOpen] = useState(true)
   const [infoRailTab, setInfoRailTab] = useState<InfoRailTab>('agent')
-  /** 状态面板三态（面板 / 胶囊 / 隐藏），与右侧信息栏开合同为一个开关 */
+  /**
+   * 用户在当前会话内是否手动关过侧栏。
+   * 切会话时若该 ref 为 false，则默认开侧栏；为 true 则尊重用户意图保持关闭。
+   * 这样可避免「用户点关闭后立刻被切会话 effect 拉回 true」的竞态。
+   */
+  const userClosedInfoRailRef = useRef(false)
+  /** 状态面板三态：右侧空白悬浮卡 / 气泡 / 隐藏。与专用 Right Stage 互斥。 */
   const [chatPanelMode, setChatPanelMode] = useState<ChatSummaryDisplayMode>(() => {
     try {
       return loadChatSummaryPrefs().displayMode
@@ -4380,9 +4462,27 @@ export default function ChatApp() {
       return 'panel'
     }
   })
-  const setChatPanelDisplayMode = useCallback((mode: ChatSummaryDisplayMode) => {
-    setChatPanelMode(mode)
-    saveChatSummaryDisplayMode(mode)
+  const setChatPanelDisplayMode = useCallback(
+    (mode: ChatSummaryDisplayMode) => {
+      setChatPanelMode(mode)
+      saveChatSummaryDisplayMode(mode)
+      if (mode === 'panel') {
+        // 悬浮卡与专用侧栏互斥：展开卡片时关掉侧栏。
+        collapseRightStage()
+      }
+    },
+    [collapseRightStage],
+  )
+
+  // 摘要已改挂对话正文右上角，启动时卸掉右栏里残留的 summary 标签。
+  useEffect(() => {
+    closeSummaryStage()
+    const remaining = filterRightStageTabsForSession(
+      rightStageStore.getSnapshot().tabs,
+      selectedSessionKey,
+    )
+    if (remaining.length === 0) collapseRightStage()
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount: drop leftover summary tab
   }, [])
   const publishPlatformEntries = useCallback((entries: PlatformRunEntry[], focusEntryId?: string) => {
     turnPlatformEntriesRef.current = entries
@@ -4637,36 +4737,6 @@ useEffect(() => {
     })
   }, [proactiveRoles, agents])
 
-  const workspaceMention = useMemo((): WorkspaceMentionConfig | undefined => {
-    const root = effectiveWorkspaceRoot
-    const threadId = String(wsClient.getSessionThreadId(selectedSessionKey || '') || '').trim()
-    if (!root && !threadId) return undefined
-    return {
-      enabled: true,
-      searchFiles: searchWorkspaceFilesForMention,
-      onAttachFile: (entry) => {
-        const path = String(entry.path || '').trim()
-        if (!path) return
-        setContextFiles((prev) => {
-          if (prev.some((x) => x.path === path)) return prev
-          const next = [...prev, { path, name: entry.name || basenameFromPath(path) }]
-          void persistContextFiles(next)
-          return next
-        })
-        void import('../components/toast.js').then(({ toast }) => {
-          toast(`已附加：${entry.name || basenameFromPath(path)}（发送后注入 Agent 上下文）`, 'info')
-        })
-      },
-      roles: proactiveRolesDisplay,
-    }
-  }, [
-    effectiveWorkspaceRoot,
-    persistContextFiles,
-    searchWorkspaceFilesForMention,
-    selectedSessionKey,
-    useVirtualPaths,
-    proactiveRolesDisplay,
-  ])
   const [bottomRoleOpen, setBottomRoleOpen] = useState(false)
 
   /** @员工名 任务 -> 派发给智能体员工，并跳转到该员工工作轨迹 */
@@ -4774,6 +4844,154 @@ useEffect(() => {
     },
     [persistSelectedSkills, selectedSessionKey],
   )
+  const addSelectedSkill = useCallback(
+    (sk: { name: string; label: string; icon: string }) => {
+      const name = String(sk.name || '').trim()
+      if (!name) return
+      setSelectedSkills((prev) => {
+        if (prev.some((s) => s.name === name)) return prev
+        const next = [
+          ...prev,
+          { name, label: sk.label || name, icon: sk.icon || '🧩' },
+        ]
+        void persistSelectedSkills(String(selectedSessionKey || ''), next)
+        return next
+      })
+    },
+    [persistSelectedSkills, selectedSessionKey],
+  )
+  /** 插件选择 pill（ZCode 插件语义：选中插件仅注入组件元数据；技能经 skill: URI 按需读取，命令按 /命令名 调用时才注入正文） */
+  /** + 号一键直达：锚定插件/添加快捷面板（ZCode ChatPromptActionMenu 交互复刻） */
+  const [bottomPluginPanelOpen, setBottomPluginPanelOpen] = useState(false)
+  const [pluginPanelStyle, setPluginPanelStyle] = useState<CSSProperties | null>(null)
+  const [pluginList, setPluginList] = useState<Array<{ id: string; name: string; label: string; description: string; version?: string; marketplace: string; componentTypes?: string[]; iconUrl?: string }>>([])
+  const [pluginListLoading, setPluginListLoading] = useState(false)
+  const [selectedPlugins, setSelectedPlugins] = useState<PluginSelection[]>([])
+  /** 已选插件 pills：仅在用户刚选择时展示，发送后隐藏（粘性选择仍保留并继续注入） */
+  const [pluginComposerPillsVisible, setPluginComposerPillsVisible] = useState(false)
+
+  const persistSelectedPlugins = useCallback(async (sk: string, plugins: PluginSelection[]) => {
+    const key = String(sk || '').trim()
+    if (!key) return
+    const ids = plugins.map((p) => String(p.id || '').trim()).filter(Boolean)
+    try {
+      const { api } = await import('../lib/tauri-api.js')
+      await api.chatUpdateContext(key, { preferred_plugins: ids })
+    } catch {
+      /* best-effort session sticky */
+    }
+  }, [])
+
+  const removeSelectedPlugin = useCallback(
+    (id: string) => {
+      setPluginComposerPillsVisible(true)
+      setSelectedPlugins((prev) => {
+        const next = prev.filter((p) => p.id !== id)
+        void persistSelectedPlugins(String(selectedSessionKey || ''), next)
+        return next
+      })
+    },
+    [persistSelectedPlugins, selectedSessionKey],
+  )
+
+  const addSelectedPlugin = useCallback(
+    (pl: { id: string; label: string; iconUrl?: string }) => {
+      const id = String(pl.id || '').trim()
+      if (!id) return
+      setPluginComposerPillsVisible(true)
+      setSelectedPlugins((prev) => {
+        if (prev.some((p) => p.id === id)) return prev
+        const next = [
+          ...prev,
+          { id, label: pl.label || id, iconUrl: pl.iconUrl },
+        ]
+        void persistSelectedPlugins(String(selectedSessionKey || ''), next)
+        return next
+      })
+    },
+    [persistSelectedPlugins, selectedSessionKey],
+  )
+
+  const refreshPluginCatalog = useCallback(async (force = false) => {
+    setPluginListLoading(true)
+    try {
+      const { loadPluginCatalog } = await import('../lib/plugin-catalog.js')
+      const rows = await loadPluginCatalog({ enabledOnly: true, force })
+      setPluginList(
+        rows.map((p) => ({
+          id: p.id,
+          name: p.name,
+          label: p.label,
+          description: p.description || '',
+          version: p.version,
+          marketplace: p.marketplace,
+          componentTypes: p.componentTypes,
+          iconUrl: p.iconUrl,
+        })),
+      )
+    } catch {
+      setPluginList([])
+    } finally {
+      setPluginListLoading(false)
+    }
+  }, [])
+
+  const workspaceMention = useMemo((): WorkspaceMentionConfig | undefined => {
+    const root = effectiveWorkspaceRoot
+    const threadId = String(wsClient.getSessionThreadId(selectedSessionKey || '') || '').trim()
+    if (!root && !threadId) return undefined
+    return {
+      enabled: true,
+      searchFiles: searchWorkspaceFilesForMention,
+      onAttachFile: (entry) => {
+        const path = String(entry.path || '').trim()
+        if (!path) return
+        setContextFiles((prev) => {
+          if (prev.some((x) => x.path === path)) return prev
+          const next = [...prev, { path, name: entry.name || basenameFromPath(path) }]
+          void persistContextFiles(next)
+          return next
+        })
+        void import('../components/toast.js').then(({ toast }) => {
+          toast(`已附加：${entry.name || basenameFromPath(path)}（发送后注入 Agent 上下文）`, 'info')
+        })
+      },
+      roles: proactiveRolesDisplay,
+      // `/` 触发器：注入技能 + 插件的搜索目录。`addSelected*` 会把命中项追加到
+      // `selectedSkills` / `selectedPlugins`，与加号面板的语义一致。
+      skills: skillList,
+      plugins: pluginList.map((p) => ({
+        id: p.id,
+        label: p.label || p.name,
+        iconUrl: p.iconUrl,
+        description: p.description,
+      })),
+      onPickSkill: (sk) => {
+        addSelectedSkill(sk)
+        void import('../components/toast.js').then(({ toast }) => {
+          toast(`已选技能：${sk.label}`, 'info')
+        })
+      },
+      onPickPlugin: (pl) => {
+        addSelectedPlugin(pl)
+        void import('../components/toast.js').then(({ toast }) => {
+          toast(`已选插件：${pl.label}`, 'info')
+        })
+      },
+    }
+  }, [
+    effectiveWorkspaceRoot,
+    persistContextFiles,
+    searchWorkspaceFilesForMention,
+    selectedSessionKey,
+    useVirtualPaths,
+    proactiveRolesDisplay,
+    skillList,
+    pluginList,
+    addSelectedSkill,
+    addSelectedPlugin,
+  ])
+
   const [roleSwitchBusy, setRoleSwitchBusy] = useState(false)
   const scenarioSessionHandlers = useMemo(
     () => ({
@@ -6186,12 +6404,18 @@ useEffect(() => {
 
         const rowBefore = sessionsRef.current.find((s) => String(s.sessionKey || '') === sk)
         const rtBefore = getSessionRuntime(sk)
-        const shouldResumeBefore = shouldManualRefreshResumeStream({
+        const suppressLivePost = shouldSuppressAutoReattach({
           sessionKey: sk,
-          runStatus: rowBefore?.runStatus,
-          executingSessionKeys: executingSessionKeysRef.current,
           runtime: rtBefore,
         })
+        const shouldResumeBefore =
+          !suppressLivePost &&
+          shouldManualRefreshResumeStream({
+            sessionKey: sk,
+            runStatus: rowBefore?.runStatus,
+            executingSessionKeys: executingSessionKeysRef.current,
+            runtime: rtBefore,
+          })
         if (shouldResumeBefore) {
           const runId = String(rtBefore.activeChatRunId || rowBefore?.currentRunId || '').trim()
           if (runId) wsClient.abortStreamWire(sk, runId)
@@ -6676,10 +6900,43 @@ useEffect(() => {
     }
   }, [bottomMoreOpen])
 
+  // 插件快捷面板：锚定 + 按钮上方（与 bottom-more 同一定位机制）
+  useLayoutEffect(() => {
+    if (!bottomPluginPanelOpen || typeof window === 'undefined') {
+      setPluginPanelStyle(null)
+      return
+    }
+    const update = () => {
+      const btn = bottomMoreTriggerRef.current
+      if (!btn) return
+      const r = btn.getBoundingClientRect()
+      const gap = 10
+      const sidePad = 10
+      const left = Math.max(sidePad, Math.min(r.left, window.innerWidth - sidePad - 620))
+      const bottom = Math.max(sidePad, window.innerHeight - r.top + gap)
+      const maxH = Math.max(160, Math.min(window.innerHeight * 0.62, r.top - gap - sidePad))
+      setPluginPanelStyle({
+        position: 'fixed',
+        left,
+        bottom,
+        top: 'auto',
+        maxHeight: maxH,
+        zIndex: 10060,
+      })
+    }
+    update()
+    window.addEventListener('resize', update)
+    window.addEventListener('scroll', update, true)
+    return () => {
+      window.removeEventListener('resize', update)
+      window.removeEventListener('scroll', update, true)
+    }
+  }, [bottomPluginPanelOpen])
+
   // 底部「模式 + 模型/创意/工作空间」上拉：互斥 + 点击外部 / Esc 全部关闭
   // 技能 / 角色已改为独立 modal，不参与此下拉互斥逻辑
   useEffect(() => {
-    const anyOpen = modeMenuOpen || bottomModelOpen || bottomPermissionOpen || bottomMoreOpen || bottomWorkspaceOpen
+    const anyOpen = modeMenuOpen || bottomModelOpen || bottomPermissionOpen || bottomMoreOpen || bottomWorkspaceOpen || bottomPluginPanelOpen
     if (!anyOpen) return
     const closeAll = () => {
       setModeMenuOpen(false)
@@ -6690,6 +6947,7 @@ useEffect(() => {
       setBottomWorkspaceOpen(false)
       setBottomRoleOpen(false)
       setBottomSkillOpen(false)
+      setBottomPluginPanelOpen(false)
     }
     const onDown = (e: MouseEvent) => {
       const target = e.target as HTMLElement | null
@@ -6782,6 +7040,108 @@ useEffect(() => {
     if (!bottomSkillOpen) return
     // 技能弹窗（SkillPickerModal）自带搜索框聚焦与 Esc/遮罩关闭，此处仅作状态同步
   }, [bottomSkillOpen])
+
+  /** 会话级粘性插件：切换会话时从 context 恢复，与发送时 preferred_plugins 一致；恢复不展示 pills */
+  const pluginPillsSessionRef = useRef<string | null>(null)
+  useEffect(() => {
+    const sk = String(selectedSessionKey || '').trim()
+    if (pluginPillsSessionRef.current !== sk) {
+      pluginPillsSessionRef.current = sk
+      setPluginComposerPillsVisible(false)
+    }
+    if (!sk) {
+      setSelectedPlugins([])
+      return
+    }
+    const ctx = wsClient.getSessionContext(sk) as { preferred_plugins?: unknown }
+    if (!Array.isArray(ctx?.preferred_plugins)) {
+      setSelectedPlugins([])
+      return
+    }
+    const ids = ctx.preferred_plugins.map((s) => String(s || '').trim()).filter(Boolean)
+    setSelectedPlugins((prev) =>
+      ids.map((id) => {
+        const cached = prev.find((p) => p.id === id && p.iconUrl)
+        if (cached) return cached
+        const hit = pluginList.find((p) => p.id === id)
+        return {
+          id,
+          label: hit?.label || hit?.name || id.split('@')[0] || id,
+          iconUrl: hit?.iconUrl,
+        }
+      }),
+    )
+  }, [selectedSessionKey, pluginList])
+
+  /** 给已有的 selectedPlugins 反查 iconUrl(pluginList 异步到达后补齐) */
+  useEffect(() => {
+    if (pluginList.length === 0) return
+    setSelectedPlugins((prev) => {
+      let dirty = false
+      const next = prev.map((p) => {
+        if (p.iconUrl) return p
+        const hit = pluginList.find((row) => row.id === p.id)
+        if (!hit?.iconUrl) return p
+        dirty = true
+        return { ...p, iconUrl: hit.iconUrl, label: p.label || hit.label || hit.name }
+      })
+      return dirty ? next : prev
+    })
+  }, [pluginList])
+
+  /** 进入对话即订阅/预加载插件目录（与技能目录同模式；点「+」不再现拉）。 */
+  useEffect(() => {
+    let cancelled = false
+    queueMicrotask(() => setPluginListLoading(true))
+    let unsub = () => {}
+    type PluginCatalogRow = {
+      id: string
+      name: string
+      label: string
+      description: string
+      version?: string
+      marketplace: string
+      componentTypes?: string[]
+      iconUrl?: string
+      enabled: boolean
+    }
+    const toPickerItems = (rows: PluginCatalogRow[]) =>
+      rows
+        .filter((p) => p.enabled !== false)
+        .map((p) => ({
+          id: p.id,
+          name: p.name,
+          label: p.label,
+          description: p.description || '',
+          version: p.version,
+          marketplace: p.marketplace,
+          componentTypes: p.componentTypes,
+          iconUrl: p.iconUrl,
+        }))
+    void import('../lib/plugin-catalog.js').then((mod) => {
+      if (cancelled) return
+      unsub = mod.subscribePluginCatalog((rows: PluginCatalogRow[]) => {
+        if (cancelled) return
+        setPluginList(toPickerItems(rows))
+        setPluginListLoading(false)
+      })
+      void mod.loadPluginCatalog({ enabledOnly: true }).catch(() => {
+        if (cancelled) return
+        setPluginList([])
+        setPluginListLoading(false)
+      })
+    })
+    return () => {
+      cancelled = true
+      unsub()
+    }
+  }, [])
+
+  /** 粘性 selectedPlugins 只有 id 时，目录尚未到达则强制拉一次补齐 iconUrl。 */
+  useEffect(() => {
+    if (selectedPlugins.length === 0 || pluginList.length > 0 || pluginListLoading) return
+    void refreshPluginCatalog()
+  }, [selectedPlugins.length, pluginList.length, pluginListLoading, refreshPluginCatalog])
 
   const onGoalClosureReport = useCallback((p: { sessionKey: string; outcome: string; body: string; ts?: number }) => {
     const sk = String(p.sessionKey || '').trim()
@@ -7030,10 +7390,6 @@ useEffect(() => {
         force: opts.force,
         onClear: () => {
           clearTurnSendingState(sk, rt, isBackground)
-          void refreshSessionsRef.current?.({
-            skipAutoReselect: true,
-            summariesOnly: isBackground,
-          })
         },
         onResume: () => {
           /* 续流仅用户刷新触发；run 仍 active 时保持 turn busy */
@@ -7139,7 +7495,7 @@ useEffect(() => {
               new Promise<null>((resolve) => window.setTimeout(() => resolve(null), 2500)),
             ])
             if (hit?.models) {
-              const p = hit.primary
+              const p = hit.primary as unknown as { primary_model?: unknown } | null
               const primary =
                 typeof p?.primary_model === 'string' ? p.primary_model.trim() : ''
               applyCatalog(hit.models, primary)
@@ -7840,10 +8196,11 @@ useEffect(() => {
           try {
             const ev = JSON.parse(String(dataJson || '{}'))
             if (String(ev?.type || '').trim() !== 'panel:session_upserted') return
-            // 单源触发:一条 upserted 只 schedule 一次。listener 路径已统一走
-            // scheduleRefreshSessions(150) (useSessionList.ts onSessionsMutated),
-            // 这里不再 dispatch 自定义事件,避免双触发放大成两轮 refresh。
-            scheduleRefreshSessionsRef.current?.(250)
+            const data = ev?.data && typeof ev.data === 'object' ? ev.data : ev
+            const sk = String(data?.session_key || data?.sessionKey || '').trim()
+            if (!sk) return
+            if (sessionsRef.current.some((s) => String(s.sessionKey || '') === sk)) return
+            void syncSessionRowRef.current?.(sk)
           } catch {
             /* ignore */
           }
@@ -7895,7 +8252,6 @@ useEffect(() => {
       setSessions((prev) =>
         prev.map((s) => (String(s.sessionKey || '') === sk ? { ...s, threadId: tid } : s)),
       )
-      scheduleRefreshSessions(300)
     }
     window.addEventListener('evopanel:session-thread-rebound', onThreadRebound)
 
@@ -7974,7 +8330,21 @@ useEffect(() => {
         unsubPanel = subscribeThreadPanelSse(tid, (dataJson: string) => {
           try {
             const ev = JSON.parse(String(dataJson || '{}'))
-            if (String(ev?.type || '').trim() !== 'panel:title_updated') return
+            const evType = String(ev?.type || '').trim()
+            if (evType === 'panel:activity') {
+              // 后台 run（proactive 值班等）无 live runs/stream：步骤进度经
+              // panel-stream 控制面到达。走与 thread_state 活动相同的管线，
+              // 驱动 session 状态条 + 流式行 spinner 文案（B1/B2 通路前端端）。
+              const data = ev?.data && typeof ev.data === 'object' ? ev.data : {}
+              const detail = String(data.detail || '').trim()
+              if (!detail) return
+              const kind = String(data.kind || 'system').trim().toLowerCase()
+              setSessionActivity(sk, kind === 'idle' ? 'system' : kind, detail)
+              applyStreamTurnEvent(streamRef.current, { type: 'system_activity', detail })
+              scheduleBumpRef.current?.({ immediate: true })
+              return
+            }
+            if (evType !== 'panel:title_updated') return
             const data = ev?.data && typeof ev.data === 'object' ? ev.data : {}
             const title = String(data.title || '').trim()
             const sessionKey = String(data.session_key || data.sessionKey || sk).trim()
@@ -8773,11 +9143,16 @@ useEffect(() => {
   ) => {
     const sk = String(sessionKey || '').trim()
     if (!sk) return
+    const rt = getSessionRuntime(sk)
+    // Never abortStreamWire a live POST /runs/stream — that is the send itself.
+    if (shouldSuppressAutoReattach({ sessionKey: sk, runtime: rt })) {
+      srLog('stream resume skipped — live POST stream', { sessionKey: sk })
+      return
+    }
     delete refreshAttachAttemptedRef.current[sk]
     reattachRetryCountRef.current = 0
     srLog('stream resume requested (user refresh)', { sessionKey: sk })
     manualReattachSessionKeyRef.current = sk
-    const rt = getSessionRuntime(sk)
     const row = sessionsRef.current.find((s) => String(s.sessionKey || '') === sk)
     const runId = String(rt.activeChatRunId || row?.currentRunId || '').trim()
     if (runId) wsClient.abortStreamWire(sk, runId)
@@ -8833,8 +9208,10 @@ useEffect(() => {
     const tryReattach = () => {
       const sk = String(sessionRef.current || '').trim()
       if (!sk) return
-      // 尊重 stream-resume 门控，避免在 live POST stream 进行中触发重复 reattach
-      if (shouldManualRefreshResumeStream({ sessionKey: sk }) === false) return
+      // Live POST /runs/stream: never reattach (would abortStreamWire the send).
+      if (shouldSuppressAutoReattach({ sessionKey: sk })) return
+      // Only resume when the session still looks like it needs a wire.
+      if (!shouldManualRefreshResumeStream({ sessionKey: sk })) return
       if (isSessionRecoveryCooldownActive(sk)) return
       void (async () => {
         try {
@@ -9166,7 +9543,7 @@ useEffect(() => {
           turnRunArtifactsRef.current = mergeChatArtifacts(
             turnRunArtifactsRef.current,
             normalizeChatArtifacts(
-              newArtifacts.map((path) => ({
+              newArtifacts.map((path: string) => ({
                 type: 'file',
                 path,
                 status: 'new' as const,
@@ -9182,9 +9559,9 @@ useEffect(() => {
             mergeChatArtifacts(
               prev,
               normalizeChatArtifacts(
-                newArtifacts.map((path) => ({
-                  type: 'file',
-                  path,
+            newArtifacts.map((path: string) => ({
+                type: 'file',
+                path,
                   status: 'new',
                 })),
               ),
@@ -9323,7 +9700,7 @@ useEffect(() => {
       const isBackground = !!(eventSk && uiSk && eventSk !== uiSk)
       if (isBackground) {
         if (state === 'final' || state === 'error' || state === 'aborted') {
-          scheduleRefreshSessionsRef.current?.()
+          void syncSessionRowRef.current?.(eventSk)
         }
         chatStreamBgApplyRef.current = true
       } else {
@@ -9910,6 +10287,25 @@ useEffect(() => {
         return
       }
 
+      if (state === 'background_work') {
+        const ev = payload.backgroundWorkEvent
+        if (ev && typeof ev === 'object' && !Array.isArray(ev)) {
+          if (!S.backgroundWorks) S.backgroundWorks = {}
+          mergeBackgroundWorkEvent(S.backgroundWorks, ev as Record<string, unknown>)
+          const workStatus = String((ev as { status?: string }).status || 'running').trim().toLowerCase()
+          if (!workStatus || workStatus === 'running') watchBackgroundBashRef.current?.()
+          if (!S.runId && runId) S.runId = runId
+          if (!S.startTs) S.startTs = Date.now()
+          const sk = String(payload.sessionKey || sessionRef.current || '').trim()
+          if (sk) {
+            streamSeqRef.current += 1
+            commitStreamSnapshot(sk, S, { seq: streamSeqRef.current })
+          }
+          scheduleBump({ immediate: true })
+        }
+        return
+      }
+
       if (state === 'terminal') {
         const ev = payload.terminalEvent
         if (ev && typeof ev === 'object' && !Array.isArray(ev)) {
@@ -10244,27 +10640,30 @@ useEffect(() => {
           )
             .trim()
             .toLowerCase()
-          // Diagnostic: surface every tool event so we can confirm browser tool
-          // events arrive at the React layer (the previous "no logs" symptom).
-          if (evToolName || aguiEvent.type === 'TOOL_CALL_START') {
-            dbgLog(
-              `[chat-app] tool ${aguiEvent.type} name=${evToolName} toolCallId=${evToolCallId}`,
-            )
-          }
-          // Publish the *real* chat thread id so browser panel can validate the
-          // browser tool metadata. Backend falls back to a literal "evoflow"
-          // session when its runtime lacks thread_id, which never matches us.
+          // Bind the browser panel to the engine session the tool will drive.
+          // node-repl / browser-use always hits ``/api/browser/execute`` with the
+          // fixed bridge thread id — using the chat thread here mounts a second
+          // empty WebView2 the agent never controls.
           if (isBrowserToolWireName(evToolName)) {
-            const realTid = String(
-              (S.aguiTurn as { threadId?: string } | null | undefined)?.threadId ||
-                (aguiEvent as { threadId?: string }).threadId ||
-                '',
-            ).trim()
-            if (setBrowserPanelThreadId(realTid)) changed = true
+            if (evToolName === 'mcp__node_repl__js') {
+              if (setBrowserPanelThreadId(NODE_REPL_BRIDGE_THREAD_ID)) changed = true
+            } else {
+              const realTid = String(
+                (S.aguiTurn as { threadId?: string } | null | undefined)?.threadId ||
+                  (aguiEvent as { threadId?: string }).threadId ||
+                  '',
+              ).trim()
+              if (setBrowserPanelThreadId(realTid)) changed = true
+            }
           }
           syncWorkspacePreviewFromTools(S.turn.tools)
           syncStreamMediaAssetsFromTools(S)
-          if (syncBrowserPanelFromAgUiEvent(aguiEvent, S.aguiTurn?.toolCalls)) {
+          if (
+            syncBrowserPanelFromAgUiEvent(aguiEvent, S.aguiTurn?.toolCalls, {
+              // 事件归属会话：后台 agent 开浏览器不得写进当前正在看的会话侧栏。
+              sessionKey: targetSk,
+            })
+          ) {
             changed = true
           }
           changed = true
@@ -10430,18 +10829,11 @@ useEffect(() => {
               })
             }
           }
-          // 流式结束后立即收尾 runtime 与 session row：
-          // 后端通常先发 RUN_FINISHED 关 SSE，再异步把 session.runStatus='idle' 落库。
-          // 不主动清会让「左下『运行中』+ 停止按钮」多亮 3-5s（等待下一次 refreshSessions
-          // 把 runStatus='idle' 拉回来）。守卫 isTurnBusy(rt) 避免覆盖用户已触发的
-          // stopped/error；isBackground 同理尊重后台会话。
+          // 运行态由本机 TURN_IDLE 收掉。这里重拉 workspace 会话列表只会在每个
+          // 内层 RUN_FINISHED 上打一轮 sessions?workspace_key，侧栏用不到。
           if (rt && isTurnBusy(rt) && targetSk) {
             dispatchSessionTurnEvent(targetSk, { type: 'TURN_IDLE' })
           }
-          void refreshSessionsRef.current?.({
-            skipAutoReselect: true,
-            summariesOnly: isBackground,
-          })
           const hasArtifacts = turnRunArtifactsRef.current.length > 0
           const platformEntries = turnPlatformEntriesRef.current
           if (platformEntries.length > 0 && !hasArtifacts) {
@@ -10762,12 +11154,6 @@ useEffect(() => {
         dispatchSessionTurnEvent(targetSk, { type: 'SEALING' })
         dispatchSessionTurnEvent(targetSk, { type: 'SESSION_EVENT', at: Date.now() })
         flushPendingSessionTitle()
-        if (!isBackground) {
-          // 标题由后台异步生成并写库；合并为两次刷新（singleflight 会再合并叠请求），
-          // 避免 1.5s/4s/8s 三次全量 sessions 风暴堵住 /messages。
-          scheduleRefreshSessionsRef.current?.(1800)
-          window.setTimeout(() => { scheduleRefreshSessionsRef.current?.(0) }, 5500)
-        }
         const c = extractChatContent(payload.message)
         sfLog('ChatApp final enter', {
           sessionKey: targetSk,
@@ -11394,9 +11780,7 @@ useEffect(() => {
               sessionsRef.current.find((s) => String(s.sessionKey || '') === targetSk)?.title || '',
             ).trim() || '后台会话'
           toast(`${bgTitle}：回复已完成`, 'info')
-          void refreshSessionsRef.current?.({ skipAutoReselect: true, summariesOnly: true })
-        } else {
-          void refreshSessionsRef.current?.({ skipAutoReselect: true })
+          void syncSessionRowRef.current?.(targetSk)
         }
         const built = buildCollabSidebarFromTools(toolsForCollab) as {
           main: CollabTaskSnapshot | null
@@ -11565,9 +11949,6 @@ useEffect(() => {
         }
         flushPendingSessionTitle()
         scheduleBump({ immediate: true })
-        if (!isBackground) {
-          void refreshSessionsRef.current?.({ skipAutoReselect: true })
-        }
         const skPersist = String(targetSk || sessionRef.current || selectedSessionKey || '').trim()
         // 优化：仅当流式 final 未产出正文/工具时才拉 DB 对账（正常完成时流式内容即为权威值）
         // 注意：preferStreamTimeline=true 时正文在 segments 中，finalText(payload 文本)可能为空
@@ -11603,21 +11984,6 @@ useEffect(() => {
             body: '本轮 AI 回复已完成',
             tag: `chat-final:${skPersist}`,
           })
-        }
-        // TitleMiddleware writes LLM title to DB in background; pick it up after a short delay.
-        window.setTimeout(
-          () =>
-            void refreshSessionsRef.current?.({
-              skipAutoReselect: true,
-              summariesOnly: true,
-            }),
-          2500,
-        )
-        if (!isBackground) {
-          window.setTimeout(
-            () => void refreshSessionsRef.current?.({ skipAutoReselect: true, summariesOnly: true }),
-            8000,
-          )
         }
         return
       }
@@ -11798,6 +12164,7 @@ useEffect(() => {
           dispatchSessionTurnEvent(targetSk, { type: 'SESSION_EVENT', at: Date.now() })
           return
         }
+        if (rawErr) console.error('[ChatApp] stream error', rawErr, payload)
         const errMsg = toUserFacingError(rawErr || '未知错误')
         if (!errMsg) {
           scheduleBump({ immediate: true })
@@ -12116,11 +12483,6 @@ useEffect(() => {
     return snap
   }, [selectedSessionKey, contextUsageBySession, sessions, modelCatalog, effectiveModelName])
 
-  /** 顶栏只留一个入口；Agent / 产物等在侧栏内切换，避免与侧栏 tab 重复 */
-  const toggleInfoRail = useCallback(() => {
-    setInfoRailOpen((open) => !open)
-  }, [])
-
   const [assetQuickBusy, setAssetQuickBusy] = useState(false)
   const handleAssetQuickAction = useCallback(
     async (kind: 'episode' | 'craft' | 'journal') => {
@@ -12135,7 +12497,7 @@ useEffect(() => {
         const payload = await api.assetsListEntities()
         const rows = Array.isArray(payload?.entities) ? payload.entities : []
         const myEntity = rows.find(
-          (e) => String(e?.entityType || '').toLowerCase() === 'user',
+          (e: { entityType?: unknown; entityId?: unknown }) => String(e?.entityType || '').toLowerCase() === 'user',
         )
         if (myEntity && String(myEntity.entityId || '').trim()) {
           myUserRoot = String(myEntity.entityId).trim()
@@ -12184,30 +12546,53 @@ useEffect(() => {
     [isProactiveEmployeeSession, employeeSessionAgentCode, selectedTurnBusy, getApi],
   )
 
-  const infoRailHeaderToggle = (
-    <button
-      type="button"
-      className={`react-chat-header-icon-btn${infoRailOpen ? ' is-active' : ''}`}
-      title={
-        isProactiveEmployeeSession
-          ? obsEnabled
-            ? '任务 / 岗位 / 产物 / 平台 / 调试 / 运行'
-            : '任务 / 岗位 / 产物 / 平台 / 运行'
-          : obsEnabled
-            ? 'Agent / 产物 / 平台 / 调试'
-            : 'Agent / 产物 / 平台'
-      }
-      aria-pressed={infoRailOpen}
-      aria-label={infoRailOpen ? '关闭侧栏' : '打开侧栏'}
-      onClick={toggleInfoRail}
-    >
-      <PanelRightOpen className="react-chat-header-icon" aria-hidden />
-    </button>
-  )
-
+  // 首页不应出现右侧摘要/侧边面板：进入首页时主动折叠右栏（保留 tabs 缓存）。
   useEffect(() => {
-    if (rightStageOpen) setInfoRailOpen(false)
-  }, [rightStageOpen])
+    if (!isHomeSurface) return
+    collapseRightStage()
+  }, [isHomeSurface, collapseRightStage])
+
+  // Rust CDP path emits this when the agent drives the browser before the
+  // AG-UI TOOL_CALL_START has opened the side panel. Mount the bridge WebView2
+  // immediately so ensure_webview_for_cdp can reuse a healthy HWND.
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    if (!(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) return
+    let cancelled = false
+    let unlisten: (() => void) | undefined
+    void import('@tauri-apps/api/event')
+      .then(({ listen }) =>
+        listen<{ threadId?: string; url?: string }>('browser-panel-request', (ev) => {
+          if (cancelled) return
+          const tid =
+            String(ev.payload?.threadId || '').trim() || NODE_REPL_BRIDGE_THREAD_ID
+          const url = String(ev.payload?.url || '').trim()
+          dbgLog(`[chat-app] browser-panel-request thread=${tid} url=${url || '(none)'}`)
+          setBrowserPanelThreadId(tid)
+          if (url && /^https?:\/\//i.test(url)) {
+            applyBrowserCommandResponse({ threadId: tid, pageUrl: url })
+          } else {
+            ensureBrowserStage({
+              sessionKey: rightStageSessionKeyRef.current || undefined,
+            })
+          }
+        }),
+      )
+      .then((fn) => {
+        if (cancelled) {
+          fn()
+          return
+        }
+        unlisten = fn
+      })
+      .catch((err) => {
+        dbgLog(`[chat-app] browser-panel-request listen failed: ${String(err)}`)
+      })
+    return () => {
+      cancelled = true
+      unlisten?.()
+    }
+  }, [])
 
   useEffect(() => {
     if (normalizeRightStageKind(rightStageSurface?.kind || '') === 'artifacts') {
@@ -12215,8 +12600,25 @@ useEffect(() => {
     }
   }, [rightStageSurface?.kind])
 
+  // 切会话：复位「已手动关」标记，按初始默认行为（开 + 对应 tab）生效。
+  // 之前这里无条件 setInfoRailOpen(true)，会在用户点关闭按钮后立刻被回滚，
+  // 导致「点关闭没反应」的体验。改用 userClosedInfoRailRef 记录用户意图：
+  // 仅在 ref 标记为「已手动关」时，跳过打开动作、保留用户的关闭状态。
+  // 仅在 selectedSessionKey 真正变化时复位 ref（员工会话 ↔ 普通对话切换属于同一会话上下文，
+  // 不应把用户刚关掉的侧栏强行打开）。
+  const prevSelectedSessionKeyForInfoRailRef = useRef(selectedSessionKey)
   useEffect(() => {
-    // 普通对话默认打开 Agent 侧栏；员工会话默认当前任务
+    const sessionKeyChanged =
+      prevSelectedSessionKeyForInfoRailRef.current !== selectedSessionKey
+    prevSelectedSessionKeyForInfoRailRef.current = selectedSessionKey
+    if (sessionKeyChanged) {
+      userClosedInfoRailRef.current = false
+    }
+    if (userClosedInfoRailRef.current) {
+      // 用户在当前会话主动关过：尊重意图，保持关闭，仅同步 tab。
+      setInfoRailTab(isProactiveEmployeeSession ? 'task' : 'agent')
+      return
+    }
     setInfoRailOpen(true)
     setInfoRailTab(isProactiveEmployeeSession ? 'task' : 'agent')
   }, [selectedSessionKey, isProactiveEmployeeSession])
@@ -12388,19 +12790,197 @@ useEffect(() => {
 
   // 状态面板「进程」区：以 streamRef 为唯一真相源，按 chrome tick 取快照，
   // 避免另开 state 漏掉切会话/终态收束时的终端清理。
+  const liveProcessPanelEnabled =
+    chatPanelMode !== 'hidden' && !isHomeSurface && !!selectedSessionKey && !isMobileChat
+  const backgroundWorksPollSigRef = useRef('')
+  const backgroundOutputPollRef = useRef<{ workId: string; timer: number; stopAt: number } | null>(null)
   const liveProcessSnapshot = useLiveProcessSnapshot(
     streamRef,
-    infoRailOpen && !isHomeSurface && !!selectedSessionKey && !isMobileChat,
+    liveProcessPanelEnabled,
+    selectedSessionKey,
   )
 
-  /** 点进程行：把右栏切到智能体区（详情由既有右栏能力承接，不另造 terminal 弹层） */
-  const handleOpenProcessItem = useCallback((item: ProcessItem) => {
-    if (!item) return
-    if (item.kind === 'agent' || item.kind === 'terminal') {
-      setInfoRailTab('agent')
-      setInfoRailOpen(true)
+  useEffect(() => {
+    if (!liveProcessPanelEnabled) return
+    backgroundWorksPollSigRef.current = ''
+    let cancelled = false
+    let timer: number | null = null
+    const clearTimer = () => {
+      if (timer != null) {
+        window.clearTimeout(timer)
+        timer = null
+      }
     }
-  }, [])
+    const tick = async () => {
+      timer = null
+      if (cancelled) return
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
+      try {
+        const works = await listBackgroundBashWorks({
+          runningOnly: true,
+          threadId: selectedThreadId || undefined,
+        })
+        if (cancelled) return
+        const S = streamRef.current
+        if (!S) return
+        if (!S.backgroundWorks) S.backgroundWorks = {}
+        const signature = works
+          .map((w) => `${w.workId}:${w.status}:${w.endedAt || 0}`)
+          .sort()
+          .join('|')
+        const changed = signature !== backgroundWorksPollSigRef.current
+        backgroundWorksPollSigRef.current = signature
+        if (changed) {
+          for (const w of works) {
+            S.backgroundWorks[w.workId] = {
+              workId: w.workId,
+              kind: 'bash',
+              title: w.title || w.command || w.workId,
+              status: w.status || 'running',
+              startedAt: w.startedAt || Date.now(),
+              endedAt: w.endedAt,
+              cancellable: w.status === 'running' && w.cancellable !== false,
+              toolCallId: w.toolCallId || w.workId,
+              command: w.command,
+            }
+          }
+          const sk = String(selectedSessionKey || '').trim()
+          if (sk) {
+            streamSeqRef.current += 1
+            commitStreamSnapshot(sk, S, { seq: streamSeqRef.current })
+          }
+        }
+        const stillRunning = works.some((w) => String(w.status || 'running') === 'running')
+        if (stillRunning && !cancelled) {
+          timer = window.setTimeout(() => void tick(), 2000)
+        }
+      } catch {
+        /* gateway may be down; a later background_work event retries */
+      }
+    }
+    watchBackgroundBashRef.current = () => {
+      if (cancelled || timer != null) return
+      void tick()
+    }
+    void tick()
+    return () => {
+      cancelled = true
+      watchBackgroundBashRef.current = null
+      clearTimer()
+    }
+  }, [liveProcessPanelEnabled, selectedSessionKey, selectedThreadId])
+
+  const handleStopProcessItem = useCallback(
+    (item: ProcessItem) => {
+      const workId = String(item?.workId || '').trim()
+      if (!workId) return
+      void stopBackgroundBashWork(workId)
+        .then(() => {
+          const S = streamRef.current
+          const row = S?.backgroundWorks?.[workId]
+          if (row) {
+            row.status = 'cancelled'
+            row.cancellable = false
+            row.endedAt = Date.now()
+          }
+          const sk = String(sessionRef.current || '').trim()
+          if (sk && S) {
+            streamSeqRef.current += 1
+            commitStreamSnapshot(sk, S, { seq: streamSeqRef.current })
+          }
+          scheduleBump({ immediate: true })
+        })
+        .catch(() => {})
+    },
+    [scheduleBump],
+  )
+
+  /** 点进程行：终端开右栏标签；智能体仍切到摘要区 */
+  const handleOpenProcessItem = useCallback(
+    (item: ProcessItem) => {
+      if (!item) return
+      if (item.kind === 'terminal') {
+        const src = item.source as { toolCallId?: string; command?: string; phase?: string }
+        const toolCallId = String(src?.toolCallId || item.workId || '').trim()
+        if (!toolCallId) {
+          setChatPanelDisplayMode('panel')
+          return
+        }
+        ensureTerminalStage({
+          toolCallId,
+          title: item.label || '终端',
+          command: String(src?.command || ''),
+          sessionKey: selectedSessionKey || undefined,
+          running: src?.phase === 'running' || item.state === 'running',
+        })
+        // ZCode BackgroundBashOutputSidePane：打开时拉输出快照；running 时 1s 轮询。
+        const workId = String(item.workId || '').trim()
+        if (workId) {
+          const prevPoll = backgroundOutputPollRef.current
+          if (prevPoll) {
+            window.clearInterval(prevPoll.timer)
+            backgroundOutputPollRef.current = null
+          }
+          const seed = async () => {
+            try {
+              const snap = await fetchBackgroundBashOutput(workId)
+              if (!snap?.output) return
+              const S = streamRef.current
+              if (!S) return
+              if (!S.terminalStreams) S.terminalStreams = {}
+              const existing = S.terminalStreams[toolCallId]
+              const prev = String(existing?.stdout || '')
+              if (!prev || prev.length < snap.output.length) {
+                S.terminalStreams[toolCallId] = {
+                  toolCallId,
+                  command: String(src?.command || existing?.command || ''),
+                  phase: snap.status === 'running' ? 'running' : existing?.phase || 'running',
+                  stdout: snap.output,
+                  stderr: existing?.stderr || '',
+                  chunks: existing?.chunks,
+                  startedAt: existing?.startedAt || item.startedAt || Date.now(),
+                }
+              }
+              const sk = String(selectedSessionKey || sessionRef.current || '').trim()
+              if (sk) {
+                streamSeqRef.current += 1
+                commitStreamSnapshot(sk, S, { seq: streamSeqRef.current })
+              }
+              scheduleBump({ immediate: true })
+              if (snap.status && snap.status !== 'running') {
+                const cur = backgroundOutputPollRef.current
+                if (cur?.workId === workId) {
+                  window.clearInterval(cur.timer)
+                  backgroundOutputPollRef.current = null
+                }
+              }
+            } catch {
+              /* ignore */
+            }
+          }
+          void seed()
+          if (item.state === 'running') {
+            const timer = window.setInterval(() => {
+              const cur = backgroundOutputPollRef.current
+              if (!cur || Date.now() > cur.stopAt) {
+                if (cur) window.clearInterval(cur.timer)
+                backgroundOutputPollRef.current = null
+                return
+              }
+              void seed()
+            }, 1000)
+            backgroundOutputPollRef.current = { workId, timer, stopAt: Date.now() + 600_000 }
+          }
+        }
+        return
+      }
+      if (item.kind === 'agent') {
+        setInfoRailTab('agent')
+        setChatPanelDisplayMode('panel')
+      }
+    },
+    [selectedSessionKey, setChatPanelDisplayMode, scheduleBump],
+  )
 
   // 执行期间轮询：任务处于活跃执行状态时，定期 bump refreshKey 触发重新拉取 GET /tasks，
   // 弥补被移除的 task-progress 快照刷新逻辑（流式事件 task_running/task_completed 不保证到达）。
@@ -12429,9 +13009,169 @@ useEffect(() => {
     bumpSubtasksApiRefresh,
   ])
 
+  const renderChatSummaryPanel = (mode: 'panel' | 'capsule'): ReactNode => (
+    <ChatSummaryPanel
+      displayMode={mode}
+      onDisplayModeChange={setChatPanelDisplayMode}
+      isRunning={selectedTurnBusy}
+      sessionTitle={getDisplayLabel(
+        selectedSessionKey,
+        sessions.find((s) => String(s.sessionKey || '') === String(selectedSessionKey || ''))?.title,
+      )}
+      terminalStreams={liveProcessSnapshot.terminalStreams}
+      subagentTasks={liveProcessSnapshot.subagentTasks}
+      workflowSubtasks={sharedCollabSubtasks}
+      backgroundWorks={liveProcessSnapshot.backgroundWorks}
+      onOpenProcessItem={handleOpenProcessItem}
+      onStopProcessItem={handleStopProcessItem}
+      agentLabel={currentRoleLabel}
+      modelLabel={modelPillLabel}
+      modelName={effectiveModelName}
+      agentCode={
+        isProactiveEmployeeSession
+          ? employeeSessionAgentCode || currentRoleCodeForUi
+          : currentRoleCodeForUi
+      }
+      agentDescription={String(currentRoleAgent?.description || '').trim()}
+      agent={currentRoleAgent}
+      skillNames={currentAgentCapabilities.skillNames}
+      toolNames={currentAgentCapabilities.toolNames}
+      mcpServers={currentAgentCapabilities.mcpServers}
+      knowledgeVaultIds={
+        isProactiveEmployeeSession
+          ? employeeRoleDetail?.knowledgeVaultIds || []
+          : currentAgentCapabilities.knowledgeVaultIds
+      }
+      onPatchCapabilities={patchCurrentAgentCapabilities}
+      capabilityBusy={capabilityPatchBusy}
+      onSwitchAgent={() => setBottomRoleOpen(true)}
+      onEditAgent={currentRoleCodeForUi || employeeSessionAgentCode ? openCurrentAgentEditor : undefined}
+      onAssetQuickAction={handleAssetQuickAction}
+      assetQuickBusy={assetQuickBusy}
+      artifacts={sessionArtifacts}
+      recentArtifacts={turnArtifacts}
+      artifactFocusId={artifactFocusId}
+      platformEntries={sessionPlatformEntries}
+      recentPlatformEntries={turnPlatformEntries}
+      platformFocusEntryId={platformFocusEntryId}
+      onOpenArtifact={openSessionArtifact}
+      onRevealArtifact={revealSessionArtifact}
+      obsEnabled={obsEnabled}
+      threadId={selectedThreadId}
+      isEmployeeSession={isProactiveEmployeeSession}
+      employeePane={
+        isProactiveEmployeeSession ? (
+          <EmployeePane
+            employeeInfo={employeeRoleDetail}
+            sessionTitle={getDisplayLabel(selectedSessionKey, '')}
+            isRunning={selectedTurnBusy}
+            agentLabel={currentRoleLabel}
+            modelLabel={modelPillLabel}
+            agentCode={employeeSessionAgentCode || currentRoleCodeForUi}
+            agentDescription={String(currentRoleAgent?.description || '').trim()}
+            agent={currentRoleAgent}
+            skillNames={currentAgentCapabilities.skillNames}
+            toolNames={currentAgentCapabilities.toolNames}
+            mcpServers={currentAgentCapabilities.mcpServers}
+            knowledgeVaultIds={
+              employeeRoleDetail?.knowledgeVaultIds ||
+              currentAgentCapabilities.knowledgeVaultIds
+            }
+            onPatchCapabilities={patchCurrentAgentCapabilities}
+            capabilityBusy={capabilityPatchBusy}
+            modelName={effectiveModelName}
+            contextUsage={displayContextUsage}
+            tokenTotals={headerTokenTotals}
+            onManualCompact={handleManualContextCompact}
+            manualCompactDisabled={manualContextCompacting}
+            onEditAgent={openCurrentAgentEditor}
+            onAssetQuickAction={handleAssetQuickAction}
+            assetQuickBusy={assetQuickBusy}
+          />
+        ) : null
+      }
+      taskPane={
+        isProactiveEmployeeSession ? (
+          <TaskPane
+            sessionTitle={getDisplayLabel(selectedSessionKey, '')}
+            isRunning={selectedTurnBusy}
+            tokenTotals={headerTokenTotals}
+            agentCode={employeeSessionAgentCode || currentRoleCodeForUi}
+            sessionKey={String(selectedSessionKey || '')}
+            liveTask={sidebarActiveView?.task || null}
+          />
+        ) : null
+      }
+    />
+  )
+
   const renderRightStageBody = useCallback(
     (surface: RightStageSurface): ReactNode => {
       const kind = surface.kind
+      if (kind === 'summary') {
+        return null
+      }
+      if (kind === 'terminal') {
+        const data = surface.data || {}
+        const toolCallId = String(data.toolCallId || surface.id || '').trim()
+        const command = String(data.command || '').trim()
+        const streams = liveProcessSnapshot.terminalStreams || {}
+        const stream =
+          streams[toolCallId] ||
+          Object.values(streams).find(
+            (s) =>
+              String(s?.toolCallId || '') === toolCallId ||
+              String((s as { id?: string })?.id || '') === toolCallId,
+          ) ||
+          undefined
+        return (
+          <TerminalStagePanel
+            title={String(surface.title || data.title || '终端')}
+            command={command}
+            sessionKey={String(data.sessionKey || selectedSessionKey || '')}
+            toolCallId={toolCallId}
+            outputFallback={String(data.outputFallback || '')}
+            stream={stream}
+            running={!!data.running || stream?.phase === 'running'}
+          />
+        )
+      }
+      if (kind === 'file') {
+        const data = surface.data || {}
+        const path = String(data.path || surface.id || '').trim()
+        const name = String(data.name || surface.title || '').trim()
+        if (!path) return null
+        const focusAnnotation =
+          data.focusAnnotation && typeof data.focusAnnotation === 'object'
+            ? (data.focusAnnotation as { title?: string; body?: string; priority?: number })
+            : undefined
+        const scope = workspaceOpenScopeRef.current
+        const root = String(scope.root || effectiveWorkspaceRoot || '').trim()
+        return sidePanelHeavyMount ? (
+          <WorkspaceFilePreviewPanel
+            embedded
+            workspaceRoot={root}
+            threadId={
+              root ? undefined : wsClient.getSessionThreadId(selectedSessionKey || '') || undefined
+            }
+            workspaceScopeOpts={{
+              configuredRoot: scope.configuredRoot,
+              useVirtualPaths: scope.useVirtualPaths,
+            }}
+            path={path}
+            name={name}
+            poll={!!data.poll}
+            focusLine={typeof data.focusLine === 'number' ? data.focusLine : undefined}
+            focusEndLine={typeof data.focusEndLine === 'number' ? data.focusEndLine : undefined}
+            focusAnnotation={focusAnnotation}
+            onClose={() => {
+              rightStageStore.closeTab(`file:${path.replace(/\\/g, '/')}`)
+            }}
+          />
+        ) : (
+          <SidePanelBootShell title={name || '文件预览'} className="react-chat-workspace-preview-stage" />
+        )
+      }
       if (kind === 'workspace-browse' || kind === 'write') {
         const writePreviewMode = kind === 'write'
         return sidePanelHeavyMount ? (
@@ -12510,11 +13250,6 @@ useEffect(() => {
             />
           ) : (
             <aside className="react-chat-collab-exec-panel react-chat-right-stage-panel" role="region" aria-label="工作流">
-              <header className="react-chat-collab-exec-panel-header">
-                <div className="react-chat-collab-exec-panel-title-wrap">
-                  <span className="react-chat-collab-exec-panel-title">工作流</span>
-                </div>
-              </header>
               <div className="react-chat-collab-exec-panel-body collab-wf-panel-body">
                 <div className="collab-exec-dag-empty">当前会话暂无工作流</div>
               </div>
@@ -12528,8 +13263,43 @@ useEffect(() => {
     },
     [
       sidePanelHeavyMount,
-      effectiveWorkspaceRoot,
+      selectedTurnBusy,
       selectedSessionKey,
+      sessions,
+      liveProcessSnapshot.terminalStreams,
+      liveProcessSnapshot.subagentTasks,
+      sharedCollabSubtasks,
+      handleOpenProcessItem,
+      currentRoleLabel,
+      modelPillLabel,
+      effectiveModelName,
+      isProactiveEmployeeSession,
+      employeeSessionAgentCode,
+      currentRoleCodeForUi,
+      currentRoleAgent,
+      currentAgentCapabilities,
+      employeeRoleDetail,
+      patchCurrentAgentCapabilities,
+      capabilityPatchBusy,
+      openCurrentAgentEditor,
+      handleAssetQuickAction,
+      assetQuickBusy,
+      sessionArtifacts,
+      turnArtifacts,
+      artifactFocusId,
+      sessionPlatformEntries,
+      turnPlatformEntries,
+      platformFocusEntryId,
+      openSessionArtifact,
+      revealSessionArtifact,
+      obsEnabled,
+      selectedThreadId,
+      displayContextUsage,
+      headerTokenTotals,
+      handleManualContextCompact,
+      manualContextCompacting,
+      sidebarActiveView?.task,
+      effectiveWorkspaceRoot,
       contextFiles,
       toggleContextFile,
       workspaceIndexWatchEnabled,
@@ -12544,14 +13314,12 @@ useEffect(() => {
       collabExecPanelOpen,
       collabSubtasksTaskId,
       sidebarActiveTaskId,
-      sidebarActiveView?.task,
       threadPanelState.collabTask,
       threadPanelState.collabPhase,
       threadPanelState.collabSubtasks,
       threadPanelState.subagentTasks,
       chatThreadIdForSidebar,
       sharedCollabMainTask,
-      sharedCollabSubtasks,
       agents,
       closeCollabExecPanel,
       openWorkspaceFilePreview,
@@ -12571,18 +13339,228 @@ useEffect(() => {
 
   
 
-  // 浏览器面板头部开关（暂时禁用，CDP 路由修复中）
-  // const browserStageOpen = rightStageOpen && rightStageSurface?.kind === 'browser'
-  // const browserToggleButton = (...) // 代码保留以便将来恢复
-  const browserToggleButton = null
+  // 浏览器面板头部开关：存在则激活，再点一次关掉这一页（不关整栏其它标签）
+  const visibleRightStageTabs = useMemo(
+    () => filterRightStageTabsForSession(rightStageTabs, selectedSessionKey),
+    [rightStageTabs, selectedSessionKey],
+  )
+  const browserStageOpen = visibleRightStageTabs.some(
+    (t) => normalizeRightStageKind(t.kind) === 'browser',
+  )
+  const browserStageActive =
+    normalizeRightStageKind(rightStageSurface?.kind || '') === 'browser'
+  const toggleBrowserStage = useCallback(() => {
+    const snap = rightStageStore.getSnapshot()
+    const existing = filterRightStageTabsForSession(snap.tabs, selectedSessionKey).find(
+      (t) => normalizeRightStageKind(t.kind) === 'browser',
+    )
+    if (existing) {
+      const key = `${normalizeRightStageKind(existing.kind)}:${existing.id}`
+      if (snap.activeKey === key) {
+        closeBrowserStage(existing.id)
+        return
+      }
+      rightStageStore.activateTab(key)
+      return
+    }
+    const manualTid = String(wsClient.getSessionThreadId(selectedSessionKey || '') || '').trim()
+    if (manualTid) setBrowserPanelThreadId(manualTid)
+    ensureBrowserStage({ sessionKey: selectedSessionKey || undefined })
+    if (!isChatOverlayDeferActive()) {
+      scheduleBumpRef.current?.({ immediate: true })
+    }
+  }, [selectedSessionKey])
+  const browserToggleTitle = browserStageOpen ? '隐藏浏览器' : '打开浏览器'
+  const browserToggleButton = (
+    <button
+      type="button"
+      className={`react-chat-header-icon-btn react-chat-browser-stage-toggle-btn${
+        browserStageActive ? ' is-active' : ''
+      }`}
+      title={browserToggleTitle}
+      aria-label={browserToggleTitle}
+      aria-pressed={browserStageOpen}
+      onClick={toggleBrowserStage}
+    >
+      <Globe className="react-chat-header-icon" aria-hidden />
+    </button>
+  )
 
+  /** 折叠侧栏：保留 tabs 缓存，对齐 ZCode collapse（不是 hideAll）。 */
+  const handleCollapseRightStage = useCallback(() => {
+    rightStageUserPinnedRef.current = null
+    collapseRightStage()
+    setChatOverlayDefer('workspace', false)
+    setChatOverlayDefer('workflow', false)
+    setChatOverlayDefer('knowledge-map', false)
+    syncShellAsideForWorkspacePanel(false)
+    if (!isChatOverlayDeferActive()) {
+      scheduleBumpRef.current?.({ immediate: true })
+    }
+  }, [collapseRightStage, syncShellAsideForWorkspacePanel])
+
+  const handleExpandRightStage = useCallback(() => {
+    // 专用侧栏与状态卡片互斥：开侧栏时把状态收成气泡偏好，避免关侧栏后又立刻弹回卡片。
+    if (chatPanelMode === 'panel') {
+      setChatPanelMode('capsule')
+      saveChatSummaryDisplayMode('capsule')
+    }
+    expandRightStage()
+    setInfoRailOpen(false)
+    if (!isChatOverlayDeferActive()) {
+      scheduleBumpRef.current?.({ immediate: true })
+    }
+  }, [expandRightStage, chatPanelMode])
+
+  /**
+   * 顶栏 PanelRight：对齐 ZCode 侧栏开关。
+   * 展开 → 右侧壳（无标签时显示「打开标签」首页）；折叠 → 只藏面板，tabs 缓存保留。
+   */
+  const toggleInfoRail = useCallback(() => {
+    if (rightStageOpen) {
+      handleCollapseRightStage()
+      userClosedInfoRailRef.current = false
+      return
+    }
+    handleExpandRightStage()
+    userClosedInfoRailRef.current = true
+  }, [rightStageOpen, handleCollapseRightStage, handleExpandRightStage])
+
+  /** 右侧空白里的悬浮状态卡；专用侧栏打开时让位，互斥不叠放。 */
+  const showChatSummaryFloat =
+    chatPanelMode !== 'hidden' &&
+    !rightStageOpen &&
+    !isHomeSurface &&
+    !isMobileChat &&
+    !!selectedSessionKey
+
+  const infoRailHeaderToggle = (
+    <button
+      type="button"
+      className={`react-chat-header-icon-btn${rightStageOpen ? ' is-active' : ''}`}
+      title={rightStageOpen ? '收起右侧面板' : '打开右侧面板'}
+      aria-pressed={rightStageOpen}
+      aria-label={rightStageOpen ? '收起右侧面板' : '打开右侧面板'}
+      data-info-rail-open={rightStageOpen ? 'true' : 'false'}
+      data-right-stage-open={rightStageOpen ? 'true' : 'false'}
+      onClick={toggleInfoRail}
+    >
+      {rightStageOpen ? (
+        <PanelRightClose className="react-chat-header-icon" aria-hidden />
+      ) : (
+        <PanelRightOpen className="react-chat-header-icon" aria-hidden />
+      )}
+    </button>
+  )
+
+  const rightStageLauncherItems = useMemo(
+    () =>
+      buildDefaultRightStageLauncherItems({
+        onOpenBrowser: () => {
+          const manualTid = String(wsClient.getSessionThreadId(selectedSessionKey || '') || '').trim()
+          if (manualTid) setBrowserPanelThreadId(manualTid)
+          ensureBrowserStage({
+            forceNew: true,
+            sessionKey: selectedSessionKey || undefined,
+          })
+        },
+        onOpenWorkspace: () => {
+          rightStageUserPinnedRef.current = 'workspace-browse'
+          setWorkspacePanelOpen(true)
+          setWorkspaceTreePinned(true)
+          syncShellAsideForWorkspacePanel(true)
+        },
+        onOpenWorkflow: () => {
+          openCollabExecPanel()
+        },
+        onOpenSummary: () => {
+          setChatPanelDisplayMode('panel')
+        },
+        mindMapEnabled: knowledgeMapEnabled,
+        onOpenMindMap: () => {
+          openKnowledgeMapPanel()
+        },
+      }),
+    [
+      selectedSessionKey,
+      setWorkspacePanelOpen,
+      syncShellAsideForWorkspacePanel,
+      openCollabExecPanel,
+      knowledgeMapEnabled,
+      openKnowledgeMapPanel,
+      setChatPanelDisplayMode,
+    ],
+  )
+
+  /** 标签 ×：按 kind 走既有清理，再 closeTab；不能只删列表项丢掉 write/dismiss 状态。 */
+  const handleCloseRightStageTab = useCallback(
+    (key: string) => {
+      const tab = rightStageStore.getSnapshot().tabs.find((t) => `${normalizeRightStageKind(t.kind)}:${t.id}` === key)
+      const kind = normalizeRightStageKind(tab?.kind || key.split(':')[0] || '')
+      if (kind) dismissedRightStageKindsRef.current.add(kind)
+      if (kind === 'workspace-browse' || kind === 'write') {
+        closeWorkspacePanel()
+        return
+      }
+      if (kind === 'collab-workflow') {
+        closeCollabExecPanel()
+        return
+      }
+      if (kind === 'mind-map') {
+        closeKnowledgeMapPanel()
+        return
+      }
+      if (kind === 'browser') {
+        closeBrowserStage(tab?.id || 'primary')
+        return
+      }
+      if (kind === 'summary') {
+        userClosedInfoRailRef.current = true
+        setInfoRailOpen(false)
+        closeSummaryStage()
+        return
+      }
+      closeRightStageTab(key)
+      if (rightStageUserPinnedRef.current === kind) {
+        rightStageUserPinnedRef.current = null
+      }
+    },
+    [
+      closeWorkspacePanel,
+      closeCollabExecPanel,
+      closeKnowledgeMapPanel,
+      closeRightStageTab,
+    ],
+  )
+
+  const handleCloseOtherRightStageTabs = useCallback(
+    (keepKey: string) => {
+      const keep = String(keepKey || '').trim()
+      if (!keep) return
+      for (const tab of visibleRightStageTabs) {
+        const key = `${normalizeRightStageKind(tab.kind)}:${tab.id}`
+        if (key !== keep) handleCloseRightStageTab(key)
+      }
+    },
+    [visibleRightStageTabs, handleCloseRightStageTab],
+  )
+
+  const handleCloseAllRightStageTabs = useCallback(() => {
+    for (const tab of [...visibleRightStageTabs]) {
+      handleCloseRightStageTab(`${normalizeRightStageKind(tab.kind)}:${tab.id}`)
+    }
+  }, [visibleRightStageTabs, handleCloseRightStageTab])
+
+  const workspaceStageActive =
+    normalizeRightStageKind(rightStageSurface?.kind || '') === 'workspace-browse' ||
+    normalizeRightStageKind(rightStageSurface?.kind || '') === 'write'
   const workspaceFolderToggleTitle = workspacePanelOpen ? '隐藏工作区文件' : '显示工作区文件'
 
   const workspaceFolderToggleButton = (
     <button
       type="button"
       className={`react-chat-header-icon-btn react-chat-workspace-folder-btn${
-        workspacePanelOpen ? ' is-active' : ''
+        workspaceStageActive ? ' is-active' : ''
       }`}
       title={workspaceFolderToggleTitle}
       aria-label={workspaceFolderToggleTitle}
@@ -12925,13 +13903,23 @@ useEffect(() => {
   async function applyMoreMenuSessionApprovalPolicy(presetId: string): Promise<void> {
     const sk = (await ensureChatSessionKey()) || sessionRef.current || selectedSessionKey
     if (!sk) return
-    const [{ patchSessionPermissionPreset }, { wsClient }] = await Promise.all([
+    const [{ patchSessionPermissionPreset }, { wsClient: wsClientMod }] = await Promise.all([
       import('../lib/tool-approval-settings.js'),
       import('../lib/ws-client.js'),
     ])
-    const result = await patchSessionPermissionPreset(sk, presetId)
+    let result
+    try {
+      result = await patchSessionPermissionPreset(sk, presetId)
+    } catch (err) {
+      // 静默失败会让用户以为已保存（刷新后回跳旧档位）——必须可见。
+      toast(
+        `权限档位保存失败：${toUserFacingError((err as Error)?.message || err)}`,
+        'error',
+      )
+      throw err
+    }
     // Force local context so session-list refresh cannot fall back to global grant_all.
-    wsClient.applySessionToolApprovalPolicy(sk, {
+    wsClientMod.applySessionToolApprovalPolicy(sk, {
       ...result,
       permission_preset: result.permission_preset || presetId,
       effective_permission_preset: result.effective_permission_preset || presetId,
@@ -12956,16 +13944,36 @@ useEffect(() => {
       }),
     )
     setToolApprovalPolicyTick((n) => n + 1)
-    toast(permissionPresetToast(presetId), 'success')
+    toast(permissionPresetToast(presetId as Parameters<typeof permissionPresetToast>[0]), 'success')
   }
 
-  // 当前 session 的有效权限档位（来自 sessions 列表里 row.context）
+  // 当前 session 的有效权限档位（sessions 行 context + wsClient 会话映射）。
+  // PATCH 成功后 wsClient 映射即时同步，而 sessions 行可能被 in-flight 的旧列表
+  // 响应覆盖回旧值（stale ctx）——wsClient 值优先，避免档位显示回跳。
   const currentPermissionPresetId = useMemo(() => {
+    void toolApprovalPolicyTick
     const row = selectedSessionKey
       ? sessions.find((s) => String(s.sessionKey || '') === selectedSessionKey) ?? null
       : null
-    const ctx = (row?.context && typeof row.context === 'object') ? row.context : {}
-    return resolvePermissionPreset(ctx)
+    const base: Record<string, unknown> =
+      row?.context && typeof row.context === 'object' ? { ...row.context } : {}
+    try {
+      const wsCtx = wsClient.getSessionContext(selectedSessionKey) as
+        | Record<string, unknown>
+        | null
+      for (const k of [
+        'effective_permission_preset',
+        'permission_preset',
+        'effective_tool_approval_policy',
+        'tool_approval_policy',
+      ]) {
+        const v = wsCtx ? wsCtx[k] : undefined
+        if (v != null && String(v).trim()) base[k] = v
+      }
+    } catch {
+      /* ignore */
+    }
+    return resolvePermissionPreset(base)
   }, [selectedSessionKey, sessions, toolApprovalPolicyTick])
 
   const currentPermissionPillLabel = useMemo(() => {
@@ -12989,6 +13997,26 @@ useEffect(() => {
     await applyMoreMenuSessionApprovalPolicy(presetId)
   }
 
+  /** 与安全中心「新对话默认完全访问」同一全局策略 */
+  const newChatGrantAllDefault = useMemo(() => {
+    void toolApprovalPolicyTick
+    return isToolApprovalDisabled(getCachedGlobalToolApprovalPolicy())
+  }, [toolApprovalPolicyTick])
+
+  async function toggleNewChatGrantAllDefault(next: boolean): Promise<void> {
+    const policy = next ? TOOL_APPROVAL_POLICY_GRANT_ALL : TOOL_APPROVAL_POLICY_SESSION
+    try {
+      await patchGlobalToolApprovalPolicy(policy)
+      toast(
+        next ? '新对话默认：完全访问（不询问）' : '新对话默认：帮我批准（风险操作询问）',
+        'success',
+      )
+    } catch (err) {
+      toast(String((err as Error)?.message || err) || '保存失败', 'error')
+      void fetchGlobalToolApprovalPolicy().catch(() => {})
+    }
+  }
+
   async function handleSend(
     message: string,
     attachments?: ChatAttachment[],
@@ -13004,6 +14032,8 @@ useEffect(() => {
       alreadyInjected?: boolean
       /** 外部传入的技能选择（优先于 selectedSkills 状态） */
       skillsOverride?: SkillSelection[]
+      /** 外部传入的插件选择（优先于 selectedPlugins 状态） */
+      pluginsOverride?: PluginSelection[]
     },
   ) {
     // 用户发新消息时重置停止标记，确保停止后可立即发新消息
@@ -13081,6 +14111,13 @@ useEffect(() => {
         icon: s.icon,
       }))
       void persistSelectedSkills(sessionKey, activeSkills)
+    }
+    // 选中插件时：run context 传 preferred_plugins，后端按轮注入组件元数据；仅本轮消息 /命令名 调用的命令才注入正文
+    let preferredPluginIds: string[] = []
+    const activePlugins = opts?.pluginsOverride ?? selectedPlugins
+    if (activePlugins.length > 0 && userMessage.trim()) {
+      preferredPluginIds = activePlugins.map((p) => String(p.id || '').trim()).filter(Boolean)
+      void persistSelectedPlugins(sessionKey, activePlugins)
     }
     const slash = String(message || '').trim()
     if (!attachments?.length) {
@@ -13185,6 +14222,8 @@ useEffect(() => {
       setContextFiles([])
       void persistContextFiles([], sessionKey)
     }
+    // 消息已确认发出：隐藏已选插件 pills。粘性选择仍保留，下次再点选时才会重新展示。
+    setPluginComposerPillsVisible(false)
     const preserveCollabOnSend = isUserExecutionStartIntent(message)
 
     // 与输入框发送一致：先立刻展示用户消息 + 处理中，再跑 context/abort/chatSend（避免点「开始执行」长时间无反馈）
@@ -13514,6 +14553,7 @@ useEffect(() => {
           priorTurnStripBundle?: PriorTurnStripBundle
           messageId?: string
           preferredSkills?: string[]
+          preferredPlugins?: string[]
           skipTranscriptAppend?: boolean
           voiceInitiated?: boolean
         },
@@ -13539,6 +14579,7 @@ useEffect(() => {
           ...priorSendOpts,
           messageId: optimisticMessageId,
           ...(preferredSkillNames.length ? { preferredSkills: preferredSkillNames } : {}),
+          ...(preferredPluginIds.length ? { preferredPlugins: preferredPluginIds } : {}),
           ...(opts?.skipTranscriptAppend || alreadyInjected ? { skipTranscriptAppend: true } : {}),
           ...(opts?.voiceInitiated ? { voiceInitiated: true } : {}),
           ...(shouldArmVoiceReply(voiceReplyEnabled) ? { voiceReply: true } : {}),
@@ -13560,6 +14601,7 @@ useEffect(() => {
         voiceSessionKeyRef.current = ''
         voiceStreamingStartedRef.current = false
         void setVoiceTrayState('idle')
+        console.error('[ChatApp] send failed', e)
         toast(toUserFacingError((e as Error)?.message || e), 'error')
         rtSend.rows = preSendRows
         rtSend.stream = emptyStream()
@@ -15020,9 +16062,7 @@ useEffect(() => {
             className={`react-chat-main-body${
               rightStageOpen ? ` ${mainBodyStageClasses}` : ''
             }${
-              !rightStageOpen && infoRailOpen && !isHomeSurface && selectedSessionKey && !isMobileChat
-                ? ' is-info-rail-open'
-                : ''
+              showChatSummaryFloat ? ' is-chat-summary-split' : ''
             }${
               anyRightPanelOpen && layoutResizeEnabled && rightPanelWidthPx != null
                 ? ' is-layout-custom-width'
@@ -15390,6 +16430,34 @@ useEffect(() => {
                 ))}
               </div>
             ) : null}
+            {pluginComposerPillsVisible && selectedPlugins.length > 0 ? (
+              <div className="react-chat-skill-composer-pills" aria-label="已选插件">
+                <span className="react-chat-context-pills-label">
+                  已选 {selectedPlugins.length} 个插件，发送时自动注入 Agent
+                </span>
+                {selectedPlugins.map((pl) => (
+                  <HoverBubble key={pl.id} text={`插件：${pl.label}`} side="top" align="start" maxWidth={320}>
+                    <button
+                      type="button"
+                      className="react-chat-skill-composer-pill"
+                      onClick={() => removeSelectedPlugin(pl.id)}
+                    >
+                      <span
+                        className="react-chat-skill-composer-pill-icon"
+                        aria-hidden
+                        style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}
+                      >
+                        <PluginPillIcon pluginId={pl.id} iconUrl={pl.iconUrl} />
+                      </span>
+                      <span className="react-chat-skill-composer-pill-label">{pl.label}</span>
+                      <span className="react-chat-skill-composer-pill-remove" aria-hidden>
+                        ×
+                      </span>
+                    </button>
+                  </HoverBubble>
+                ))}
+              </div>
+            ) : null}
             <MemoryRecallChip
               threadId={wsClient.getSessionThreadId(selectedSessionKey || '') || ''}
               refreshKey={`${selectedSessionKey || ''}:${memoryRecallRefreshKey}`}
@@ -15467,7 +16535,8 @@ useEffect(() => {
                 )
               }}
               onOpenAttachmentMenu={() => {
-                setBottomMoreOpen(true);
+                // + 号一键直达插件/添加快捷面板（ZCode 交互复刻）
+                setBottomPluginPanelOpen(true);
               }}
               bottomMoreTriggerRef={bottomMoreTriggerRef}
               permissionPill={currentPermissionPillLabel}
@@ -15482,6 +16551,8 @@ useEffect(() => {
                 active: currentPermissionPresetId === p.id,
               }))}
               onPickPermission={(id) => void pickPermissionPreset(id)}
+              newChatGrantAllDefault={newChatGrantAllDefault}
+              onToggleNewChatGrantAllDefault={(next) => void toggleNewChatGrantAllDefault(next)}
               renderBottomControls={(ctrl) => {
                 if (!renderBottomControlsLoggedRef.current) {
                   console.log('[ChatApp] renderBottomControls called (first render)')
@@ -15493,13 +16564,7 @@ useEffect(() => {
                   return null
                 }
                 // portal 下拉菜单（通过 onOpenAttachmentMenu / setBottomMoreOpen 触发）
-                if (bottomMoreOpen) {
-                  console.log(
-                    '[ChatApp] bottom-more portal',
-                    Boolean(bottomMorePortalStyle),
-                  )
-                }
-                return bottomMoreOpen && typeof document !== 'undefined'
+                const bottomMorePortal = bottomMoreOpen && typeof document !== 'undefined'
                   ? createPortal(
                     <div
                       className="react-chat-bottom-dropdown react-chat-bottom-dropdown--more react-chat-bottom-dropdown--more-portal"
@@ -15747,6 +16812,63 @@ useEffect(() => {
                     document.body,
                   )
                   : null
+                // + 号一键直达：锚定插件/添加快捷面板（ZCode ChatPromptActionMenu 复刻）
+                const pluginPanelPortal = bottomPluginPanelOpen && typeof document !== 'undefined'
+                  ? createPortal(
+                    <PluginQuickPanel
+                      open={bottomPluginPanelOpen}
+                      onClose={() => setBottomPluginPanelOpen(false)}
+                      style={pluginPanelStyle}
+                      plugins={pluginList}
+                      loading={pluginListLoading}
+                      selected={selectedPlugins}
+                      onToggle={(item) => {
+                        setPluginComposerPillsVisible(true)
+                        setSelectedPlugins((prev) => {
+                          const next = prev.some((p) => p.id === item.id)
+                            ? prev.filter((p) => p.id !== item.id)
+                            : [
+                                ...prev,
+                                {
+                                  id: item.id,
+                                  label: item.label || item.name,
+                                  iconUrl: item.iconUrl,
+                                },
+                              ]
+                          // 即点即存（ZCode 面板无「完成」按钮）
+                          void persistSelectedPlugins(String(selectedSessionKey || ''), next)
+                          return next
+                        })
+                      }}
+                      onPickDocs={() => void pickDocFiles()}
+                      onPickImages={() => void pickFiles()}
+                      onOpenSkillPicker={() => setBottomSkillOpen(true)}
+                      onOpenGoal={() => goal.goal.setPanelOpen(true)}
+                      onOpenRolePicker={() => setBottomRoleOpen(true)}
+                      onOpenLegacyMenu={() => setBottomMoreOpen(true)}
+                      onInsertText={(text) => insertText(text)}
+                      showVoice={speechEnabled}
+                      voiceOn={voiceReplyEnabled}
+                      onToggleVoice={async () => {
+                        const next = !voiceReplyEnabled
+                        setVoiceReplyEnabled(next)
+                        await patchPanelSettings(voiceReplyModeToSettingsPatch(next))
+                        if (!next) {
+                          voiceReplyPendingRef.current = false
+                          voiceStreamingStartedRef.current = false
+                          voiceSpeechSyncedPlainRef.current = ''
+                          void import('../lib/speech-client.js').then(({ stopAllAssistantSpeech, resetStreamingSpeechQueue }) => {
+                            stopAllAssistantSpeech()
+                            resetStreamingSpeechQueue()
+                          })
+                        }
+                        toast(next ? '已开启语音播报' : '已关闭语音播报', 'success')
+                      }}
+                    />,
+                    document.body,
+                  )
+                  : null
+                return pluginPanelPortal || bottomMorePortal || null
               }}
               placeholder={
                 isMobileChat
@@ -15760,6 +16882,9 @@ useEffect(() => {
             </div>
           </div>
             </div>
+            {showChatSummaryFloat
+              ? renderChatSummaryPanel(chatPanelMode === 'capsule' ? 'capsule' : 'panel')
+              : null}
             {anyRightPanelOpen && layoutResizeEnabled ? (
               <PanelResizeHandle
                 direction="vertical"
@@ -15769,144 +16894,27 @@ useEffect(() => {
               />
             ) : null}
             {rightStageOpen ? (
-              <BrowserPanel
-                isOpen
-                onClose={closeBrowserStage}
-                bodySlot={(activeKind) => {
-                  if (activeKind === 'browser') return null
-                  return renderRightStageBody({
-                    id: rightStageSurface?.id || 'primary',
-                    kind: activeKind as RightStageSurface['kind'],
-                    title: rightStageSurface?.title || activeKind,
-                    layout: 'wide',
-                    data: {},
-                  })
-                }}
-              />
-            ) : infoRailOpen && !isHomeSurface && selectedSessionKey && !isMobileChat ? (
-              <ChatSummaryPanel
-                displayMode={chatPanelMode}
-                onDisplayModeChange={setChatPanelDisplayMode}
-                isRunning={selectedTurnBusy}
-                sessionTitle={getDisplayLabel(
-                  selectedSessionKey,
-                  sessions.find((s) => String(s.sessionKey || '') === String(selectedSessionKey || ''))?.title,
+              <RightStagePanel
+                tabs={visibleRightStageTabs}
+                activeKey={rightStageActiveKey}
+                recentClosed={rightStageRecentClosed.filter((entry) =>
+                  filterRightStageTabsForSession([entry.tab], selectedSessionKey).length > 0,
                 )}
-                terminalStreams={liveProcessSnapshot.terminalStreams}
-                subagentTasks={liveProcessSnapshot.subagentTasks}
-                workflowSubtasks={sharedCollabSubtasks}
-                onOpenProcessItem={handleOpenProcessItem}
-                agentLabel={currentRoleLabel}
-                modelLabel={modelPillLabel}
-                modelName={effectiveModelName}
-                agentCode={
-                  isProactiveEmployeeSession
-                    ? employeeSessionAgentCode || currentRoleCodeForUi
-                    : currentRoleCodeForUi
-                }
-                agentDescription={String(currentRoleAgent?.description || '').trim()}
-                agent={currentRoleAgent}
-                skillNames={currentAgentCapabilities.skillNames}
-                toolNames={currentAgentCapabilities.toolNames}
-                mcpServers={currentAgentCapabilities.mcpServers}
-                knowledgeVaultIds={
-                  isProactiveEmployeeSession
-                    ? employeeRoleDetail?.knowledgeVaultIds || []
-                    : currentAgentCapabilities.knowledgeVaultIds
-                }
-                onPatchCapabilities={patchCurrentAgentCapabilities}
-                capabilityBusy={capabilityPatchBusy}
-                onSwitchAgent={() => setBottomRoleOpen(true)}
-                onEditAgent={currentRoleCodeForUi || employeeSessionAgentCode ? openCurrentAgentEditor : undefined}
-                onAssetQuickAction={handleAssetQuickAction}
-                assetQuickBusy={assetQuickBusy}
-                artifacts={sessionArtifacts}
-                recentArtifacts={turnArtifacts}
-                artifactFocusId={artifactFocusId}
-                platformEntries={sessionPlatformEntries}
-                recentPlatformEntries={turnPlatformEntries}
-                platformFocusEntryId={platformFocusEntryId}
-                onOpenArtifact={openSessionArtifact}
-                onRevealArtifact={revealSessionArtifact}
-                obsEnabled={obsEnabled}
-                threadId={selectedThreadId}
-                isEmployeeSession={isProactiveEmployeeSession}
-                employeePane={
-                  isProactiveEmployeeSession ? (
-                    <EmployeePane
-                      employeeInfo={employeeRoleDetail}
-                      sessionTitle={getDisplayLabel(selectedSessionKey, '')}
-                      isRunning={selectedTurnBusy}
-                      agentLabel={currentRoleLabel}
-                      modelLabel={modelPillLabel}
-                      agentCode={employeeSessionAgentCode || currentRoleCodeForUi}
-                      agentDescription={String(currentRoleAgent?.description || '').trim()}
-                      agent={currentRoleAgent}
-                      skillNames={currentAgentCapabilities.skillNames}
-                      toolNames={currentAgentCapabilities.toolNames}
-                      mcpServers={currentAgentCapabilities.mcpServers}
-                      knowledgeVaultIds={
-                        employeeRoleDetail?.knowledgeVaultIds ||
-                        currentAgentCapabilities.knowledgeVaultIds
-                      }
-                      onPatchCapabilities={patchCurrentAgentCapabilities}
-                      capabilityBusy={capabilityPatchBusy}
-                      modelName={effectiveModelName}
-                      contextUsage={displayContextUsage}
-                      tokenTotals={headerTokenTotals}
-                      onManualCompact={handleManualContextCompact}
-                      manualCompactDisabled={manualContextCompacting}
-                      onEditAgent={openCurrentAgentEditor}
-                      onAssetQuickAction={handleAssetQuickAction}
-                      assetQuickBusy={assetQuickBusy}
-                    />
-                  ) : null
-                }
-                taskPane={
-                  isProactiveEmployeeSession ? (
-                    <TaskPane
-                      sessionTitle={getDisplayLabel(selectedSessionKey, '')}
-                      isRunning={selectedTurnBusy}
-                      tokenTotals={headerTokenTotals}
-                      agentCode={employeeSessionAgentCode || currentRoleCodeForUi}
-                      sessionKey={String(selectedSessionKey || '')}
-                      liveTask={sidebarActiveView?.task || null}
-                    />
-                  ) : null
-                }
+                onActivateTab={activateRightStageTab}
+                onCloseTab={handleCloseRightStageTab}
+                onCloseOtherTabs={handleCloseOtherRightStageTabs}
+                onCloseAllTabs={handleCloseAllRightStageTabs}
+                onReorderTab={reorderRightStageTab}
+                onReopenClosedTab={reopenRightStageTab}
+                onCollapse={handleCollapseRightStage}
+                launcherItems={rightStageLauncherItems}
+                renderContent={renderRightStageBody}
               />
             ) : null}
           </div>
         </div>
         </section>
       </div>
-      {filePreviewModal ? (
-        <WorkspaceFilePreviewModal
-          workspaceRoot={effectiveWorkspaceRoot}
-          threadId={
-            effectiveWorkspaceRoot
-              ? undefined
-              : wsClient.getSessionThreadId(selectedSessionKey || '') || undefined
-          }
-          workspaceScopeOpts={{
-            configuredRoot: configuredWorkspaceRoot,
-            useVirtualPaths,
-          }}
-          path={filePreviewModal.path}
-          name={filePreviewModal.name}
-          poll={filePreviewModal.poll}
-          focusLine={filePreviewModal.focusLine}
-          focusEndLine={filePreviewModal.focusEndLine}
-          focusAnnotation={filePreviewModal.focusAnnotation}
-          onClose={() => {
-            setChatOverlayDefer('file-preview', false)
-            setFilePreviewModal(null)
-            if (!isChatOverlayDeferActive()) {
-              scheduleBumpRef.current?.({ immediate: true })
-            }
-          }}
-        />
-      ) : null}
       <ShellSessionListHost
         filteredSessions={filteredSessions}
         sessions={sessions}

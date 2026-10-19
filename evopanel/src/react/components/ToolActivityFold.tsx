@@ -123,8 +123,9 @@ export function ToolActivityFold({
     const wasStreaming = wasStreamingRef.current
     wasStreamingRef.current = isStreaming
     if (!wasStreaming || isStreaming) return
-    setUserExpanded(false)
+    // 流结束默认收起标题；正文保持挂载，展开时不用等历史对账。
     setStreamFoldOpen(null)
+    setUserExpanded(false)
   }, [isStreaming, hasFinalReplyBelow])
 
   useEffect(() => {
@@ -279,7 +280,8 @@ export function ToolActivityFold({
           className={`msg-tool-activity-fold-scroll${overflowing ? ' is-overflowing' : ''}`}
           hidden={!contentOpen}
         >
-          {contentOpen ? children : null}
+          {/* 收起时也保留挂载：卸掉再展开会赶在历史对账前画出空的终端/思考 */}
+          {children}
         </div>
       </details>
 

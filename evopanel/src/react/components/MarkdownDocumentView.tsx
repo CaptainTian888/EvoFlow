@@ -117,6 +117,7 @@ export function MarkdownDocumentView({
         <MarkdownHtml
           className={`md-doc-preview markdown-body msg-text${previewClassName ? ` ${previewClassName}` : ''}`}
           text={text}
+          enableCodeComments={false}
         />
       </div>
     )

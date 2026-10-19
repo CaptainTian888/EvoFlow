@@ -21,9 +21,16 @@ describe('toUserFacingError', () => {
   })
 
   it('maps gateway errors', () => {
-    expect(toUserFacingError('请重启 EvoFlow Gateway 后重试')).toBe(
-      '服务连接异常，请确认服务已启动后重试',
+    const out = toUserFacingError('请重启 Captain Work Gateway 后重试')
+    // DEV appends a raw snippet so toast is not a black box; prod keeps the short tip.
+    expect(out === '服务连接异常，请确认服务已启动后重试' || out.startsWith('服务连接异常：')).toBe(
+      true,
     )
+  })
+
+  it('maps Failed to fetch with actionable tip', () => {
+    const out = toUserFacingError('Failed to fetch')
+    expect(out).toMatch(/无法连接本地服务|网络连接异常/)
   })
 
   it('maps fetch failures', () => {

@@ -158,15 +158,19 @@ export function layoutSegmentsWithOpenReasoning(opts: {
     (s) => s.kind === 'reasoning' && s.id === '__open_reasoning__',
   )
   if (existingOpenIdx >= 0) {
-    segs[existingOpenIdx] = { ...segs[existingOpenIdx], text: preview }
+    const seg = segs[existingOpenIdx]
+    if (seg.kind === 'reasoning') {
+      segs[existingOpenIdx] = { ...seg, text: preview }
+    }
     return repositionOpenReasoningBeforeTrailingText(segs, existingOpenIdx)
   }
 
   // 仅允许更新「仍处于时间线末尾」的开放思考；后面已有 tools/text 时不能回写更早槽位，
   // 但若 preview 仍属同一段思考（工具前首轮），允许就地延长，禁止尾插重复 reasoning。
   for (let i = segs.length - 1; i >= 0; i--) {
-    if (segs[i].kind !== 'reasoning') continue
-    const closed = String(segs[i].text || '').trim()
+    const cur = segs[i]
+    if (cur.kind !== 'reasoning') continue
+    const closed = String(cur.text || '').trim()
     if (!closed) continue
     const hasNewerAfter = segs.slice(i + 1).some(
       (s) =>
@@ -175,15 +179,15 @@ export function layoutSegmentsWithOpenReasoning(opts: {
         (s.kind === 'reasoning' && String(s.text || '').trim()),
     )
     const sameStream =
-      segs[i].id === '__open_reasoning__' ||
+      cur.id === '__open_reasoning__' ||
       (closed.length >= 16 && (preview.startsWith(closed) || closed.startsWith(preview))) ||
       assistantBodiesLooselySame(closed, preview)
     if (hasNewerAfter) {
       if (sameStream && preview.length >= closed.length) {
         segs[i] = {
-          ...segs[i],
+          ...cur,
           text: preview,
-          id: segs[i].id || '__open_reasoning__',
+          id: cur.id || '__open_reasoning__',
         }
       }
       if (sameStream) return segs
@@ -192,9 +196,9 @@ export function layoutSegmentsWithOpenReasoning(opts: {
     if (!sameStream) continue
     if (preview.length >= closed.length) {
       segs[i] = {
-        ...segs[i],
+        ...cur,
         text: preview,
-        id: segs[i].id || '__open_reasoning__',
+        id: cur.id || '__open_reasoning__',
       }
     }
     return repositionOpenReasoningBeforeTrailingText(segs, i)

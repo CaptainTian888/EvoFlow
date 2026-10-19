@@ -1,5 +1,7 @@
 # Client update manifest (maintainer draft)
 
+升版本总清单见仓库根 [RELEASE.md](../../../RELEASE.md)。本目录只放升级通道草稿。
+
 Private draft for the desktop updater. **Not** part of the product source tree.
 
 - Local draft: `scripts/maintainer/update/latest.json` (this directory)

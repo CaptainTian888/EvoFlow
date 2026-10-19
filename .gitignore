@@ -1,7 +1,11 @@
 # EvoFlow docker image cache
 docker/.cache/
+# Internal design/plan docs (not for version control)
+.internal-docs/
 # oh-my-claudecode state
 .omc/
+# zcode local plan / scratch (root only — do NOT ignore evopanel/src/zcode-* source)
+/.zcode/
 # OS generated files
 .DS_Store
 *.local
@@ -242,9 +246,12 @@ test_final*.txt
 test_scheduler_agent.log
 
 # Temporary test scripts
+# backend/ 根目录下的 test_*.py / run_comprehensive_tests.py 是一次性脚本，继续忽略。
+# backend/tests/ 是正式单测目录，不能用 test_*.py 一刀切；只忽略 tmp_ / _tmp_ 草稿。
 backend/test_*.py
 backend/run_comprehensive_tests.py
-backend/tests/test_*.py
+backend/tests/tmp_*.py
+backend/tests/_tmp_*.py
 
 # Root-level temporary/development files
 /loop_*.py
@@ -270,6 +277,7 @@ package.json
 # Track evopanel + website manifests (exception to rules above)
 !evopanel/package.json
 !evopanel/package-lock.json
+!evopanel/vendor/**/package.json
 !website/package.json
 !website/**/package.json
 !clawdevoflow/package.json
@@ -292,6 +300,9 @@ website/**/dist/
 # Browser packaging caches (rebuilt by make setup-agent-browser / gateway build)
 backend/packaging/agent-browser-bundle/
 backend/packaging/ripgrep-bundle/
+# Official plugin archive for CI (upload as Release asset; blobs stay out of git)
+backend/packaging/official-plugins-bundle.tar.gz
+backend/packaging/official-plugins-bundle.zip
 # kb-mcp node_modules is ignored via backend/packaging/kb-mcp/.gitignore (removed)
 # Legacy Playwright bundle (no longer used by gateway builds)
 backend/packaging/windows/.playwright-browsers/
@@ -499,3 +510,27 @@ skills/**/hyperframes-animation/examples/
 
 # Tauri build-generated schemas
 evopanel/src-tauri/gen/
+
+# ============================================================
+# One-off root-level design / plan / fix / test docs
+# These were historically committed at the repo root as scratch
+# process artifacts. Do NOT re-track them; old entries are kept
+# in history and will be removed in a later sweep.
+# All patterns are anchored to the repo root (`/`) on purpose.
+# ============================================================
+# Fix / plan / analysis / summary docs
+/ARCHITECTURE_ISSUE_PROACTIVE_PUSH.md
+/AUTO_TASK_WRAP_UP_ANALYSIS.md
+/FEISHU_PUSH_DIAGNOSTICS_FRAMEWORK.md
+/FEISHU_PUSH_QUERY_TEMPLATES.md
+/FINAL_SUMMARY.md
+/FIXES_COMPLETED.md
+/HOW_TO_DIAGNOSE_AND_FIX.md
+/OPTIMIZATION_COMPLETE_P0_P1.md
+/P0_PUSH_FIX_PLAN.md
+/P1_PUSH_ARCHITECTURE_REFACTOR.md
+/PROACTIVE_PUSH_FIX_SUMMARY.md
+/TASK_CREATION_AND_TIMING_ISSUES.md
+# One-off root-level test scripts
+/test_dataset_diag.py
+/test_dataset_inline.js

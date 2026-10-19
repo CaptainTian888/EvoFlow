@@ -106,14 +106,16 @@ Rust 命令在 `src-tauri/src/commands/`（如 `config`、`gateway`、`backend`�
 
 ## 版本与发版（面板）
 
-版本以 `package.json` 为准，同步到 Tauri / Cargo：
+**完整清单见仓库根目录 [RELEASE.md](../RELEASE.md)**（必读）。
+
+版本唯一源是 `VERSION`（不是只改 `package.json`）：
 
 ```bash
-npm run version:set 1.0.0   # 写入并同步
-npm run version:sync        # 仅按当前 package.json 同步
+npm run version:set -- 1.1.0   # 写 VERSION 并同步 package / Cargo / tauri / latest.json
+npm run version:sync           # 按当前 VERSION 再同步一遍
 ```
 
-发版前更新 `CHANGELOG.md`。打 tag、多平台安装包等流程跟仓库根文档与 GitHub Actions（`release-desktop-public.yml` 等）走；不要在本文件重复维护过时的 workflow 清单。
+发版前还要写 `CHANGELOG.md`、`PRODUCT-NOTES-x.y.z.md`、以及 `latest.json` 的 `changelog`。打 tag 与安装包走 GitHub Actions（`release-desktop-public.yml`）。
 
 ---
 

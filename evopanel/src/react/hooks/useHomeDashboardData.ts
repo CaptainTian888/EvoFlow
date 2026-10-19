@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { api, isGatewayWarming, waitForBackendReady } from '../../lib/tauri-api.js'
+import {
+  api,
+  isGatewayWarming,
+  markBackendReadyFromEvidence,
+  noteGatewayLiveness,
+  waitForBackendReady,
+} from '../../lib/tauri-api.js'
 import { formatTaskSourceZh, normalizeTaskSource } from '../../lib/task-source.js'
 import {
   formatTaskStatusZh,
@@ -113,7 +119,7 @@ const SOURCE_HEX: Record<string, string> = {
   other: '#94A3B8',
 }
 
-/** Cross-mount cache so new-session remount does not flash「正在加载工作台数据…」. */
+/** Cross-mount cache so new-session remount does not flash stale placeholders. */
 const HOME_DASHBOARD_CACHE_TTL_MS = 60_000
 
 type HomeDashboardCachePayload = {
@@ -388,6 +394,11 @@ export function useHomeDashboardData(opts?: { rangeDays?: number }): HomeDashboa
 
   useEffect(() => {
     let cancelled = false
+    const t0 = Date.now()
+    const phase = (msg: string) => {
+      if (cancelled) return
+      console.info('[home-dashboard]', `${msg} (+${Date.now() - t0}ms)`)
+    }
     ;(async () => {
       const cachedHit = peekHomeDashboardCache()
       const soft = !!cachedHit
@@ -402,21 +413,55 @@ export function useHomeDashboardData(opts?: { rangeDays?: number }): HomeDashboa
       } else {
         setLoading(true)
         setError(null)
+        phase('开始加载工作台')
       }
       try {
         if (isGatewayWarming()) {
-          // With cache: keep showing KPIs while warming; without: must wait.
-          await waitForBackendReady(90_000)
+          phase('等待 Gateway /health/ready（warm latch）')
+          // Cap wait — previously 90s with no UI detail; latch bug looked like infinite load.
+          const ready = await waitForBackendReady(12_000)
+          if (ready) {
+            phase('Gateway ready')
+          } else {
+            // Release latch so listAllTasks etc. do not sit another 90s in warm queue.
+            phase('Gateway 未在 12s 内 ready — 放开 latch 直连拉数')
+            noteGatewayLiveness(true)
+          }
+        } else {
+          phase('Gateway latch 已放行')
         }
         if (cancelled) return
-        const [tasksRes, itemsRes, autoRes, appsRes, rolesRes] = await Promise.all([
-          api.listAllTasks(),
-          api.listUserItems({ include_done: false }).catch(() => ({ items: [] })),
-          api.automationList().catch(() => ({ automations: [] })),
-          api.listApps().catch(() => []),
-          api.proactiveListRoles('active').catch(() => []),
+        phase('请求 tasks / items / automation / apps / roles')
+        // Cap task payload — unbounded /api/tasks can be >1MB and freeze the
+        // home surface while JSON.parse runs.
+        const settled = await Promise.allSettled([
+          api.listAllTasks({ page_size: 200 }),
+          api.listUserItems({ include_done: false }),
+          api.automationList(),
+          api.listApps(),
+          api.proactiveListRoles('active'),
         ])
         if (cancelled) return
+        const label = ['tasks', 'items', 'automation', 'apps', 'roles']
+        const fails = settled
+          .map((r, i) =>
+            r.status === 'rejected'
+              ? `${label[i]}:${r.reason instanceof Error ? r.reason.message : String(r.reason || 'fail')}`
+              : null,
+          )
+          .filter(Boolean)
+        phase(
+          fails.length
+            ? `拉数完成（部分失败: ${fails.join(' | ')}）`
+            : '拉数完成',
+        )
+        const tasksRes = settled[0].status === 'fulfilled' ? settled[0].value : []
+        const itemsRes =
+          settled[1].status === 'fulfilled' ? settled[1].value : { items: [] }
+        const autoRes =
+          settled[2].status === 'fulfilled' ? settled[2].value : { automations: [] }
+        const appsRes = settled[3].status === 'fulfilled' ? settled[3].value : []
+        const rolesRes = settled[4].status === 'fulfilled' ? settled[4].value : []
         const nextTasks = asArray(tasksRes)
         const nextItems = Array.isArray(itemsRes?.items) ? itemsRes.items : asArray(itemsRes)
         const nextAutos = Array.isArray(autoRes?.automations) ? autoRes.automations : asArray(autoRes)
@@ -438,13 +483,24 @@ export function useHomeDashboardData(opts?: { rangeDays?: number }): HomeDashboa
           appsRaw: nextApps,
           roles: nextRoles,
         })
+        // APIs returned → engine is usable; clear top「引擎加载中」even if probe lagged.
+        if (settled.some((r) => r.status === 'fulfilled')) {
+          markBackendReadyFromEvidence('home-dashboard')
+        }
+        if (fails.length && !soft) {
+          setError(`部分接口失败：${fails.join('；')}`)
+        }
       } catch (e) {
         if (!cancelled) {
           // Soft remount: keep stale KPIs if network fails.
-          if (!soft) setError(e instanceof Error ? e.message : String(e || '加载失败'))
+          const msg = e instanceof Error ? e.message : String(e || '加载失败')
+          phase(`失败: ${msg}`)
+          if (!soft) setError(msg)
         }
       } finally {
-        if (!cancelled) setLoading(false)
+        if (!cancelled) {
+          setLoading(false)
+        }
       }
     })()
     return () => {

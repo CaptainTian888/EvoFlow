@@ -25,6 +25,7 @@
 | 🆘 [获取帮助](../SUPPORT.md) | Issue / Discussions / 邮件 |
 | 🛡️ [安全披露](../SECURITY.md) | 漏洞报告（勿公开 Issue） |
 | 👥 [维护者](../MAINTAINERS.md) | Review / 发版职责 |
+| 📦 [RELEASE.md](../RELEASE.md) | **维护者：升版本必做清单** |
 | 🤖 [llms.txt](llms.txt) | 给 LLM / Agent 用的文档索引 |
 
 ## 文档中心

@@ -85,8 +85,8 @@ def save_task_bundle(main_task_id: str, document: dict[str, Any]) -> None:
                     authorized_at, authorized_by, result_json,
                     plan_goal, plan_flowchart_mermaid, plan_validation_json, plan_open_questions,
                     plan_steps_json, plan_bound_at,
-                    extra_json, sort_order, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    extra_json, sort_order, updated_at, created_by
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     tr["main_task_id"],
@@ -115,6 +115,7 @@ def save_task_bundle(main_task_id: str, document: dict[str, Any]) -> None:
                     tr.get("extra_json") or "{}",
                     tr["sort_order"],
                     tr.get("updated_at") or now,
+                    tr.get("created_by"),  # Track who created this task
                 ),
             )
         for d in parts["task_deps"]:

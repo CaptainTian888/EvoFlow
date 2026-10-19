@@ -73,6 +73,10 @@ REMOVED_LEGACY_TOOL_NAMES: frozenset[str] = frozenset(
         "str_replace",
         "delete_file",
         "find_file",
+        "rg",
+        "find",
+        "terminal",
+        "process",
         # Unified ``browser`` tool unregistered — use the agent-browser skill (CLI/MCP) instead.
         "browser",
         # Legacy browser_* tools — use the agent-browser skill (CLI/MCP) instead.
@@ -99,7 +103,8 @@ REMOVED_LEGACY_TOOL_NAMES: frozenset[str] = frozenset(
         "trae_switch_mode",
         "trae_delegate",
         "claude_session",
-        "bash",
+        # ``bash`` is the live host-direct shell (ZCode). The old sandbox bash_tool
+        # is dropped by ``_HOST_DIRECT_SUPERSEDED_SANDBOX_NAMES``, not by retiring the name.
         "session_workspace",
         "send_message",
     }
@@ -168,7 +173,7 @@ def get_builtin_tools() -> tuple[BaseTool, ...]:
     )
     from evoflow.tools.builtins.plan_tool import plan_tool
     from evoflow.tools.builtins.platform_tool import platform_tool
-    from evoflow.tools.builtins.process_tool import process_tool
+    # from evoflow.tools.builtins.process_tool import process_tool  # retired — Bash background tasks
     from evoflow.tools.builtins.propose_goal_tool import propose_goal_tool
     from evoflow.tools.builtins.read_lints_tool import read_lints_tool
     from evoflow.tools.builtins.stage_tool import stage_set_tool
@@ -180,7 +185,7 @@ def get_builtin_tools() -> tuple[BaseTool, ...]:
     from evoflow.tools.builtins.todo_tool import todo_tool
     from evoflow.tools.builtins.view_image_tool import view_image_tool
 
-    return (
+    tools = [
         plan_tool,
         ask_clarification_tool,
         propose_goal_tool,
@@ -197,12 +202,23 @@ def get_builtin_tools() -> tuple[BaseTool, ...]:
         stage_set_tool,
         fetch_url_tool,
         view_image_tool,
-        process_tool,
+        # process_tool,  # retired — ZCode Bash run_in_background + TaskOutput/TaskStop
         # browser_tool,  # unregistered — use the agent-browser skill (CLI/MCP) instead
         read_lints_tool,
         bash_tool,
         read_file_tool,
-    )
+    ]
+    # ZCode 插件运行时：browser-use / computer-use 启用时提供 node_repl 内核工具
+    # （官方插件技能硬性要求 mcp__node_repl__js 这个确切工具名）。
+    try:
+        from evoflow.plugins.node_repl_tool import build_node_repl_js_tool
+
+        node_repl_tool = build_node_repl_js_tool()
+        if node_repl_tool is not None:
+            tools.append(node_repl_tool)
+    except Exception:
+        logger.warning("node_repl tool registration failed", exc_info=True)
+    return tuple(tools)
 
 
 @lru_cache(maxsize=1)
@@ -312,15 +328,28 @@ def _cached_resolve_tools(
 
     # ── HostDirect mode ──
     if tools_mode == "host_direct":
+        host_direct_tools = list(
+            _load_host_direct_tools(
+                config=config,
+                model_name=model_name,
+                subagent_enabled=subagent_enabled,
+                include_search=include_search,
+                include_mcp=include_mcp,
+            )
+        )
+        # ZCode 插件运行时：browser-use / computer-use 启用时追加 node_repl 内核工具
+        # （官方插件技能硬性要求 mcp__node_repl__js 这个确切工具名）。
+        try:
+            from evoflow.plugins.node_repl_tool import build_node_repl_js_tool
+
+            node_repl_tool = build_node_repl_js_tool()
+            if node_repl_tool is not None:
+                host_direct_tools.append(node_repl_tool)
+        except Exception:
+            logger.warning("node_repl tool registration failed", exc_info=True)
         return tuple(
             _finalize_tool_catalog(
-                _load_host_direct_tools(
-                    config=config,
-                    model_name=model_name,
-                    subagent_enabled=subagent_enabled,
-                    include_search=include_search,
-                    include_mcp=include_mcp,
-                ),
+                host_direct_tools,
                 tools_mode=tools_mode,
             )
         )

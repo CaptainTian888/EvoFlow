@@ -1,0 +1,13 @@
+{
+  "identifier": "browser-embed-capability",
+  "description": "Embedded browser panel WebView2 — guest bridge IPC from remote pages",
+  "windows": ["browser-embed-*"],
+  "remote": {
+    "urls": ["https://*", "http://*"]
+  },
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "allow-browser-embed-bridge-response"
+  ]
+}

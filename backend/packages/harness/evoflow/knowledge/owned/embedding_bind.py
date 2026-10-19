@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 from evoflow.config.model_config import ModelConfig
@@ -285,8 +286,6 @@ def model_config_for_base_row(base: dict[str, Any]) -> ModelConfig:
         except Exception:
             logger.debug("owned embedding secret resolve failed", exc_info=True)
     if not api_key and mode != "local":
-        import os
-
         api_key = os.environ.get("EVOFLOW_OWNED_EMBEDDING_API_KEY") or os.environ.get("OPENAI_API_KEY") or None
     kb_id = str(base.get("id") or "")[:8] or "x"
     if mode == "local":

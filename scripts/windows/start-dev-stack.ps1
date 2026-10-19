@@ -15,7 +15,12 @@ param(
     # Pack 模式下 Gateway 是 Tauri 无窗口子进程,运行时日志只在文件里;
     # 默认自动开一个日志尾随窗口,-NoTailLogs(或 EVOFLOW_NO_TAIL_LOGS=1)关闭。
     [switch] $NoTailLogs,
-    [int] $FrontendPort = 1421,
+    # 启动前检测 fastdom/sanitize-url shim 是否比 Vite 依赖缓存新,是则清 .vite-cache 重建
+    # (防止 "fastdom_stub_default.extend is not a function" 复发)。
+    # -KeepViteCache 跳过检测; -CleanViteCache 无条件清理。
+    [switch] $CleanViteCache,
+    [switch] $KeepViteCache,
+    [int] $FrontendPort = 1521,
     [switch] $AutoFrontendPort = $true,
     [int] $GatewayPort = 0
 )
@@ -288,7 +293,7 @@ if ($WebOnly) {
     Write-Host "    Frontend URL: http://localhost:$resolvedPort" -ForegroundColor Green
 } else {
     Write-Host "    Mode: Tauri desktop (tauri dev)" -ForegroundColor Green
-    $vitePortHint = if ($env:EVOFLOW_VITE_PORT -and $env:EVOFLOW_VITE_PORT.Trim()) { $env:EVOFLOW_VITE_PORT.Trim() } else { "1421" }
+    $vitePortHint = if ($env:EVOFLOW_VITE_PORT -and $env:EVOFLOW_VITE_PORT.Trim()) { $env:EVOFLOW_VITE_PORT.Trim() } else { "1521" }
     Write-Host "    Vite port (EVOFLOW_VITE_PORT): $vitePortHint" -ForegroundColor DarkGray
     if ($env:EVOFLOW_TAURI_DEV_CONFIG -and $env:EVOFLOW_TAURI_DEV_CONFIG.Trim()) {
         Write-Host "    Tauri devUrl merge: $($env:EVOFLOW_TAURI_DEV_CONFIG.Trim()) (must match Vite port)" -ForegroundColor DarkGray
@@ -296,6 +301,9 @@ if ($WebOnly) {
         Write-Host "    Tauri devUrl: tauri.conf.json (default http://localhost:1421)" -ForegroundColor DarkGray
     }
 }
+
+Write-Host ""
+Reset-EvoFlowViteDepCache -EvoPanelDir $EvoPanelDir -Force:$CleanViteCache -Skip:$KeepViteCache
 
 Write-Host ""
 Write-Host "==> Running frontend in current terminal (Ctrl+C to stop frontend)" -ForegroundColor Cyan

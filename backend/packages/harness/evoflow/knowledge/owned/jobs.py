@@ -299,6 +299,23 @@ def complete(job_id: str, *, error: str | None = None, permanent: bool = False) 
                     job_id,
                 ),
             )
+            # A later successful run supersedes older terminal-error rows of the
+            # same document + job type. Without this, ``job_stats`` keeps
+            # returning the stale error rows and the UI index-status banner
+            # shows a failure forever even though the document re-parsed fine.
+            if doc_id:
+                # ``created_at`` is second-precision; ``rowid`` gives the strict
+                # insertion order needed for same-second retry chains.
+                conn.execute(
+                    """
+                    UPDATE kb_jobs SET state='cancelled',
+                      error_message='superseded by a successful re-run',
+                      finished_at=?, updated_at=?, locked_by='', locked_at=NULL
+                    WHERE kb_id=? AND doc_id=? AND type=? AND state='error'
+                      AND rowid < (SELECT rowid FROM kb_jobs WHERE id=?)
+                    """,
+                    (now, now, kb_id, doc_id, jtype, job_id),
+                )
 
 
 def cancel_for_kb(kb_id: str) -> int:
@@ -319,6 +336,112 @@ def cancel_for_kb(kb_id: str) -> int:
         return int(cur.rowcount or 0)
 
 
+def cancel_jobs_for_doc(doc_id: str, *, reason: str = "document deleted") -> int:
+    """Cancel queued/running jobs of one document (soft-delete safety net).
+
+    Prevents the worker from claiming a job whose document row is already gone
+    and burning retries on "knowledge base or document not found".
+    """
+    did = str(doc_id or "").strip()
+    if not did:
+        return 0
+    now = utc_now()
+    with db() as conn:
+        cur = conn.execute(
+            """
+            UPDATE kb_jobs SET state='cancelled', error_message=?,
+              finished_at=?, updated_at=?, locked_by='', locked_at=NULL
+            WHERE doc_id=? AND state IN ('queued', 'running')
+            """,
+            (reason, now, now, did),
+        )
+        return int(cur.rowcount or 0)
+
+
+def purge_failed_orphan_jobs(*, limit: int = 500) -> int:
+    """Cancel jobs whose owning KB or document was soft-deleted.
+
+    Walks the central job queue, joins against ``kb_bases`` (deleted_at) and
+    the per-KB ``kb_documents`` (deleted_at), and flips any non-terminal job
+    to ``cancelled`` with a clear reason. This stops the worker from burning
+    retries on rows that no longer exist and removes the long tail of
+    ``knowledge base or document not found`` errors that show up in the UI
+    banner after a KB is deleted or rebuilt.
+
+    Returns the number of jobs cancelled.
+    """
+    now = utc_now()
+    cancelled = 0
+    seen: set[tuple[str, str | None]] = set()
+
+    with db() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, kb_id, doc_id
+            FROM kb_jobs
+            WHERE state IN ('queued', 'running', 'error')
+            ORDER BY updated_at ASC
+            LIMIT ?
+            """,
+            (int(limit),),
+        ).fetchall()
+
+        for row in rows:
+            job_id = str(row["id"] or "")
+            kb_id = str(row["kb_id"] or "").strip()
+            doc_id = str(row["doc_id"] or "").strip() or None
+            if not job_id or not kb_id:
+                continue
+            key = (kb_id, doc_id)
+            if key in seen:
+                continue
+            seen.add(key)
+
+            # KB soft-deleted?
+            base = conn.execute(
+                "SELECT 1 FROM kb_bases WHERE id=? AND deleted_at IS NULL",
+                (kb_id,),
+            ).fetchone()
+            if base is None:
+                conn.execute(
+                    """
+                    UPDATE kb_jobs SET state='cancelled',
+                      error_message='knowledge base deleted (purged by reconcile)',
+                      finished_at=?, updated_at=?, locked_by='', locked_at=NULL
+                    WHERE id=? AND state IN ('queued', 'running', 'error')
+                    """,
+                    (now, now, job_id),
+                )
+                cancelled += 1
+                continue
+
+            # doc soft-deleted (per-KB index DB)?
+            if doc_id:
+                try:
+                    with db_for_kb(kb_id) as kb_conn:
+                        doc = kb_conn.execute(
+                            "SELECT 1 FROM kb_documents WHERE id=? AND deleted_at IS NULL",
+                            (doc_id,),
+                        ).fetchone()
+                except Exception:
+                    logger.debug("orphan purge: doc lookup failed for %s/%s", kb_id, doc_id, exc_info=True)
+                    continue
+                if doc is None:
+                    conn.execute(
+                        """
+                        UPDATE kb_jobs SET state='cancelled',
+                          error_message='document deleted (purged by reconcile)',
+                          finished_at=?, updated_at=?, locked_by='', locked_at=NULL
+                        WHERE id=? AND state IN ('queued', 'running', 'error')
+                        """,
+                        (now, now, job_id),
+                    )
+                    cancelled += 1
+    if cancelled:
+        logger.info("owned kb purged %s orphan jobs", cancelled)
+    return cancelled
+
+
 def _mirror_doc_status(kb_id: str, doc_id: str, sql: str, params: tuple) -> None:
     """Apply a document-status update in the KB's own index DB.
 
@@ -335,7 +458,12 @@ def _mirror_doc_status(kb_id: str, doc_id: str, sql: str, params: tuple) -> None
 
 
 def reclaim_stale_running(*, older_than_seconds: int = 1800) -> int:
-    """Re-queue jobs stuck in ``running`` (worker crash / process kill)."""
+    """Re-queue or fail jobs stuck in ``running`` (worker crash / process kill).
+
+    Reclaiming counts against the job's retry budget: a job that has exhausted
+    ``max_attempts`` goes to terminal ``error`` (and its document to ``failed``)
+    instead of bouncing between running/queued forever.
+    """
     import time
     from datetime import datetime
 
@@ -351,7 +479,7 @@ def reclaim_stale_running(*, older_than_seconds: int = 1800) -> int:
     with db() as conn:
         rows = conn.execute(
             """
-            SELECT id, locked_at, doc_id, type FROM kb_jobs
+            SELECT id, locked_at, doc_id, type, kb_id, attempts, max_attempts FROM kb_jobs
             WHERE state='running'
             """
         ).fetchall()
@@ -370,24 +498,83 @@ def reclaim_stale_running(*, older_than_seconds: int = 1800) -> int:
                     stale = True
             if not stale:
                 continue
-            conn.execute(
-                """
-                UPDATE kb_jobs SET state='queued', locked_by='', locked_at=NULL,
-                  error_message=?, run_after=?, updated_at=?,
-                  progress_json=?
-                WHERE id=? AND state='running'
-                """,
-                (
-                    "reclaimed stale running job",
-                    now,
-                    now,
-                    json.dumps(
-                        {"phase": "retry", "message": "任务超时，已重新排队"},
-                        ensure_ascii=False,
+            attempts = int(row["attempts"] or 0)
+            max_attempts = int(row["max_attempts"] or 3)
+            # attempts was already incremented at claim time, so attempts >=
+            # max_attempts means the budget is spent — do not queue again.
+            if attempts < max_attempts:
+                conn.execute(
+                    """
+                    UPDATE kb_jobs SET state='queued', locked_by='', locked_at=NULL,
+                      error_message=?, run_after=?, updated_at=?,
+                      progress_json=?
+                    WHERE id=? AND state='running'
+                    """,
+                    (
+                        "reclaimed stale running job",
+                        now,
+                        now,
+                        json.dumps(
+                            {"phase": "retry", "message": "任务超时，已重新排队"},
+                            ensure_ascii=False,
+                        ),
+                        row["id"],
                     ),
-                    row["id"],
-                ),
-            )
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE kb_jobs SET state='error', error_message=?,
+                      finished_at=?, updated_at=?, locked_by='', locked_at=NULL
+                    WHERE id=? AND state='running'
+                    """,
+                    (
+                        "reclaimed stale running job: retry budget exhausted",
+                        now,
+                        now,
+                        row["id"],
+                    ),
+                )
+                # Terminal failure for parse/reindex jobs must also surface on
+                # the document row, same as jobs.complete(permanent error) does.
+                doc_id = str(row["doc_id"] or "").strip()
+                jtype = str(row["type"] or "").strip()
+                kb_id = str(row["kb_id"] or "").strip()
+                if doc_id and jtype in ("parse_index", "reindex"):
+                    err = "task timed out repeatedly and was reclaimed (retry budget exhausted)"
+                    try:
+                        conn.execute(
+                            """
+                            UPDATE kb_documents
+                            SET parse_status='failed',
+                                index_status=CASE WHEN chunk_count > 0 THEN 'ready' ELSE 'failed' END,
+                                keyword_status=CASE WHEN chunk_count > 0 THEN 'ready' ELSE 'failed' END,
+                                vector_status=CASE WHEN chunk_count > 0 THEN 'degraded' ELSE 'failed' END,
+                                index_error=?, error_message=?, updated_at=?
+                            WHERE id=? AND deleted_at IS NULL
+                              AND parse_status IN ('pending', 'processing')
+                            """,
+                            (err, err, now, doc_id),
+                        )
+                    except Exception:
+                        # Document table may be in a per-KB index DB; the central
+                        # DB mirror below covers the cross-DB case.
+                        logger.debug("terminal doc-status update skipped in central db", exc_info=True)
+                    _mirror_doc_status(
+                        kb_id,
+                        doc_id,
+                        """
+                        UPDATE kb_documents
+                        SET parse_status='failed',
+                            index_status=CASE WHEN chunk_count > 0 THEN 'ready' ELSE 'failed' END,
+                            keyword_status=CASE WHEN chunk_count > 0 THEN 'ready' ELSE 'failed' END,
+                            vector_status=CASE WHEN chunk_count > 0 THEN 'degraded' ELSE 'failed' END,
+                            index_error=?, error_message=?, updated_at=?
+                        WHERE id=? AND deleted_at IS NULL
+                          AND parse_status IN ('pending', 'processing')
+                        """,
+                        (err, err, now, doc_id),
+                    )
             reclaimed += 1
     return reclaimed
 

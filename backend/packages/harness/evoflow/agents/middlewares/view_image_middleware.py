@@ -14,6 +14,7 @@ from langgraph.runtime import Runtime
 
 from evoflow.agents.thread_state import ViewedImageData
 from evoflow.tools.builtins.vision_analysis_core import (
+    MODEL_INJECT_MAX_BASE64_BYTES,
     bytes_to_data_url,
     is_http_image_ref,
     load_image_bytes_for_native,
@@ -85,37 +86,61 @@ class ViewImageMiddleware(AgentMiddleware[ViewImageMiddlewareState]):
             logger.warning("[ViewImageMiddleware] 读取暂存图片失败 ref=%r err=%s", image_ref, loaded)
             return None
         raw_bytes, detected_mime = loaded
-        return prepare_image_bytes_for_native(raw_bytes, detected_mime or mime)
+        return prepare_image_bytes_for_native(
+            raw_bytes, detected_mime or mime, max_base64_bytes=MODEL_INJECT_MAX_BASE64_BYTES
+        )
+
+    @staticmethod
+    def _is_auto(image_data: ViewedImageData) -> bool:
+        return bool(image_data.get("auto"))
+
+    def _has_auto_images(self, state: ViewImageMiddlewareState) -> bool:
+        viewed_images = state.get("viewed_images", {}) or {}
+        return any(self._is_auto(image_data) for image_data in viewed_images.values())
 
     def _create_image_details_message(self, state: ViewImageMiddlewareState) -> list[str | dict]:
-        viewed_images = state.get("viewed_images", {})
+        viewed_images = state.get("viewed_images", {}) or {}
+        manual = {ref: data for ref, data in viewed_images.items() if not self._is_auto(data)}
+        auto = {ref: data for ref, data in viewed_images.items() if self._is_auto(data)}
         if not viewed_images:
             return [{"type": "text", "text": "No images have been viewed."}]
 
-        content_blocks: list[str | dict] = [
-            {"type": "text", "text": "Here are the images you've viewed:"},
-        ]
-
-        for image_ref, image_data in viewed_images.items():
-            mime_type = str(image_data.get("mime_type") or "unknown")
-            path_hint = str(image_data.get("path") or image_ref)
+        content_blocks: list[str | dict] = []
+        if manual:
+            content_blocks.append({"type": "text", "text": "Here are the images you've viewed:"})
+        elif auto:
             content_blocks.append(
                 {
                     "type": "text",
-                    "text": f"\n- **{image_ref}** ({mime_type})\n[Image attached at: {path_hint}]",
+                    "text": "Here are the latest screen captures from your computer control actions:",
                 }
             )
 
-            loaded = self._load_staged_image_bytes(image_ref, image_data)
-            if not loaded:
-                continue
-            img_bytes, out_mime = loaded
-            content_blocks.append(
-                {
-                    "type": "image_url",
-                    "image_url": {"url": bytes_to_data_url(img_bytes, out_mime)},
-                }
-            )
+        for group, header in ((manual, None), (auto, "\nLatest screen captures:")):
+            if header is not None:
+                content_blocks.append({"type": "text", "text": header})
+            for image_ref, image_data in group.items():
+                mime_type = str(image_data.get("mime_type") or "unknown")
+                path_hint = str(image_data.get("path") or image_ref)
+                label = str(image_data.get("label") or "").strip()
+                shown_ref = f"{image_ref} ({label})" if label else image_ref
+                content_blocks.append(
+                    {
+                        "type": "text",
+                        "text": f"\n- **{shown_ref}** ({mime_type})\n[Image attached at: {path_hint}]",
+                    }
+                )
+
+                loaded = self._load_staged_image_bytes(image_ref, image_data)
+                if not loaded:
+                    continue
+                img_bytes, out_mime = loaded
+                content_blocks.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": bytes_to_data_url(img_bytes, out_mime)},
+                    }
+                )
 
         return content_blocks
 
@@ -128,7 +153,10 @@ class ViewImageMiddleware(AgentMiddleware[ViewImageMiddlewareState]):
         if not last_assistant_msg:
             return False
 
-        if not self._has_view_image_tool(last_assistant_msg):
+        # ``view_image`` staging requires the tool call in the last assistant
+        # message; ``auto`` staging (node_repl screenshots) is one-shot and
+        # injects regardless, as long as the tools of this turn have settled.
+        if not self._has_view_image_tool(last_assistant_msg) and not self._has_auto_images(state):
             return False
 
         if not self._all_tools_completed(messages, last_assistant_msg):
@@ -138,7 +166,7 @@ class ViewImageMiddleware(AgentMiddleware[ViewImageMiddlewareState]):
         for msg in messages[assistant_idx + 1 :]:
             if isinstance(msg, HumanMessage):
                 content_str = str(msg.content)
-                if "Here are the images you've viewed" in content_str or "Here are the details of the images you've viewed" in content_str:
+                if "Here are the images you've viewed" in content_str or "Here are the details of the images you've viewed" in content_str or "Here are the latest screen captures" in content_str:
                     return False
 
         return True

@@ -8,3 +8,5 @@ allowBuilds:
 # （ZCode lockfile 无 fastdom，其 mermaid 即 11.15 系）。
 overrides:
   mermaid: 11.15.0
+patchedDependencies:
+  '@tanstack/virtual-core@3.14.0': patches/@tanstack__virtual-core@3.14.0.patch

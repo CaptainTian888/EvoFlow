@@ -2,7 +2,7 @@
  * Bridge workflow plan steps (semantic refs) with runtime run steps (numeric refs).
  * Shared by run inspect UI, history modal, and canvas debug dock.
  */
-import { taskOutputsOf } from './task-summary.js'
+import { filterDeliverableOutputs, taskOutputsOf } from './task-summary.js'
 
 const STEP_PREFIX_RE = /^\s*step\s+\d+\s*[:：]\s*/i
 const DONE_STATUS = new Set(['completed', 'done', 'success'])
@@ -47,12 +47,23 @@ function refSortKey(ref) {
   return 100_000 + (s.charCodeAt(0) || 0)
 }
 
+function stepSourceLabel(step) {
+  if (!step || typeof step !== 'object') return ''
+  if (step.is_rollup_step || String(step.ref || '').trim() === '__rollup__') return '结果汇总'
+  const title = stripRuntimeStepPrefix(
+    step.title || step.name || step.goal || step.description || step.ref || '',
+  )
+  return title.length > 36 ? `${title.slice(0, 35)}…` : title
+}
+
 function stepOutputs(step) {
   if (!step) return []
-  return taskOutputsOf({
+  const source = stepSourceLabel(step)
+  const items = taskOutputsOf({
     outputs: step.outputs,
     evidence_paths: step.evidence_paths,
-  })
+  }).map((item) => (source && !item.source_label ? { ...item, source_label: source } : item))
+  return filterDeliverableOutputs(items)
 }
 
 function lookupSubtaskId(status, ...refs) {
@@ -243,10 +254,14 @@ export function resolveWorkflowSubtaskStatus(subtaskStatus, ref, bridge) {
  */
 export function collectWorkflowRunDeliverables(status, planSteps, options = {}) {
   const runtime = Array.isArray(status?.steps) ? status.steps : []
-  let runItems = taskOutputsOf({
-    outputs: status?.outputs,
-    evidence_paths: status?.evidence_paths,
-  })
+  let runItems = filterDeliverableOutputs(
+    taskOutputsOf({
+      outputs: status?.outputs,
+      evidence_paths: status?.evidence_paths,
+    }).map((item) =>
+      item.source_label ? item : { ...item, source_label: '运行汇总' },
+    ),
+  )
 
   const hasHtml = runItems.some((it) => /\.html?$/i.test(String(it.value || '')))
   if (!hasHtml) {
@@ -268,7 +283,7 @@ export function collectWorkflowRunDeliverables(status, planSteps, options = {}) 
       if (fromRollup.length) runItems = fromRollup
     }
   }
-  if (runItems.length) return runItems
+  if (runItems.length) return filterDeliverableOutputs(runItems)
 
   const bridge = buildWorkflowStepBridge(planSteps, runtime)
   const answerRef = String(
@@ -291,5 +306,5 @@ export function collectWorkflowRunDeliverables(status, planSteps, options = {}) 
     if (outs.length) return outs
   }
 
-  return runItems
+  return filterDeliverableOutputs(runItems)
 }

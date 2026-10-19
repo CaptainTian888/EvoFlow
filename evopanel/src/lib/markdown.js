@@ -197,8 +197,22 @@ export function renderMarkdown(text) {
   if (!text) return ''
   const cached = mdCacheGet(text)
   if (cached !== undefined) return cached
+  // Protect URLs whose hash-fragment contains a `/`-led path
+  // (e.g. `http://host:8787/#/account/...`) before any newline/linkify pass can
+  // split them. Slot is restored verbatim at the end of this function.
+  // Use control-char delimiters — `__…__` would be eaten by Markdown **bold**.
+  const linkifyFragSlots = []
+  const LINKIFY_FRAG_PH = '\x02'
+  const fragGuardText = String(text).replace(
+    /\bhttps?:\/\/[^\s<>'"]+\/#\/[A-Za-z0-9%._~!\$&'()*+,;=:@\/\-]+/g,
+    (raw) => {
+      const i = linkifyFragSlots.length
+      linkifyFragSlots.push(raw)
+      return `${LINKIFY_FRAG_PH}evflinkfrag${i}\x03`
+    },
+  )
   let html = linkifyWorkspaceAtMentions(
-    relaxMarkdownLineBreaks(normalizeCjkTypographyForMarkdown(text)),
+    relaxMarkdownLineBreaks(normalizeCjkTypographyForMarkdown(fragGuardText)),
   )
   html = protectMarkdownImagePaths(html)
   const mermaidBlocks = []
@@ -458,6 +472,9 @@ export function renderMarkdown(text) {
   if (mathTokens.length) {
     out = out.replace(/evfmath(\d+)/g, (_, idx) => mathTokens[Number(idx)] ?? '')
   }
+  if (linkifyFragSlots.length) {
+    out = out.replace(/\x02evflinkfrag(\d+)\x03/g, (_, idx) => linkifyFragSlots[Number(idx)] ?? '')
+  }
   mdCacheSet(text, out)
   return out
 }
@@ -531,6 +548,24 @@ export function relaxMarkdownLineBreaks(text) {
   let s = String(text || '').replace(/\r\n/g, '\n')
   if (!s.trim()) return s
 
+  // 阶段 0：把未被行首保护器命中的 inline hashtag 链折叠回单行。
+  // 必须在 hashTextSlots 替换**之前**：占位符一旦替换，下面正则的 `#` 锚点就丢了。
+  // 场景：原文为 "（#ai新星计划\n#抖音前沿科技首发计划\n#抖音精选）拿流量扶持"，
+  // 三个 `#…` 在自己的行上，会被下方 ATX 标题修复规则识别为 3 个 h1。
+  // 规则：上一行末尾是 CJK / 拉丁 / 数字 / 中英括号之一，下一行以 `#` 开头 → 合并。
+  // 允许多段空行（如 `\n#…\n\n#…`），并要求下一行 `#` 后紧跟非空白字符，
+  // 这样不会误吃 `## 标题`（标题后有空格，被 hashTextSlots 也不会到这里）。
+  // 注意：String.replace(/g, ...) 只扫一遍；n 个 hashtag 会产生 n-1 处匹配，
+  // 第一次扫只命中"首尾"两处，需要 do-while 迭代到稳定。
+  {
+    const HASH_MERGE_RE = /([\p{L}\p{N}\p{Script=Han}\)）\]】」』\(（])\n+(#\s?[\p{L}\p{N}\p{Script=Han}][^\n]*)/gu
+    let prev
+    do {
+      prev = s
+      s = s.replace(HASH_MERGE_RE, '$1 $2')
+    } while (s !== prev)
+  }
+
   // 保护代码块和行内代码，避免其中的 # 等字符被标题/表格正则误伤
   const codeSlots = []
   s = s.replace(/```[\s\S]*?```/g, (m) => {
@@ -550,11 +585,67 @@ export function relaxMarkdownLineBreaks(text) {
     return `__EVF_CODE_SLOT_${i}__`
   })
 
+  // 行首 `#/path` 是裸路径，不是 Markdown 标题；活动 hashtag (`#中文标签`、`#ai...`)
+  // 也应留在正文。用占位符保护它们，避免后续标题修复规则再次处理实体内容。
+  // 这里要求：行首 `#` 之后必须紧跟 `/` 或 CJK 或拉丁字母之一，且不能紧跟空白
+  // （这样不会误吃 `## 标题` 的双 # 标题）。逐行显式 split 处理，避免 V8 /u + ^ 行为
+  // 异常导致行内 # 一起被吞。
+  const hashTextSlots = []
+  s = s.split('\n').map((line) => {
+    const m = line.match(/^(#{1,6})(?=(?:\/|[\p{Script=Han}]|[a-z])(?!\s))/)
+    if (!m) return line
+    const i = hashTextSlots.length
+    hashTextSlots.push(`&#35;${m[1].slice(1)}`)
+    return `__EVF_HASH_TEXT_SLOT_${i}__` + line.slice(m[1].length)
+  }).join('\n')
+
+  // 被保护的 hashtag/路径行合并到上一行（用空格连接）。
+  // 场景：LLM 把（#标签1\n#标签2\n#标签3）拆成多行，GFM hard-break 渲染后标签竖排。
+  // 条件：上一行末尾不是 |（表格行由下方规则单独处理）、不是空行。
+  s = s.replace(/([^\n|])\n(__EVF_HASH_TEXT_SLOT_\d+__)/g, '$1 $2')
+
+  // 表格行后紧跟（可能有空行）hashtag/路径行 → 移除空行，补 | 前缀使其成为表格行。
+  // 场景：LLM 把 | 看板 | url |\n\n#/account/... | 拆成表格行 + 空行 + 裸路径行。
+  // 注意：用 [ \t]*$ 而非 \s*$，因为 \s 会匹配 \n 导致 $1 携带换行符、空行无法移除。
+  s = s.replace(
+    /(^\s*\|[^\n]*\|[ \t]*$)\n+(\s*__EVF_HASH_TEXT_SLOT_\d+__[^\n]*)/gm,
+    '$1\n| $2',
+  )
+
+  // 全角括号内 LLM 拆行的标签/短文本合并为一行。
+  // 场景：（\n标签1\n标签2\n标签3）→ （ 标签1 标签2 标签3）
+  // 注意：不禁忌 hashtag 行——阶段0已把括号内跨行 hashtag 合并，剩余 hashtag
+  // 如果仍在括号内（如 #ai新星计划  #抖音精选 仍分行），本规则会把它们一并合并。
+  s = s.replace(/（\n([\s\S]*?)）/g, (m, inner) => {
+    if (/\n\s*\n/.test(inner)) return m
+    if (/^\s*[|]/m.test(inner)) return m
+    if (/^\s*#{1,6}\s/m.test(inner)) return m
+    if (/^\s*---/m.test(inner)) return m
+    return '（ ' + inner.replace(/\n/g, ' ').trim() + '）'
+  })
+
+  // 保护行内 hashtag：单个 # 不在行首、前面非 #，后跟 CJK/拉丁/数字 → 用占位符保护。
+  // 避免 ATX 标题规则把 `（#ai新星计划 #抖音精选）` 拆行后升为 <h1>。
+  s = s.replace(/([^\n#])(#)(?![#])(?=[\p{L}\p{N}\p{Script=Han}])/gu, (_, pre) => {
+    const i = hashTextSlots.length
+    hashTextSlots.push('&#35;')
+    return `${pre}__EVF_HASH_TEXT_SLOT_${i}__`
+  })
+
   s = s.replace(/---+(?=\s*#{1,6})/g, '---\n\n')
   // 中文冒号 `：` / 全角分号 `；` / 全角逗号 `，` 后直接接 ATX 标题也要拆，
   // 否则 `…展开：## 概述这是正文。` 会让第二个标题不被识别。
   s = s.replace(/([。！？；.!?：，])(\s*)(?=#{1,6}(?![0-9]))/g, '$1\n\n')
   s = s.replace(/([^\n#|])(\s*)(#{1,6})(?=[^\s#\n|0-9])/g, '$1\n\n$3')
+
+  // Some persisted/history payloads have already lost the leading `#` from a
+  // `#/account/...` line. Keep that bare account path in the preceding prose/table
+  // instead of allowing the heading normalizer to promote it to an h1.
+  s = s.replace(/^(\/account\/[^\n|]+\|?)$/gm, (line) => {
+    const i = hashTextSlots.length
+    hashTextSlots.push(line)
+    return `__EVF_HASH_TEXT_SLOT_${i}__`
+  })
 
   // ##一、 / ###A. → ## 一、
   s = s.replace(/(#{1,6})([一二三四五六七八九十百千]+、)/g, '$1 $2')
@@ -576,14 +667,24 @@ export function relaxMarkdownLineBreaks(text) {
       if (hm) {
         const hashes = hm[1]
         const rest = hm[2].trim()
+        // 单 `#` 后接 `/` 是裸路径行（#/account/...），这是 panel 跳转，**不**是标题。
+        // 单 `#` 后接 ASCII 字母/数字**且**紧跟着是 CJK（无空格的混合 hashtag，
+        // 如 `#ai新星计划`）也是活动标签，不是标题。纯英文 `#evoflow` 视为 hashtag；
+        // 标题只要 `# 标题` / `#标题` 紧接汉字的整段（`# Captain Work…介绍`）仍按
+        // 下方逻辑升级为 h1，但 splitter 会按句读把它从 `介绍` 处切开。
+        if (hashes.length === 1) {
+          if (rest.startsWith('/')) return line
+          if (/^[A-Za-z][\p{Script=Han}]/u.test(rest)) return line
+        }
         if (!/^(#{1,6})\s/.test(line)) return `${hashes} ${rest}`
       }
       return line
     })
     .join('\n')
 
-  // 恢复代码块和行内代码
+  // 恢复代码块、行内代码和被保护的正文 hashtag / hash 路径。
   s = s.replace(/__EVF_CODE_SLOT_(\d+)__/g, (_, i) => codeSlots[Number(i)] || '')
+  s = s.replace(/__EVF_HASH_TEXT_SLOT_(\d+)__/g, (_, i) => hashTextSlots[Number(i)] || '')
 
   return s
 }

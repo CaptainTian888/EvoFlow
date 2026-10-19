@@ -1,6 +1,7 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Blocks } from "lucide-react";
 import { cn } from "@/components/lib/utils.js";
+import { getGatewayBaseUrl } from "@/lib/api-client.js";
 import { resolvePluginIconSource } from "@/lib/pluginIconSource.js";
 
 /** Plugin 原始图标；支持官方内置图标与 HTTPS，缺失或失败时使用调用方兜底，默认回退 Blocks。 */
@@ -18,7 +19,17 @@ export function PluginIcon({
   fallbackIcon?: ReactNode;
 }) {
   const [imageFailed, setImageFailed] = useState(false);
-  const resolvedSrc = resolvePluginIconSource(pluginId, src);
+  const [iconEpoch, setIconEpoch] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+    void getGatewayBaseUrl().then(() => {
+      if (!cancelled) setIconEpoch((n) => n + 1);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [src, pluginId]);
+  const resolvedSrc = resolvePluginIconSource(pluginId, src, iconEpoch);
   const showImage = Boolean(resolvedSrc) && !imageFailed;
   return (
     <span

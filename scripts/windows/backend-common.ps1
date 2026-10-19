@@ -47,14 +47,20 @@ function Initialize-EvoFlowBackendPaths {
 function Test-EvoFlowPortFree {
     param([int]$Port)
     if ($Port -le 0) { return $false }
-    try {
-        $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $Port)
-        $listener.Start()
-        $listener.Stop()
-        return $true
-    } catch {
-        return $false
+    # uvicorn may bind 0.0.0.0 or 127.0.0.1; probe both. Windows allows
+    # 0.0.0.0:port and 127.0.0.1:port to coexist (wildcard vs specific IP),
+    # so checking only Loopback misses a stale 0.0.0.0 listener and causes
+    # dual-bind → connections randomly split between two processes.
+    foreach ($addr in @([System.Net.IPAddress]::Any, [System.Net.IPAddress]::Loopback)) {
+        try {
+            $listener = [System.Net.Sockets.TcpListener]::new($addr, $Port)
+            $listener.Start()
+            $listener.Stop()
+        } catch {
+            return $false
+        }
     }
+    return $true
 }
 
 function Resolve-EvoFlowPort {
@@ -544,6 +550,14 @@ function Start-EvoFlowBackend {
     $preferredGatewayPort = 8012
     try { $preferredGatewayPort = [int]$script:DFGatewayPort } catch { $preferredGatewayPort = 8012 }
 
+    # Kill stale listeners on the preferred port before probing. Prior runs or a
+    # manual `python -m uvicorn` (system Python) leave a listener that Windows
+    # can dual-bind (0.0.0.0:port + 127.0.0.1:port coexist), randomly distributing
+    # connections to an unbooted process that returns 403/404.
+    Write-Host "  Pre-clearing stale listeners on :$preferredGatewayPort" -ForegroundColor DarkGray
+    Stop-EvoFlowPortProcess -Port $preferredGatewayPort
+    $null = Wait-EvoFlowPortClosed -Port $preferredGatewayPort -TimeoutSec 5
+
     # Default dev cluster (8012–8035). Isolated stacks (e.g. dev-stack-isolated.bat: 8070)
     # fall back near EVOFLOW_GATEWAY_PORT.
     $gwLow = 8012
@@ -687,7 +701,7 @@ $OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
     Write-Host ""
     Write-Host "==> Opening Gateway window (:$($script:DFGatewayPort)) — LangGraph runs in-process" -ForegroundColor Cyan
     Write-Host "    CORS_ORIGINS (desktop web): $cors" -ForegroundColor DarkGray
-    $gwCmd = "$winConsoleUtf8; `$Host.UI.RawUI.WindowTitle = '$gwTitle'; cd '$($script:DFBackendDir)'; `$env:PYTHONPATH='$pythonPathValue'; `$env:PYTHONUTF8='1'; `$env:PYTHONIOENCODING='utf-8'; `$env:PYTHONUNBUFFERED='1'; $fixedEnv $gatewayInternalEventsEnv & '$pyExe' -u -m uvicorn app.gateway.app:app --host 0.0.0.0 --port $gatewayPortInt"
+    $gwCmd = "$winConsoleUtf8; `$Host.UI.RawUI.WindowTitle = '$gwTitle'; cd '$($script:DFBackendDir)'; `$env:PYTHONPATH='$pythonPathValue'; `$env:PYTHONUTF8='1'; `$env:PYTHONIOENCODING='utf-8'; `$env:PYTHONUNBUFFERED='1'; $fixedEnv $gatewayInternalEventsEnv & '$pyExe' -u -m uvicorn app.gateway.app:app --host 127.0.0.1 --port $gatewayPortInt"
     $gateway = Start-Process powershell.exe -ArgumentList @(
         "-NoProfile",
         "-NoExit",
@@ -748,4 +762,44 @@ function Stop-EvoFlowEvoPanelWeb {
         $null = Wait-EvoFlowPortClosed -Port $p -TimeoutSec 15
     }
     Write-Host "    Done. (若 Vite 落在 1422+，请用任务管理器结束 node 或再执行一次带 -ExtraPorts)" -ForegroundColor DarkGray
+}
+
+# Vite 预打包 mermaid 时会把 src/lib/shims/*.mjs 内联进 .vite-cache/deps，但其缓存失效
+# 判定只覆盖 lockfile + vite.config —— 改 shim 不会触发重建，旧预打包产物会以
+# "fastdom_stub_default.extend is not a function" 复现。因此启动前检测：任一 shim 比
+# 上次优化时间戳（deps/_metadata.json 的 mtime）新，就清掉 .vite-cache 让 Vite 重建。
+function Reset-EvoFlowViteDepCache {
+    param(
+        [string] $EvoPanelDir,
+        [switch] $Force,
+        [switch] $Skip
+    )
+    if ($Skip) { return }
+    $viteCache = Join-Path $EvoPanelDir ".vite-cache"
+    if (-not (Test-Path -LiteralPath $viteCache)) { return }
+    $reason = $null
+    if ($Force) {
+        $reason = "-CleanViteCache"
+    } else {
+        $meta = Join-Path $viteCache "deps\_metadata.json"
+        if (-not (Test-Path -LiteralPath $meta)) {
+            $reason = "deps/_metadata.json missing"
+        } else {
+            $cacheStamp = (Get-Item -LiteralPath $meta).LastWriteTime
+            $staleShim = Get-ChildItem -LiteralPath (Join-Path $EvoPanelDir "src\lib\shims") -Filter "*.mjs" -ErrorAction SilentlyContinue |
+                Where-Object { $_.LastWriteTime -gt $cacheStamp } |
+                Select-Object -First 1
+            if ($staleShim) {
+                $reason = "shim '$($staleShim.Name)' is newer than dep cache"
+            }
+        }
+    }
+    if ($reason) {
+        Write-Host "    Clearing Vite dep cache ($reason)" -ForegroundColor Yellow
+        try {
+            Remove-Item -LiteralPath $viteCache -Recurse -Force
+        } catch {
+            Write-Host "    WARN: could not fully clear $viteCache — stop running Vite dev servers, then delete it manually." -ForegroundColor Yellow
+        }
+    }
 }

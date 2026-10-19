@@ -720,7 +720,12 @@ html[data-translucent-ui='1'] .react-chat-main-col--home {
 html[data-theme='dark'] .react-chat-main-col--home .chat-messages-inner--home,
 html[data-translucent-ui='1'] .react-chat-main-col--home .chat-messages-inner--home {
   scrollbar-width: thin;
-  scrollbar-color: color-mix(in srgb, var(--text-primary) 22%, transparent) transparent;
+  scrollbar-color: transparent transparent;
+}
+
+html[data-theme='dark'] .react-chat-main-col--home .chat-messages-inner--home:hover,
+html[data-translucent-ui='1'] .react-chat-main-col--home .chat-messages-inner--home:hover {
+  scrollbar-color: color-mix(in srgb, var(--text-primary) 30%, transparent) transparent;
 }
 
 html[data-theme='dark'] .react-chat-main-col--home .chat-messages-inner--home::-webkit-scrollbar,
@@ -736,14 +741,19 @@ html[data-translucent-ui='1'] .react-chat-main-col--home .chat-messages-inner--h
 
 html[data-theme='dark'] .react-chat-main-col--home .chat-messages-inner--home::-webkit-scrollbar-thumb,
 html[data-translucent-ui='1'] .react-chat-main-col--home .chat-messages-inner--home::-webkit-scrollbar-thumb {
-  background: color-mix(in srgb, var(--text-primary) 22%, transparent);
+  background: transparent;
   border: none;
   border-radius: 999px;
 }
 
+html[data-theme='dark'] .react-chat-main-col--home .chat-messages-inner--home:hover::-webkit-scrollbar-thumb,
+html[data-translucent-ui='1'] .react-chat-main-col--home .chat-messages-inner--home:hover::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--text-primary) 30%, transparent);
+}
+
 html[data-theme='dark'] .react-chat-main-col--home .chat-messages-inner--home::-webkit-scrollbar-thumb:hover,
 html[data-translucent-ui='1'] .react-chat-main-col--home .chat-messages-inner--home::-webkit-scrollbar-thumb:hover {
-  background: color-mix(in srgb, var(--text-primary) 34%, transparent);
+  background: color-mix(in srgb, var(--text-primary) 45%, transparent);
 }
 
 /* ── 任务中心 + 任务详情 + 我的事项 ── */
@@ -3126,7 +3136,7 @@ html[data-translucent-ui='1'][data-liquid-glass-webgl='1'] :is(
 }
 
 /* ══════════════════════════════════════════════════════════════════
-   扩展应用（extensions-page）：搜索 + 应用卡片
+   Agent应用（extensions-page）：搜索 + 应用卡片
    ══════════════════════════════════════════════════════════════════ */
 html[data-theme='dark'] .extensions-page,
 html[data-translucent-ui='1'] .extensions-page {
@@ -3259,4 +3269,288 @@ html[data-translucent-ui='1'][data-liquid-glass-webgl='1'] .extensions-page :is(
 
 html[data-translucent-ui='1'][data-liquid-glass-webgl='1'] .extensions-page .uiext-app:hover {
   background: color-mix(in srgb, var(--accent) 6%, transparent) !important;
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   设置页（settings）通用兜底 —— 修复 "黑底,看不到字体"
+
+   触发链路:
+   1. ``pages/settings/*.js`` 普遍使用 ``<input class="cron-input">``、
+      ``<select class="cron-input">``、``<textarea class="cron-input">``、
+      ``<select class="sec-select sec-select--compact">``、
+      ``<input class="form-input">`` 等。
+   2. 旧 ``sci-fi-theme.css`` 的 ``.config-section .form-input`` 块
+      用 ``!important`` 强制深色玻璃背景 + ``color: var(--text-primary)``
+      但**没有** sci-fi 主题门控 → 即使没开 sci-fi 主题也命中;若用户
+      当前是 light 主题,``--text-primary`` 是深色,叠加 ``!important``
+      深色背景,字和背景同色 → 漆黑一片,完全看不见。
+   3. ``.cron-page`` 那段 ``theme-surfaces.css:2860`` 只覆盖
+      ``.cron-page`` 内的 ``.cron-input`` —— 不会命中 settings
+      页（settings 嵌在 ``.settings-modal-pane`` / ``#content`` 下,
+      没有 ``.cron-page`` 包裹）→ settings 内的 input 走
+      ``reset.css`` 的 ``background: var(--bg-tertiary)`` 默认值,
+      在 dark 下会变成深色,而文字色也是深色,导致同样的不可读问题。
+   4. ``.sec-select`` / ``.sec-textarea`` 这两个类没有任何 dark
+      模式覆盖。
+
+   修复方式（双管齐下）:
+   (a) 上面已经给 ``sci-fi-theme.css`` 加了
+       ``html[data-scifi-ui='1']`` 门控,只让 sci-fi 主题生效;
+   (b) 这里补一个全局 settings-page 兜底,确保 ``.config-section``
+       及「设置弹窗嵌入区」内的所有文本输入元素在 *light* 和 *dark*
+       主题下都有正确的对比度,且 placeholder / caret 颜色也对。
+
+   注意:此规则**只**对 settings / config-section 范围生效,不影响
+   知识库页（``pages/knowledge-owned.jsx``）和 ChatApp 已有独立
+   表单样式。优先级刻意用 ``:where(...)`` 把特异性压到 0,让原本
+   已有 dark 覆盖的页面继续走它们的覆盖。══════════════════════════════════════════════════════════════════ */
+/* Dark: 显式给出深色玻璃 + 亮色文字 + 亮 caret,覆盖 reset.css 的
+ * ``background: var(--bg-tertiary)`` 默认值（dark 下 bg-tertiary
+ * 也是深色,会吃光文字）。 */
+html[data-theme='dark'] .config-section :is(
+  .form-input,
+  .cron-input,
+  .cron-textarea,
+  .sec-select,
+  .sec-textarea,
+  input[type="text"],
+  input[type="email"],
+  input[type="password"],
+  input[type="url"],
+  input[type="number"],
+  input[type="search"],
+  textarea,
+  select
+),
+html[data-theme='dark'] .settings-modal-pane :is(
+  .form-input,
+  .cron-input,
+  .cron-textarea,
+  .sec-select,
+  .sec-textarea,
+  input[type="text"],
+  input[type="email"],
+  input[type="password"],
+  input[type="url"],
+  input[type="number"],
+  input[type="search"],
+  textarea,
+  select
+),
+html[data-theme='dark'] .media-vendor-form :is(
+  .form-input,
+  .cron-input,
+  .cron-textarea,
+  .sec-select,
+  .sec-textarea,
+  input[type="text"],
+  input[type="email"],
+  input[type="password"],
+  input[type="url"],
+  input[type="number"],
+  input[type="search"],
+  textarea,
+  select
+),
+/* 用户与权限（``pages/settings/users.js``）:页面主区域用
+ * ``.users-page`` 包裹,内部有 ``.config-section.users-section``。
+ * 单独加一条 ``.users-page`` 兜底,即使将来 markup 改掉,只要还
+ * 在 users-page 范围内的表单都受保护。 */
+html[data-theme='dark'] .users-page :is(
+  .form-input,
+  .cron-input,
+  .cron-textarea,
+  .sec-select,
+  .sec-textarea,
+  input[type="text"],
+  input[type="email"],
+  input[type="password"],
+  input[type="url"],
+  input[type="number"],
+  input[type="search"],
+  textarea,
+  select
+),
+/* ``components/modal.js`` 的 ``showModal`` 渲染 ``<div class="modal">``,
+ * 内部用 ``.form-input``。``components.css`` 里有 light 覆盖但
+ * 没有 dark 覆盖 → dark 主题下 ``.modal .form-input`` 走
+ * ``reset.css`` 的默认值,字和背景同深色,看不见。补一条。 */
+html[data-theme='dark'] .modal :is(
+  .form-input,
+  .cron-input,
+  .cron-textarea,
+  .sec-select,
+  .sec-textarea,
+  input[type="text"],
+  input[type="email"],
+  input[type="password"],
+  input[type="url"],
+  input[type="number"],
+  input[type="search"],
+  textarea,
+  select
+) {
+  background-color: var(--bg-tertiary, rgba(15, 23, 42, 0.6)) !important;
+  color: var(--text-primary) !important;
+  caret-color: var(--text-primary) !important;
+  border-color: var(--border-primary) !important;
+}
+html[data-theme='dark'] .config-section :is(
+  .form-input,
+  .cron-input,
+  .cron-textarea,
+  .sec-select,
+  .sec-textarea
+)::placeholder,
+html[data-theme='dark'] .settings-modal-pane :is(
+  .form-input,
+  .cron-input,
+  .cron-textarea,
+  .sec-select,
+  .sec-textarea
+)::placeholder,
+html[data-theme='dark'] .media-vendor-form :is(
+  .form-input,
+  .cron-input,
+  .cron-textarea,
+  .sec-select,
+  .sec-textarea
+)::placeholder,
+html[data-theme='dark'] .users-page :is(
+  .form-input,
+  .cron-input,
+  .cron-textarea,
+  .sec-select,
+  .sec-textarea
+)::placeholder,
+html[data-theme='dark'] .modal :is(
+  .form-input,
+  .cron-input,
+  .cron-textarea,
+  .sec-select,
+  .sec-textarea
+)::placeholder {
+  color: var(--text-tertiary, #94a3b8) !important;
+  opacity: 1 !important;
+}
+
+/* Light: 强制明确浅色背景,防止任何下游 ``!important transparent``
+ * 规则把字和背景都吃成"白纸一片"。 */
+:root[data-theme="light"] .config-section :is(
+  .form-input,
+  .cron-input,
+  .cron-textarea,
+  .sec-select,
+  .sec-textarea,
+  input[type="text"],
+  input[type="email"],
+  input[type="password"],
+  input[type="url"],
+  input[type="number"],
+  input[type="search"],
+  textarea,
+  select
+),
+:root[data-theme="light"] .settings-modal-pane :is(
+  .form-input,
+  .cron-input,
+  .cron-textarea,
+  .sec-select,
+  .sec-textarea,
+  input[type="text"],
+  input[type="email"],
+  input[type="password"],
+  input[type="url"],
+  input[type="number"],
+  input[type="search"],
+  textarea,
+  select
+),
+:root[data-theme="light"] .media-vendor-form :is(
+  .form-input,
+  .cron-input,
+  .cron-textarea,
+  .sec-select,
+  .sec-textarea,
+  input[type="text"],
+  input[type="email"],
+  input[type="password"],
+  input[type="url"],
+  input[type="number"],
+  input[type="search"],
+  textarea,
+  select
+),
+:root[data-theme="light"] .users-page :is(
+  .form-input,
+  .cron-input,
+  .cron-textarea,
+  .sec-select,
+  .sec-textarea,
+  input[type="text"],
+  input[type="email"],
+  input[type="password"],
+  input[type="url"],
+  input[type="number"],
+  input[type="search"],
+  textarea,
+  select
+),
+:root[data-theme="light"] .modal :is(
+  .form-input,
+  .cron-input,
+  .cron-textarea,
+  .sec-select,
+  .sec-textarea,
+  input[type="text"],
+  input[type="email"],
+  input[type="password"],
+  input[type="url"],
+  input[type="number"],
+  input[type="search"],
+  textarea,
+  select
+) {
+  background-color: #ffffff !important;
+  color: #1a1a1a !important;
+  caret-color: #1a1a1a !important;
+  border-color: #d4d4d8 !important;
+}
+:root[data-theme="light"] .config-section :is(
+  .form-input,
+  .cron-input,
+  .cron-textarea,
+  .sec-select,
+  .sec-textarea
+)::placeholder,
+:root[data-theme="light"] .settings-modal-pane :is(
+  .form-input,
+  .cron-input,
+  .cron-textarea,
+  .sec-select,
+  .sec-textarea
+)::placeholder,
+:root[data-theme="light"] .media-vendor-form :is(
+  .form-input,
+  .cron-input,
+  .cron-textarea,
+  .sec-select,
+  .sec-textarea
+)::placeholder,
+:root[data-theme="light"] .users-page :is(
+  .form-input,
+  .cron-input,
+  .cron-textarea,
+  .sec-select,
+  .sec-textarea
+)::placeholder,
+:root[data-theme="light"] .modal :is(
+  .form-input,
+  .cron-input,
+  .cron-textarea,
+  .sec-select,
+  .sec-textarea
+)::placeholder {
+  color: #71717a !important;
+  opacity: 1 !important;
 }

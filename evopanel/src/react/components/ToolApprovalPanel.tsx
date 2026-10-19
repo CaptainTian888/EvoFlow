@@ -6,6 +6,9 @@ import {
 
 export type ToolApprovalChoice = 'allow_once' | 'always_project' | 'deny'
 
+/** 点击后的乐观决策态：面板从「等待确认」切换为结果反馈（多工具审批时的点击回执） */
+export type ToolApprovalDecision = 'approved' | 'denied'
+
 type Props = {
   toolName: string
   summary: string
@@ -14,6 +17,8 @@ type Props = {
   busy?: boolean
   /** Auto-focus the panel for keyboard navigation when mounted */
   autoFocus?: boolean
+  /** 已提交的决策（approved/denied）——渲染结果态而非选项列表 */
+  decided?: ToolApprovalDecision | null
   onConfirm: (choice: ToolApprovalChoice) => void
 }
 
@@ -44,6 +49,7 @@ function ToolApprovalPanelInner({
   detailExtra,
   busy,
   autoFocus = true,
+  decided = null,
   onConfirm,
 }: Props) {
   const labelId = useId()
@@ -73,7 +79,7 @@ function ToolApprovalPanelInner({
   }, [busy, onConfirm, selected])
 
   useEffect(() => {
-    if (!autoFocus) return
+    if (!autoFocus || decided) return
     const el = rootRef.current
     if (!el) return
     // Defer so stream re-renders do not steal focus mid-type.
@@ -85,9 +91,10 @@ function ToolApprovalPanelInner({
       }
     }, 30)
     return () => window.clearTimeout(t)
-  }, [autoFocus])
+  }, [autoFocus, decided])
 
   useEffect(() => {
+    if (decided) return
     const el = rootRef.current
     if (!el) return
     const onKey = (e: KeyboardEvent) => {
@@ -114,7 +121,53 @@ function ToolApprovalPanelInner({
     }
     el.addEventListener('keydown', onKey)
     return () => el.removeEventListener('keydown', onKey)
-  }, [busy, move, submit])
+  }, [busy, decided, move, submit])
+
+  const contextRow = (
+    <div className="tool-approval-panel__context">
+      <span className="tool-approval-panel__context-icon" aria-hidden>
+        ✎
+      </span>
+      {decided ? (
+        <span
+          className={`tool-approval-panel__decision${
+            decided === 'denied' ? ' tool-approval-panel__decision--denied' : ''
+          }`}
+          role="status"
+        >
+          {decided === 'denied' ? '已拒绝' : '已批准，等待执行…'}
+        </span>
+      ) : (
+        <span className="tool-approval-panel__context-wait">等待确认</span>
+      )}
+      <span className="tool-approval-panel__context-sep" aria-hidden>
+        ·
+      </span>
+      <span className="tool-approval-panel__context-detail" title={primary}>
+        {toolOpLabel(toolName) ? (
+          <span className="tool-approval-panel__op">{toolOpLabel(toolName)}</span>
+        ) : null}{' '}
+        {contextLabel}
+      </span>
+    </div>
+  )
+
+  if (decided) {
+    return (
+      <div
+        ref={rootRef}
+        className="tool-approval-panel tool-approval-panel--decided"
+        role="group"
+        aria-labelledby={labelId}
+        data-decided={decided}
+      >
+        <div className="tool-approval-panel__eyebrow" id={labelId}>
+          需要权限
+        </div>
+        {contextRow}
+      </div>
+    )
+  }
 
   return (
     <div
@@ -127,21 +180,7 @@ function ToolApprovalPanelInner({
       <div className="tool-approval-panel__eyebrow" id={labelId}>
         需要权限
       </div>
-      <div className="tool-approval-panel__context">
-        <span className="tool-approval-panel__context-icon" aria-hidden>
-          ✎
-        </span>
-        <span className="tool-approval-panel__context-wait">等待确认</span>
-        <span className="tool-approval-panel__context-sep" aria-hidden>
-          ·
-        </span>
-        <span className="tool-approval-panel__context-detail" title={primary}>
-          {toolOpLabel(toolName) ? (
-            <span className="tool-approval-panel__op">{toolOpLabel(toolName)}</span>
-          ) : null}{' '}
-          {contextLabel}
-        </span>
-      </div>
+      {contextRow}
 
       <ol className="tool-approval-panel__choices" role="listbox" aria-label="授权选项">
         {CHOICES.map((c, idx) => {

@@ -627,6 +627,29 @@ describe('applyAgUiEvent', () => {
     expect(tool?.content_bytes).toBe(4096)
   })
 
+  it('TOOL_CALL_RESULT forwards cua_display for node_repl tool cards', () => {
+    const cua = {
+      status: 'success',
+      images: [{ url: '/api/threads/t/browser-snapshots/abc123def456', kb: 12 }],
+      target_app: { app_key: 'windows-exe:d:\\app\\weixin.exe', display_name: '微信' },
+    }
+    let s = emptyAgUiTurnState('r1', 't1')
+    s = applyAgUiEvent(s, {
+      type: 'TOOL_CALL_START',
+      toolCallId: 'c-cua',
+      toolCallName: 'mcp__node_repl__js',
+    })
+    s = applyAgUiEvent(s, {
+      type: 'TOOL_CALL_RESULT',
+      toolCallId: 'c-cua',
+      content: '[Screenshot captured]',
+      status: 'success',
+      cua_display: cua,
+    })
+    const tool = s.compatTools.find((t) => t && t.id === 'c-cua')
+    expect(tool?.cua_display).toEqual(cua)
+  })
+
   it('TOOL_CALL_RESULT pending_approval is not downgraded to ok', () => {
     const pending = JSON.stringify({
       _evoflow_tool: { status: 'pending_approval' },

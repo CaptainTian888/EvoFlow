@@ -563,7 +563,7 @@ class V4ConversationHub:
         if os.getenv("EVOFLOW_V4_LLM", "").strip() not in ("1", "true", "yes"):
             target = (
                 f"Echo from EvoFlow v4 shell: 我收到了「{text}」。"
-                "这是 ZCode v4 协议链路（wire v3 → topicWireDecoder → projection store）。"
+                "这是 EvoFlow v4 协议链路（wire v3 → topicWireDecoder → projection store）。"
             )
             # chunk 64 字符 / 8ms = ~8KB/s，肉眼跟得上但不耗 CPU。
             for i in range(0, len(target), 64):

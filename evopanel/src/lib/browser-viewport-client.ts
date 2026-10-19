@@ -136,7 +136,7 @@ export async function closeBrowserTab(threadId: string, index: number): Promise<
   }
 }
 
-export type BrowserNavMethod = 'navigate' | 'back' | 'forward'
+export type BrowserNavMethod = 'navigate' | 'back' | 'forward' | 'reload'
 
 export type BrowserCommandResult = {
   ok: boolean
@@ -153,6 +153,8 @@ export type BrowserCommandResult = {
   streamWs: string
   pageUrl: string
   pageTitle: string
+  canGoBack: boolean
+  canGoForward: boolean
 }
 
 /** Browser command/tab response shape. Kept loose because the gateway may add
@@ -174,14 +176,32 @@ function normalizeBrowserResponse(
   const state = (raw.state && typeof raw.state === 'object' ? raw.state : {}) as {
     url?: string
     title?: string
+    canGoBack?: boolean
+    canGoForward?: boolean
   }
+  const pageUrlRaw = String(raw.page_url || state.url || '').trim()
+  // chrome-error:// 等内部页不当成真实地址回传，避免前端再导航进去。
+  const pageUrl = (() => {
+    const u = pageUrlRaw.toLowerCase()
+    if (
+      u.startsWith('chrome-error:') ||
+      u.startsWith('chrome://') ||
+      u.startsWith('edge://') ||
+      u.includes('chromewebdata')
+    ) {
+      return ''
+    }
+    return pageUrlRaw
+  })()
   return {
     ok: raw.ok !== false,
     threadId: String(raw.thread_id || threadId || '').trim() || threadId,
     state: state as BrowserCommandResult['state'],
     streamWs: String(raw.stream_ws || '').trim(),
-    pageUrl: String(raw.page_url || state.url || '').trim(),
+    pageUrl,
     pageTitle: String(raw.page_title || state.title || '').trim(),
+    canGoBack: Boolean(state.canGoBack),
+    canGoForward: Boolean(state.canGoForward),
   }
 }
 

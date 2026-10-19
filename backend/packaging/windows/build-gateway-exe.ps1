@@ -87,8 +87,37 @@ try {
     Write-Host "[gateway-build] WARNING: ripgrep install failed: $($_.Exception.Message), continuing without it"
   }
 
+  # Official product plugins live only in packaging/official-plugins-bundle.
+  # Sync from a local cache when the dest is empty (or EVOFLOW_SYNC_OFFICIAL_PLUGINS=1).
+  $OfficialBundle = Join-Path $BackendDir "packaging\official-plugins-bundle"
+  $OfficialPluginDirs = @(Get-ChildItem -LiteralPath $OfficialBundle -Directory -ErrorAction SilentlyContinue)
+  $forceSync = $env:EVOFLOW_SYNC_OFFICIAL_PLUGINS -and (
+    $env:EVOFLOW_SYNC_OFFICIAL_PLUGINS.Trim().ToLower() -in @("1", "true", "yes", "on")
+  )
+  if ($forceSync -or $OfficialPluginDirs.Count -eq 0) {
+    Write-Host "[gateway-build] syncing official-plugins-bundle..."
+    & (Join-Path $ScriptDir "sync-official-plugins-bundle.ps1")
+    $OfficialPluginDirs = @(Get-ChildItem -LiteralPath $OfficialBundle -Directory -ErrorAction SilentlyContinue)
+  }
+  $requiredOfficial = @(
+    "browser-use", "computer-use", "node-repl-host", "documents", "pdf",
+    "presentations", "spreadsheets", "image-search", "plugin-creator", "skill-creator"
+  )
+  $missingOfficial = @($requiredOfficial | Where-Object {
+      -not (Test-Path -LiteralPath (Join-Path $OfficialBundle $_))
+    })
+  $helperOk = (
+    (Test-Path -LiteralPath (Join-Path $OfficialBundle "cua-helper\runtime\dist\windows-helper.js")) -and
+    (Test-Path -LiteralPath (Join-Path $OfficialBundle "cua-helper\runtime\build\Release\ax_native.node"))
+  )
+  if ($missingOfficial.Count -gt 0 -or -not $helperOk) {
+    $hint = if (-not $helperOk) { $missingOfficial + @("cua-helper/runtime") } else { $missingOfficial }
+    throw "[gateway-build] official-plugins-bundle incomplete (missing: $($hint -join ', ')). Run packaging/windows/sync-official-plugins-bundle.ps1"
+  }
+  Write-Host "[gateway-build] official-plugins-bundle OK ($($OfficialPluginDirs.Count) plugin dirs)"
+
   # Whisper ASR: opt-in only. openai-whisper pulls torch and blows past the
-  # lean sidecar budget (~564MB → ~1.1GB). Cloud ASR remains the default.
+  # lean sidecar budget (~564MB -> ~1.1GB). Cloud ASR remains the default.
   $bundleWhisper = $IncludeWhisper -or (
     $env:EVOFLOW_BUNDLE_WHISPER -and (
       $env:EVOFLOW_BUNDLE_WHISPER.Trim().ToLower() -in @("1", "true", "yes", "on")
@@ -157,6 +186,19 @@ try {
   New-Item -ItemType Directory -Path $OutputAbs -Force | Out-Null
 
   Copy-Item -Path (Join-Path $DistDir "*") -Destination $OutputAbs -Recurse -Force
+
+  # Official plugins ship once via PyInstaller datas -> _internal/evoflow/plugins/bundled_official.
+  # Do not also copy packaging/official-plugins-bundle next to the exe (was a ~53MB duplicate).
+  $OfficialTarget = Join-Path $OutputAbs "official-plugins-bundle"
+  if (Test-Path -LiteralPath $OfficialTarget) {
+    Remove-Item -LiteralPath $OfficialTarget -Recurse -Force
+    Write-Host "[gateway-build] removed duplicate sidecar official-plugins-bundle (using in-package bundled_official)"
+  }
+  $BundledOfficial = Join-Path $OutputAbs "_internal\evoflow\plugins\bundled_official"
+  if (-not (Test-Path -LiteralPath $BundledOfficial)) {
+    throw "[gateway-build] in-package bundled_official missing under $OutputAbs -- check gateway.spec datas"
+  }
+  Write-Host "[gateway-build] official plugins in-package -> $BundledOfficial"
 
   $AbBundle = Join-Path $BackendDir "packaging\agent-browser-bundle"
   $AbTarget = Join-Path $OutputAbs "tools\agent-browser"

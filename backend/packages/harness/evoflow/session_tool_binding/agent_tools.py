@@ -139,6 +139,9 @@ def _cached_agent_tool_names(
         # Configs still use legacy names (read_file); runtime catalog is host-direct (read).
         whitelist = {canonical_tool_name(normalize_tool_name(x)) for x in tools_whitelist_key if str(x or "").strip()}
         whitelist.discard("")
+        # terminal/rg/find alias to bash. Background control ships with the shell.
+        if "bash" in whitelist:
+            whitelist.update({"taskoutput", "taskstop"})
         # Explicit agent.tools = allowlist. ``tool_search`` + agent-mode system tools
         # (platform / panel_set) may bypass; ask_clarification is NOT auto-injected.
         from evoflow.tools.tool_catalog import AGENT_MODE_SYSTEM_TOOL_NAMES

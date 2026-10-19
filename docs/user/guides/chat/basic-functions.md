@@ -1,5 +1,11 @@
 # 基础功能使用指南
 
+> **先分清智能体和员工**
+>
+> 1. **区别**：智能体管「会什么」（人设、模型、工具、技能、连接器 MCP）。员工管「何时主动干」（岗位、职责、部门与上级、上班时间、转交审批、工作空间、绑定知识库、预算）。聊天里 @ 智能体不会自动值班。
+> 2. **员工能配什么**：加人时填岗位名称、职责、部门、上级、知识库；更多设置里有能力来源、工作空间、关注子路径、工作模型、转交审批（全自动 / 平衡型 / 谨慎型）、自动上班。编辑岗位还可配工作方式、模型思考、系统提示词注入、知识库检索和预算。工具、技能、连接器到「智能体」页改。
+> 3. **怎么操作**：侧栏「员工」→「加人」→ 填岗位和至少一条职责 →「确认加人」→ 打开自动上班，或点「现在开始工作」，急活用小V 派活。交工后到任务中心确认或打回。字段见 [智能体员工](../configuration/smart-employees.md)。
+
 > **看几个例子你就知道这个界面怎么用了**：
 >
 > - **日常聊天**：在输入框打"今天 AI 圈有什么新闻"——AI 会直接回答，就像用 ChatGPT
@@ -54,9 +60,9 @@ EvoFlow 的核心交互方式就是聊天。你可以在输入框中发消息，
 - **发送前预览**：图片会以缩略图显示在输入框上方，可点开全屏核查、删除后再发送
 - 上传后 AI 自动识别文件内容，你可直接针对文件提问、要求分析、修改等
 
-> 上传的文件只服务于**当前会话**，不是长期知识库。需长期保存可检索的，用 [上传文档（RAG）](../configuration/document-knowledge-base.md) [[guides/configuration/document-knowledge-base|上传文档（RAG）]] 或 [知识库（Vault）](../configuration/knowledge-vault.md) [[guides/configuration/knowledge-vault|知识库（Vault）]]。
+> 上传的文件只服务于**当前会话**。要长期检索，用 [知识库](../configuration/knowledge-base.md)。
 
-**相关文档：** [文件上传详细说明](file-upload.md) [[file-upload|文件上传详细说明]] · [上传文档（RAG）](../configuration/document-knowledge-base.md) [[guides/configuration/document-knowledge-base|上传文档（RAG）]] · [知识库（Vault）](../configuration/knowledge-vault.md) [[guides/configuration/knowledge-vault|知识库（Vault）]]
+**相关文档：** [文件上传详细说明](file-upload.md) · [知识库](../configuration/knowledge-base.md)
 
 ---
 
@@ -71,7 +77,7 @@ AI 能记住你的偏好、过程与经验，跨会话复用。日常在对话�
 - 用户 / Agent / 员工资产互相独立，可「应用到」目标实体
 
 **功能关系：**
-- **资产中心** ≠ 知识库（Vault）：资产是「关于你/岗位」；知识库是文档笔记。
+- **资产中心**和知识库不是一回事：资产是「关于你/岗位」；知识库是你上传的文档。
 - **资产中心** ≠ 会话附件：附件只服务当前轮；资产跨会话持续。
 
 **相关文档：** [资产中心操作](../configuration/asset-center.md) [[guides/configuration/asset-center|资产中心]] · [概念说明](../../explanation/asset-center.md) [[explanation/asset-center|资产中心概念]]
@@ -111,10 +117,9 @@ AI 能记住你的偏好、过程与经验，跨会话复用。日常在对话�
   ├── 任务中心：跨会话的复杂任务看板与观测
   ├── 应用中心：把流程存成应用，填参数反复跑
   ├── 自动化：到点自动跑固定任务
-  ├── 智能体员工：值班岗定时上班与审批
-  ├── 知识库（Vault）：连接 Obsidian 笔记
-  ├── 上传文档（RAG）：做可检索的向量知识库
-  └── 智能体管理：创建/编辑自定义角色
+  ├── 员工：加人后按点上班、审批与验收
+  ├── 知识库：上传文档后检索、问 AI，可绑给员工
+  └── 智能体：人设、工具、技能、连接器（MCP）
 ```
 
 **想要更系统的学习路径？** 建议按以下顺序阅读：

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { createPortal } from 'react-dom'
 import { getSkillTags, getSkillTagMeta, SKILL_TAGS } from '../../lib/skill-catalog.js'
+import { useGlobalOverlayWhen } from '../hooks/useGlobalOverlayWhen.js'
 
 export type SkillPickerItem = {
   name: string
@@ -34,6 +35,7 @@ export function SkillPickerModal({
   const [draft, setDraft] = useState<SkillSelection[]>(selected)
   const [activeTag, setActiveTag] = useState<string>('all')
   const searchRef = useRef<HTMLInputElement | null>(null)
+  useGlobalOverlayWhen(open, 'skill-picker')
 
   // 打开时同步 draft（仅 open 变化触发，避免用户编辑中被父状态覆盖）
   useEffect(() => {

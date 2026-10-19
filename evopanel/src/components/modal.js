@@ -4,6 +4,7 @@
 
 import { buildContextWindowFieldHtml, bindContextWindowPresets } from '../lib/model-context-field.js'
 import { applyModalTauriDragChrome, listenModalEscape } from '../lib/modal-chrome.js'
+import { trackGlobalOverlay } from '../lib/browser-embed-overlay.js'
 
 // 转义 HTML 属性值，防止双引号等字符破坏 HTML 结构
 function escapeAttr(str) {
@@ -44,12 +45,14 @@ export function showConfirm(message) {
     `
     document.body.appendChild(overlay)
     applyModalTauriDragChrome(overlay)
+    const releaseOverlay = trackGlobalOverlay('confirm')
 
     let settled = false
     const close = (result) => {
       if (settled) return
       settled = true
       unlistenEscape()
+      releaseOverlay()
       resolve(result)
       // 同步移除遮罩，避免 pointer-events:none + 延迟移除导致同一次 click 穿透到下层「删除会话」等按钮
       try {
@@ -86,6 +89,7 @@ export function showConfirm(message) {
     const cancelBtn = overlay.querySelector('[data-action="cancel"]')
     const confirmBtn = overlay.querySelector('[data-action="confirm"]')
     if (!cancelBtn || !confirmBtn) {
+      releaseOverlay()
       overlay.remove()
       resolve(false)
       return
@@ -133,12 +137,14 @@ export function showChoice(message, choices, opts = {}) {
     `
     document.body.appendChild(overlay)
     applyModalTauriDragChrome(overlay)
+    const releaseOverlay = trackGlobalOverlay('choice')
 
     let settled = false
     const close = (result) => {
       if (settled) return
       settled = true
       unlistenEscape()
+      releaseOverlay()
       resolve(result)
       try {
         overlay.remove()
@@ -317,9 +323,11 @@ export function showModal({ title, fields, onConfirm, width, className = '' }) {
   document.body.appendChild(overlay)
   bindContextWindowPresets(overlay)
   applyModalTauriDragChrome(overlay)
+  const releaseOverlay = trackGlobalOverlay('form')
 
   const dismiss = () => {
     unlistenEscape()
+    releaseOverlay()
     overlay.remove()
   }
 
@@ -458,10 +466,12 @@ export function showContentModal({
 
   document.body.appendChild(overlay)
   applyModalTauriDragChrome(overlay)
+  const releaseOverlay = trackGlobalOverlay('content')
 
   let unlistenEscape = () => {}
   const close = () => {
     unlistenEscape()
+    releaseOverlay()
     overlay.remove()
   }
   overlay.close = close
@@ -500,6 +510,7 @@ export function showUpgradeModal(title) {
   `
   document.body.appendChild(overlay)
   applyModalTauriDragChrome(overlay)
+  let releaseOverlay = trackGlobalOverlay('upgrade')
 
   const fill = overlay.querySelector('.upgrade-progress-fill')
   const text = overlay.querySelector('.upgrade-progress-text')
@@ -521,12 +532,14 @@ export function showUpgradeModal(title) {
   function reopenModal() {
     if (_taskBar) { _taskBar.remove(); _taskBar = null }
     document.body.appendChild(overlay)
+    releaseOverlay = trackGlobalOverlay('upgrade')
     bindEscape()
   }
 
   // 关闭弹窗：未完成时显示任务状态栏
   function closeModal() {
     unlistenEscape()
+    releaseOverlay()
     overlay.remove()
     if (!_finished) {
       showTaskBar()
@@ -608,6 +621,7 @@ export function showUpgradeModal(title) {
     onClose(fn) { _onClose = fn },
     destroy() {
       unlistenEscape()
+      releaseOverlay()
       overlay.remove()
       if (_taskBar) { _taskBar.remove(); _taskBar = null }
       _onClose?.()

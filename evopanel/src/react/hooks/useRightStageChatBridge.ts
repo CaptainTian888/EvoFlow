@@ -13,8 +13,8 @@ export { hideRightStageIfKind } from '../../lib/right-stage/right-stage-store.js
 
 export function useRightStageChatBridge() {
   const stage = useRightStageStore()
-  const { surface } = stage
-  const flags = useMemo(() => surfaceLegacyFlags(surface), [surface])
+  const { surface, tabs } = stage
+  const flags = useMemo(() => surfaceLegacyFlags(surface, tabs), [surface, tabs])
 
   const showKind = useCallback(
     (kind: RightStageKind, opts?: { title?: string; data?: Record<string, unknown> }) => {
@@ -84,20 +84,20 @@ export function useRightStageChatBridge() {
   }, [surface])
 
   const mainBodyStageClasses = useMemo(() => {
-    if (!surface) return ''
+    if (stage.collapsed) return ''
     const parts = ['is-right-stage-open', 'is-right-panel-open']
-    const k = normalizeRightStageKind(surface.kind)
-    if (k === 'workspace-browse' || k === 'write') {
-      parts.push('is-workspace-open')
-    }
-    if (k === 'artifacts') parts.push('is-artifacts-open')
-    if (k === 'collab-workflow') parts.push('is-collab-exec-open')
-    if (k === 'mind-map') parts.push('is-knowledge-map-open')
-    if (k === 'news-dashboard') parts.push('is-news-dashboard-open')
-    if (k === 'web-embed') parts.push('is-web-embed-open')
-    if (k === 'platform-feedback') parts.push('is-platform-feedback-open')
+    const kinds = new Set(tabs.map((t) => normalizeRightStageKind(t.kind)))
+    if (kinds.has('workspace-browse') || kinds.has('write')) parts.push('is-workspace-open')
+    if (kinds.has('artifacts')) parts.push('is-artifacts-open')
+    if (kinds.has('collab-workflow')) parts.push('is-collab-exec-open')
+    if (kinds.has('mind-map')) parts.push('is-knowledge-map-open')
+    if (kinds.has('news-dashboard')) parts.push('is-news-dashboard-open')
+    if (kinds.has('web-embed')) parts.push('is-web-embed-open')
+    if (kinds.has('platform-feedback')) parts.push('is-platform-feedback-open')
+    if (kinds.has('browser')) parts.push('is-browser-open')
+    if (!tabs.length) parts.push('is-right-stage-home')
     return parts.join(' ')
-  }, [surface])
+  }, [stage.collapsed, tabs])
 
   return {
     ...stage,

@@ -68,14 +68,64 @@ def require_thread_visible(request: Request | None, thread_id: str) -> None:
     require_session_visible(request, sk)
 
 
+def _has_auth_signals(request: Request | None) -> bool:
+    """请求是否携带任何身份信号（cookie / bearer / 调试头）。
+
+    平台内部组件（node-repl 内核桥、浏览器引擎桥、CUA 桥）从 loopback 发起的
+    调用不带任何身份信号。曾观察到读连接池间歇性返回异常快照，把这类请求
+    误判成"非管理员本地用户"（principal_id='admin'/'None'）导致 403，MCP
+    首调因此失败。无信号 = 本地未认证 = 单用户安装下的本地管理员，
+    不再经过 DB 查询，判定是纯确定性的。
+    """
+    if request is None:
+        return False
+    try:
+        if request.cookies.get("evoflow_webui_token"):
+            return True
+        if request.headers.get("authorization"):
+            return True
+        if request.headers.get("x-evoflow-principal-id"):
+            return True
+    except Exception:
+        return True  # 解析失败时按有信号处理，走原有 DB 路径
+    return False
+
+
 def require_org_admin(request: Request | None) -> None:
     """403 unless caller is org admin (local bootstrap admin counts)."""
+    if not _has_auth_signals(request):
+        # 本地无凭据请求（平台内部桥/本地单用户）→ 管理员，零 DB 依赖。
+        return
     authz = resolve_authz_from_request(request)
     if authz.get("is_admin"):
         return
     # Unauthenticated local gateway: treat as admin for single-user installs.
     if not str(authz.get("principal_id") or "").strip():
         return
+    try:
+        from evoflow.tools.builtins.browser_debug_log import browser_debug_log
+
+        path = str(getattr(getattr(request, "url", None), "path", "") or "")
+        recheck = None
+        db_path = ""
+        try:
+            from evoflow.authz import admin_grants as _ag
+            from evoflow.persistence.db import get_db as _get_db
+
+            recheck = bool(
+                _ag.is_org_admin(str(authz.get("principal_id") or ""), org_id=str(authz.get("org_id") or "local"))
+            )
+            db_path = str(getattr(_get_db(), "path", "") or "")
+        except Exception:
+            recheck = None
+        browser_debug_log(
+            "py",
+            f"[authz] 403 org_admin required path={path} "
+            f"principal_id={authz.get('principal_id')!r} org_id={authz.get('org_id')!r} "
+            f"recheck_is_admin={recheck} db={db_path}",
+        )
+    except Exception:
+        pass
     raise HTTPException(status_code=403, detail="org_admin required")
 
 

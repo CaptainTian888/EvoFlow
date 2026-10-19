@@ -1,0 +1,9 @@
+{
+  "name": "evoflow-skill-kit",
+  "displayName": "EvoFlow Skill Kit",
+  "description": "EvoFlow 官方示例：内置一个 greeting 技能，演示插件的 skills 组件。",
+  "version": "1.0.0",
+  "author": "EvoFlow",
+  "homepage": "https://github.com/EvovexAI/EvoFlow",
+  "keywords": ["examples", "skills"]
+}

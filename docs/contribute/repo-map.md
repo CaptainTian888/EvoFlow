@@ -12,14 +12,14 @@
 | 用户文档 | `docs/user/`、`docs/index.md` | [文档首页](../index.md) | `make docs-build` |
 | 代码知识库 Wiki | `.codebasewiki/` | [代码知识库 Wiki](codebase-wiki.md) | `python .claude/skills/codebase-wiki/scripts/wiki_audit.py --config ./wiki-config.yaml`（本地有技能时） |
 | 贡献者脚本 | `scripts/`（不含 `maintainer/`） | [scripts/README.md](../../scripts/README.md) | 按脚本说明试跑 |
-| 上游发版 / 公仓同步 | `scripts/maintainer/` | 维护者专用 | 勿在社区 PR 中改，除非维护者指定 |
+| 上游发版 / 公仓同步 | `scripts/maintainer/` | **[RELEASE.md](../../RELEASE.md)** | 勿在社区 PR 中改，除非维护者指定 |
 | CI | `.github/workflows/` | [分支与检查](branching-and-checks.md) | PR 上 Actions 必须绿 |
 
 ## 边界（必守）
 
 - **`evoflow.*` 不得 import `app.*`**；`app` 可以依赖 `evoflow`。  
 - 不要把运行时数据提交进库：`.evoflow/`、`backend/outputs/`、密钥、`local-publish.env`。  
-- 桌面安装包与公仓 `update/latest.json` 由维护者发版流程写入（草稿在 `scripts/maintainer/update/`），普通 PR 不要手改版本假数据。
+- 桌面安装包与公仓 `update/latest.json` 由维护者按 [RELEASE.md](../../RELEASE.md) 发版（草稿在 `scripts/maintainer/update/`），普通 PR 不要手改版本假数据。
 
 ## 建议改动落点
 

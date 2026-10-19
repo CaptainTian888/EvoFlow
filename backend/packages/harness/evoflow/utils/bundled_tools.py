@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import platform
 import sys
 import threading
@@ -39,26 +40,76 @@ def _rg_candidate_names() -> tuple[str, ...]:
     return ("rg",)
 
 
+def _env_binary(keys: tuple[str, ...]) -> str | None:
+    for key in keys:
+        raw_s = os.environ.get(key)
+        if not raw_s:
+            continue
+        raw = Path(raw_s).expanduser()
+        if raw.is_file():
+            return str(raw.resolve())
+    return None
+
+
+def _frozen_tool_binary(tool_dir: str, names: tuple[str, ...]) -> str | None:
+    if not getattr(sys, "frozen", False):
+        return None
+    exe_dir = Path(sys.executable).resolve().parent
+    for name in names:
+        candidate = exe_dir / "tools" / tool_dir / name
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
+def _packaging_tool_binary(bundle_name: str, names: tuple[str, ...]) -> str | None:
+    backend_dir = _backend_dir_from_harness()
+    if backend_dir is None:
+        return None
+    subdir = backend_dir / "packaging" / bundle_name / _platform_rg_subdir()
+    for name in names:
+        candidate = subdir / name
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
 def bundled_ripgrep_binary() -> str | None:
     """Return path to bundled ``rg`` when present (frozen install or dev packaging bundle)."""
     names = _rg_candidate_names()
+    return (
+        _env_binary(("EVOFLOW_RG_BINARY", "ZCODE_RG_BINARY"))
+        or _frozen_tool_binary("ripgrep", names)
+        or _packaging_tool_binary("ripgrep-bundle", names)
+    )
 
-    if getattr(sys, "frozen", False):
-        exe_dir = Path(sys.executable).resolve().parent
-        for name in names:
-            candidate = exe_dir / "tools" / "ripgrep" / name
-            if candidate.is_file():
-                return str(candidate)
 
-    backend_dir = _backend_dir_from_harness()
-    if backend_dir is not None:
-        subdir = backend_dir / "packaging" / "ripgrep-bundle" / _platform_rg_subdir()
-        for name in names:
-            candidate = subdir / name
-            if candidate.is_file():
-                return str(candidate)
+def bundled_bfs_binary() -> str | None:
+    """ZCode runtime tool ``bfs`` (find replacement). Windows often has none — callers skip wrap."""
+    names = ("bfs.exe", "bfs") if sys.platform == "win32" else ("bfs",)
+    return (
+        _env_binary(("EVOFLOW_BFS_BINARY", "ZCODE_BFS_BINARY"))
+        or _frozen_tool_binary("bfs", names)
+        or _packaging_tool_binary("bfs-bundle", names)
+    )
 
-    return None
+
+def bundled_ugrep_binary() -> str | None:
+    """ZCode runtime tool ``ugrep`` (grep replacement)."""
+    names = ("ugrep.exe", "ugrep") if sys.platform == "win32" else ("ugrep",)
+    return (
+        _env_binary(("EVOFLOW_UGREP_BINARY", "ZCODE_UGREP_BINARY"))
+        or _frozen_tool_binary("ugrep", names)
+        or _packaging_tool_binary("ugrep-bundle", names)
+    )
+
+
+def to_bash_posix_path(path: str) -> str:
+    """Convert a Windows path to a Git-Bash-style POSIX path for `-lc` scripts."""
+    posix = str(path or "").replace("\\", "/")
+    if len(posix) > 1 and posix[1] == ":":
+        return f"/{posix[0].lower()}{posix[2:]}"
+    return posix
 
 
 def _evoflow_cli_script_names() -> tuple[str, ...]:

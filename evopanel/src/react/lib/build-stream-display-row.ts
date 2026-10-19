@@ -112,24 +112,20 @@ function writeProgressFingerprint(s: StreamState): string {
   const parts: string[] = []
   const pushWp = (id: string, wp: Record<string, unknown> | undefined) => {
     if (!wp) return
-    const len =
-      typeof wp.content_len === 'number' && Number.isFinite(wp.content_len)
-        ? wp.content_len
-        : typeof wp.content === 'string'
-          ? wp.content.length
-          : 0
-    const bw =
-      typeof wp.bytes_written === 'number' && Number.isFinite(wp.bytes_written)
-        ? wp.bytes_written
-        : 0
+
     const phase = typeof wp.phase === 'string' ? wp.phase : ''
     const added = Number(wp.lines_added) || 0
     const removed = Number(wp.lines_removed) || 0
     // Path often arrives after the first content delta; include it so the live
     // tool-row brief can refresh from "…" to the target filename.
     const path = typeof wp.path === 'string' ? wp.path.trim() : ''
-    if (!len && !bw && !phase && !added && !removed && !path) return
-    parts.push(`${id}:${phase}:${len}:${bw}:${added}:${removed}:${path}`)
+    // ★ 性能修复：len/bw（bytes_written/content_len）每条 delta 都增长，若计入
+    // fingerprint 会导致 structuralKey 每 delta 变 → 缓存失效 → 每条 delta 走
+    // 全量重建（turnStateForStreamDisplay + isolateStreamProjection ≈ 400ms）。
+    // 只保留 phase/path/added/removed（低频变化），bytes 进度更新走增量路径
+    // （path 2 仍会重建投影并更新 row.tools，进度显示不受影响）。
+    if (!phase && !added && !removed && !path) return
+    parts.push(`${id}:${phase}:${added}:${removed}:${path}`)
   }
   if (s.aguiTurn) {
     for (const tc of s.aguiTurn.toolCalls.values()) {
@@ -207,33 +203,14 @@ function readTextReasoningLens(s: StreamState): { textLen: number; reasoningLen:
 }
 
 function resolveStreamRowState(s: StreamState): StreamRowState {
-  let result: StreamRowState
   if (s.aguiTurn) {
-    result = s.aguiTurn.finished ? 'closed' : 'streaming'
-    console.log(
-      `[GearDebug] resolveStreamRowState AG-UI: finished=${s.aguiTurn.finished} → state="${result}"`,
-      '| runId:', s.runId,
-      '| timeline items:', s.aguiTurn.timeline?.length ?? 0,
-      '| openText len:', s.aguiTurn.openText?.length ?? 0,
-    )
-    return result
+    // AG-UI wire 未 finished 即 streaming；每 delta 高频调用，勿加 console.log
+    // （WebView 中 60+ logs/s 会掉帧，体感整面板闪烁）。
+    return s.aguiTurn.finished ? 'closed' : 'streaming'
   }
   // Legacy path: agui absent means reducer already sealed at finalizeStreamTurn.
-  if (s.turn.timeline.length > 0 || s.turn.openText) {
-    result = 'closed'
-    console.log(
-      `[GearDebug] resolveStreamRowState Legacy→closed:`,
-      '| timeline.length:', s.turn.timeline.length,
-      '| openText:', s.turn.openText?.slice(0, 50),
-    )
-    return result
-  }
-  result = 'streaming'
-  console.log(
-    `[GearDebug] resolveStreamRowState Legacy→streaming:`,
-    '| timeline.length:', s.turn.timeline.length,
-  )
-  return result
+  if (s.turn.timeline.length > 0 || s.turn.openText) return 'closed'
+  return 'streaming'
 }
 
 function finalizeStreamRow(
@@ -319,6 +296,7 @@ export function buildStreamDisplayRow(
   ) {
     return cached.row
   }
+
 
   const activityLabel = String(s.turn.systemActivity || '').trim() || null
   const aguiProj = s.aguiTurn ? projectAgUiToStreamTurnFields(s.aguiTurn) : null

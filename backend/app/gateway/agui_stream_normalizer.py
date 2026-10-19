@@ -52,6 +52,8 @@ class AgUiEncoderState:
     tool_args_accum: dict[str, str] = field(default_factory=dict)
     tool_ended: set[str] = field(default_factory=set)
     tool_results: dict[str, str] = field(default_factory=dict)
+    # node_repl CUA：sse_ui_normalize 从结果尾部剥离的展示载荷（图标 + 截图 URL）
+    tool_cua_displays: dict[str, dict[str, Any]] = field(default_factory=dict)
     tool_args_emitted: set[str] = field(default_factory=set)
     # Bytes already sent via TOOL_CALL_ARGS for each toolCallId (for remainder/force).
     tool_args_emitted_len: dict[str, int] = field(default_factory=dict)
@@ -73,6 +75,23 @@ def _tool_id_from_tc(tc: dict[str, Any]) -> str:
 # Keys that carry the file path in write-family tool arguments.
 _PATH_ARG_KEYS = ("path", "target_file", "file_path", "file")
 
+# Tool families whose TOOL_CALL_START should surface the target path as soon as
+# it can be extracted (even as a growing prefix) from partial arguments.
+_WRITE_FAMILY_START_PATH_TOOLS = frozenset(
+    {"write", "write_to_file", "write_file", "replace", "str_replace", "replace_in_file"}
+)
+
+
+def _partial_path_from_args_text(args_text: str) -> str:
+    """Growing path prefix from incomplete args JSON (display-only, prefix-safe)."""
+    from app.gateway.sse_ui_normalize import _extract_json_string_value_for_key
+
+    for key in _PATH_ARG_KEYS:
+        val = _extract_json_string_value_for_key(str(args_text or ""), key, require_closed=False)
+        if val and val.strip():
+            return val.strip()
+    return ""
+
 
 def _tool_path_from_tc(tc: dict[str, Any]) -> str:
     """Extract the file path from a write-family tool call's arguments.
@@ -80,7 +99,8 @@ def _tool_path_from_tc(tc: dict[str, Any]) -> str:
     Returns the path string if the key is found and the value is a non-empty
     string; otherwise returns ``""``.  Consumers can use this in
     ``TOOL_CALL_START`` to know the target file immediately without waiting
-    for ``TOOL_CALL_ARGS`` to deliver the path later.
+    for ``TOOL_CALL_ARGS`` to deliver the path later.  Falls back to partial
+    extraction so a still-streaming path yields its growing prefix.
     """
     fn = tc.get("function") if isinstance(tc.get("function"), dict) else {}
     args_raw = fn.get("arguments")
@@ -92,7 +112,7 @@ def _tool_path_from_tc(tc: dict[str, Any]) -> str:
         try:
             obj = json.loads(args_raw)
         except Exception:
-            return ""
+            return _partial_path_from_args_text(args_raw)
         args = obj
     elif isinstance(args_raw, dict):
         args = args_raw
@@ -170,12 +190,27 @@ def _close_reasoning_block(state: AgUiEncoderState, block_id: str) -> list[dict[
 def _tool_registry(state: AgUiEncoderState) -> dict[str, dict[str, Any]]:
     reg: dict[str, dict[str, Any]] = {}
     for tid in state.tool_started:
-        reg[tid] = {
+        entry: dict[str, Any] = {
             "name": state.tool_names.get(tid, "tool"),
             "arguments": state.tool_args_accum.get(tid, ""),
             "result": state.tool_results.get(tid, ""),
         }
+        cua = state.tool_cua_displays.get(tid)
+        if isinstance(cua, dict):
+            entry["cua_display"] = cua
+        reg[tid] = entry
     return reg
+
+
+def _cua_display_from_tool_result(payload: dict[str, Any], tool_obj: dict[str, Any]) -> dict[str, Any] | None:
+    """Pick structured cua_display attached by sse_ui_normalize (or leftover marker)."""
+    for bag in (tool_obj, payload):
+        if not isinstance(bag, dict):
+            continue
+        cua = bag.get("cua_display")
+        if isinstance(cua, dict):
+            return cua
+    return None
 
 
 def _emit_tool_args_if_needed(
@@ -284,12 +319,27 @@ def _ensure_tool_started(
     # consumers do not have to wait for TOOL_CALL_ARGS to discover the target
     # file.  Models often stream content before the "path" key.
     name_lower = name.lower()
-    if name_lower in {"write", "write_to_file", "write_file", "replace", "str_replace", "replace_in_file"}:
+    if name_lower in _WRITE_FAMILY_START_PATH_TOOLS:
         path = _tool_path_from_tc(tc)
         if path:
             event["path"] = path
     out.append(event)
     return tid
+
+
+def _start_event_with_path(name: str, tc: dict[str, Any]) -> dict[str, Any]:
+    """TOOL_CALL_START with the write-family target path surfaced when known.
+
+    Models often stream content before the path key, so args may only hold a
+    growing prefix at START time — a partial path beats no path for anchoring
+    the tool card.
+    """
+    event: dict[str, Any] = {"type": TOOL_CALL_START, "toolCallId": _tool_id_from_tc(tc), "toolCallName": name}
+    if name.lower() in _WRITE_FAMILY_START_PATH_TOOLS:
+        path = _tool_path_from_tc(tc)
+        if path:
+            event["path"] = path
+    return event
 
 
 def _ingest_tool_call_args(
@@ -485,7 +535,7 @@ def evf_payload_to_agui_events(
                 state.tool_names[tid] = name
                 out.append(
                     _attach_block_meta(
-                        {"type": TOOL_CALL_START, "toolCallId": tid, "toolCallName": name},
+                        _start_event_with_path(name, tc),
                         payload,
                     )
                 )
@@ -505,7 +555,7 @@ def evf_payload_to_agui_events(
             state.tool_names[tid] = name
             out.append(
                 _attach_block_meta(
-                    {"type": TOOL_CALL_START, "toolCallId": tid, "toolCallName": name},
+                    _start_event_with_path(name, chunk),
                     payload,
                 )
             )
@@ -554,8 +604,11 @@ def evf_payload_to_agui_events(
                     pass
         truncated = bool(payload.get("truncated") or tool_obj.get("truncated"))
         content_bytes = payload.get("content_bytes") or tool_obj.get("content_bytes")
+        cua_display = _cua_display_from_tool_result(payload, tool_obj)
         if tid:
             state.tool_results[tid] = content
+            if cua_display is not None:
+                state.tool_cua_displays[tid] = cua_display
             _emit_tool_args_if_needed(state, tid, out, force=True)
             if tid not in state.tool_ended:
                 state.tool_ended.add(tid)
@@ -574,6 +627,10 @@ def evf_payload_to_agui_events(
             if content_bytes is not None:
                 result_evt["content_bytes"] = content_bytes
                 result_evt["output_bytes"] = content_bytes
+            # 旧版 ToolCallList 读 TOOL_CALL_RESULT.cua_display（图标 + 截图）；
+            # 正文里的 {evoflow-cua-display:...} 已被 sse_ui_normalize 剥掉。
+            if cua_display is not None:
+                result_evt["cua_display"] = cua_display
             out.append(result_evt)
         return out
 

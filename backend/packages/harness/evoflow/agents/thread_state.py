@@ -26,6 +26,11 @@ class ViewedImageData(TypedDict):
     path: str
     mime_type: str
     is_remote: NotRequired[bool]
+    # ``auto`` entries are staged by tools themselves (node_repl screenshots),
+    # not by an explicit ``view_image`` call; the middleware injects them without
+    # requiring a ``view_image`` tool call in the last assistant message.
+    auto: NotRequired[bool]
+    label: NotRequired[str]
 
 
 def merge_artifacts(existing: list[str] | None, new: list[str] | None) -> list[str]:

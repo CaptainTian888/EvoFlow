@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import mimetypes
@@ -1554,12 +1555,27 @@ class ChannelManager:
             run_context.pop("collab_task_id", None)
             seed_sid = self._im_claude_seed_session_id.get(self._im_routing_key(msg))
             if seed_sid:
+                run_context["claude_code_chat"] = True
                 run_context["claude_session_id"] = seed_sid
         # Custom agents are implemented as lead_agent + agent_name context.
         # Keep backward compatibility for channel configs that set
         # assistant_id: <custom-agent-name> by routing through lead_agent.
         elif assistant_id != DEFAULT_ASSISTANT_ID:
-            run_context.setdefault("agent_name", _normalize_custom_agent_name(assistant_id))
+            # Per-employee IM bot (Feishu/WeCom account_session routes the
+            # inbound to a non-main custom agent). The channel-wide
+            # ``session_mode=flash`` (=ask, empty bound catalog) would
+            # collapse the employee's tool surface to nothing, so the
+            # custom-agent branch overrides it: we fall through to the
+            # agent's persisted ``session_mode`` from
+            # ``evoflow_chat_sessions`` (or the agent-mode default for a
+            # brand-new thread, mirroring ``buildDefaultSessionContext``
+            # in evopanel/src/lib/ws-client.js which sets
+            # ``session_mode: 'agent'``). The IM-friendly thinking /
+            # reason budget from ``DEFAULT_RUN_CONTEXT`` is preserved so
+            # chat still feels responsive.
+            run_context["agent_name"] = _normalize_custom_agent_name(assistant_id)
+            run_context.pop("session_mode", None)
+            run_context.setdefault("session_mode", "agent")
             assistant_id = DEFAULT_ASSISTANT_ID
         else:
             # Default lead_agent — still pass agent_name so config (tools/skills) is loaded
@@ -1632,6 +1648,38 @@ class ChannelManager:
                 msg.msg_type.value,
                 (msg.text or "").strip() or "(empty)",
             )
+            # Channel-audit: every inbound that the manager consumes from the
+            # bus must leave a trail in evoflow_channel_push_log. Internal
+            # EvoPanel turns do not go through this bus (they hit
+            # append_message_and_touch_session directly), so this entrypoint
+            # captures "external IM inbound" only. Failures must never block
+            # the dispatch path.
+            with contextlib.suppress(Exception):
+                from evoflow.persistence.channel_push_repositories import safe_record_push
+
+                _meta = msg.metadata if isinstance(msg.metadata, dict) else {}
+                safe_record_push(
+                    direction="inbound",
+                    channel=str(msg.channel_name or "").strip() or "im",
+                    kind="im_message",
+                    event="callback",
+                    transport="im_event",
+                    sender_account_id=str(msg.account_id or ""),
+                    external_message_id=str(msg.thread_ts or ""),
+                    receive_id=str(msg.chat_id or ""),
+                    receive_id_type="chat_id",
+                    title="",
+                    content_summary=str(msg.text or "")[:800],
+                    payload={
+                        "user_id": str(msg.user_id or ""),
+                        "msg_type": str(getattr(msg.msg_type, "value", msg.msg_type) or ""),
+                        "topic_id": str(msg.topic_id or ""),
+                        "files": list(msg.files or [])[:8],
+                        "metadata": {k: _meta[k] for k in list(_meta.keys())[:12]},
+                    },
+                    status="ok",
+                    triggered_by="user",
+                )
             task = asyncio.create_task(self._handle_message(msg))
             task.add_done_callback(self._log_task_error)
 

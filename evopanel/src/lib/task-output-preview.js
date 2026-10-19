@@ -196,6 +196,9 @@ async function probeOutputFileExists(path, opts = {}) {
 
 /**
  * Probe output cards and mark missing deliverables (automation UX).
+ * If the row carries ``data-resolve-meta`` (set by the backend at write time),
+ * we trust it and skip filesystem probing — this is the new contract.
+ * Otherwise we fall back to the legacy multi-root probe.
  * @param {ParentNode} root
  * @param {{ workspaceRoot?: string, agentCode?: string }} [opts]
  */
@@ -207,6 +210,28 @@ export async function enrichOutputCardsExistence(root, opts = {}) {
       const path = row.getAttribute('data-path-for-existence') || ''
       const badge = row.querySelector('[data-role="existence-badge"]')
       if (!path) return
+      // Backend-resolved metadata wins — no filesystem probe.
+      const metaRaw = row.getAttribute('data-resolve-meta') || ''
+      let meta = null
+      if (metaRaw) {
+        try {
+          meta = JSON.parse(metaRaw)
+        } catch {
+          meta = null
+        }
+      }
+      if (meta && typeof meta === 'object' && 'found' in meta) {
+        const exists = meta.found === true
+        row.classList.toggle('is-missing', !exists)
+        row.classList.toggle('is-ready', exists)
+        if (badge) {
+          badge.textContent = exists ? '已生成' : '未生成'
+          badge.classList.toggle('td-output-badge--ready', exists)
+          badge.classList.toggle('td-output-badge--missing', !exists)
+          badge.classList.remove('td-output-badge--pending')
+        }
+        return
+      }
       let exists = false
       try {
         exists = await probeOutputFileExists(path, opts)
@@ -241,6 +266,51 @@ function fileBasename(path) {
 export async function showTaskOutputPreview(opts = {}) {
   const title = String(opts.title || '').trim()
   const hintRoot = String(opts.workspaceRoot || '').trim()
+  // Backend-resolved metadata wins — skip the entire multi-root probe path.
+  // This is the new contract: ``apply_subtask_outcome_report`` stamps
+  // ``_resolve_meta`` on each file output at write time so the panel can
+  // open the right workspace root without re-guessing.
+  const resolveMeta = opts._resolveMeta || opts.resolveMeta || null
+  const resolvedAbs = resolveMeta && typeof resolveMeta.absolute === 'string'
+    ? resolveMeta.absolute
+    : ''
+  if (resolvedAbs) {
+    if (/^https?:\/\//i.test(resolvedAbs)) {
+      window.open(resolvedAbs, '_blank', 'noopener,noreferrer')
+      return
+    }
+    const rootUsed = String(resolveMeta.root_used || '').trim()
+    let workspaceRoot = ''
+    if (rootUsed.startsWith('role_workspace:')) {
+      workspaceRoot = rootUsed.slice('role_workspace:'.length)
+    } else if (rootUsed && !rootUsed.startsWith('cwd') && rootUsed !== 'host_abs' && rootUsed !== 'unresolved') {
+      workspaceRoot = rootUsed
+    } else if (hintRoot) {
+      workspaceRoot = hintRoot
+    }
+    if (!workspaceRoot && isAbsoluteHostPath(resolvedAbs)) {
+      workspaceRoot = resolvedAbs.replace(/[\\/][^\\/]+$/, '') || resolvedAbs
+    }
+    try {
+      const { resolveOpenableWorkspaceFile } = await import('./workspace-preview-path.js')
+      const openable = await resolveOpenableWorkspaceFile({
+        workspaceRoot,
+        path: resolvedAbs,
+        name: title || fileBasename(resolvedAbs),
+        workspaceScopeOpts: { configuredRoot: workspaceRoot },
+      })
+      openWorkspaceFilePreviewModal({
+        workspaceRoot,
+        path: openable.path || resolvedAbs,
+        name: openable.name || fileBasename(openable.path || resolvedAbs) || title || undefined,
+        workspaceScopeOpts: { configuredRoot: workspaceRoot },
+      })
+      return
+    } catch (err) {
+      toast(formatPreviewErrorMessage(err, resolvedAbs), 'error')
+      return
+    }
+  }
   let path = sanitizePreviewPath(opts.path, hintRoot)
   // Agents often leave JSON-ish blobs in value — peel to a clean file path.
   try {
@@ -475,6 +545,20 @@ export function bindTaskOutputCardActions(root, opts = {}) {
     const content = trigger.getAttribute('data-content')
     const fromCardCode =
       trigger.closest?.('[data-agent-code]')?.getAttribute?.('data-agent-code') || ''
+    // Read backend resolution metadata from the trigger (or its row) so we
+    // can open the right workspace root without re-probing the filesystem.
+    let resolveMeta = null
+    const metaHost = trigger.classList?.contains('td-output-row')
+      ? trigger
+      : (trigger.closest?.('.td-output-row') || trigger)
+    const metaRaw = metaHost?.getAttribute?.('data-resolve-meta') || ''
+    if (metaRaw) {
+      try {
+        resolveMeta = JSON.parse(metaRaw)
+      } catch {
+        resolveMeta = null
+      }
+    }
     await showTaskOutputPreview({
       path,
       title,
@@ -482,6 +566,7 @@ export function bindTaskOutputCardActions(root, opts = {}) {
       content: content != null && content !== '' ? content : undefined,
       workspaceRoot,
       agentCode: String(fromCardCode || agentCodeBase || '').trim(),
+      _resolveMeta: resolveMeta,
     })
   })
 }

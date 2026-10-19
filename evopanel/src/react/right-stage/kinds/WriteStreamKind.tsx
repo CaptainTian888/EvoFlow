@@ -1,5 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useSyncExternalStore } from 'react'
-import { renderMarkdown, highlightCode } from '../../../lib/markdown.js'
+import { highlightCode } from '../../../lib/markdown.js'
+import { StreamdownRenderer } from '../../components/StreamdownRenderer.js'
 import { rightStageStore } from '../../../lib/right-stage/right-stage-store.js'
 import { buildWriteAddedRows, type FileDiffRow } from '../../file-diff-util.js'
 import type { RightStageStreamSession } from '../../../lib/right-stage/right-stage-types.js'
@@ -112,12 +113,9 @@ export const WriteStreamKind = memo(function WriteStreamKind({
   }, [source])
 
   const markdownHtml = useMemo(() => {
-    if (format !== 'markdown' || !source) return ''
-    try {
-      return renderMarkdown(source)
-    } catch {
-      return ''
-    }
+    if (format !== 'markdown' || !source) return null
+    // Use StreamdownRenderer component instead of HTML string
+    return <StreamdownRenderer text={source} className="markdown-body" />
   }, [format, source])
 
   const title = session?.title || (path ? `Writing ${path}` : '实时写入')
@@ -137,10 +135,9 @@ export const WriteStreamKind = memo(function WriteStreamKind({
         {session?.closed ? <span className="react-chat-write-stream-badge">closed</span> : null}
       </div>
       {format === 'markdown' ? (
-        <article
-          className="react-chat-write-stream-markdown markdown-body"
-          dangerouslySetInnerHTML={{ __html: markdownHtml }}
-        />
+        <article className="react-chat-write-stream-markdown">
+          {markdownHtml}
+        </article>
       ) : hasDiff && diffView ? (
         <div className="write-diff-body" ref={viewportRef}>
           {diffView.truncated ? (

@@ -15,8 +15,10 @@
 
 | 术语 | 含义 |
 |------|------|
-| **智能体** | 「会什么」：人设、工具、技能、MCP。侧栏 `#/expert`。见 [智能体管理](../guides/configuration/agent-management.md) [[guides/configuration/agent-management|智能体管理]]。 |
-| **智能体员工** | 「何时主动干」：把智能体雇成岗位（职责、工作文件夹、上班频率、审批、工作汇报）。侧栏 `#/proactive`。见 [智能体员工](../guides/configuration/smart-employees.md) [[guides/configuration/smart-employees|智能体员工]]。 |
+| **智能体** | 「会什么」：人设、模型、工具、技能、连接器（MCP）、知识库能力。侧栏 `#/expert`。见 [智能体管理](../guides/configuration/agent-management.md)。 |
+| **员工 / 智能体员工** | 「何时主动干」：岗位名、职责、部门与上级、绑定知识库、工作空间、转交审批、上班时间表、预算。侧栏 `#/proactive`，按钮是 **加人**。见 [智能体员工](../guides/configuration/smart-employees.md)。 |
+| **连接器** | 智能体页里的 MCP 插件。先在 `#/tools` 添加并启用，再在某个智能体上勾选。员工不单独装连接器。 |
+| **知识库** | 自有文档库：上传、检索、问 AI、Wiki、图谱。`#/knowledge`。绑到员工后上班可引用。见 [知识库](../guides/configuration/knowledge-base.md)。 |
 | **自动上班（总开关）** | 页头开关：开启后，在岗员工按上班频率自动干活。 |
 | **上班频率** | 多久自动来一轮（如每 30 分钟、每小时）。 |
 | **交接审批策略** | 岗位档位：全自动 / 平衡型 / 谨慎型；主要决定正式转交同事前要不要你点「同意派发」。 |
