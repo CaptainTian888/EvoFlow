@@ -129,6 +129,8 @@ def _bundled_official_cache_candidates() -> list[Path]:
         candidates.append(Path(meipass) / "evoflow" / "plugins" / "bundled_official")
     if getattr(sys, "frozen", False):
         exe_dir = Path(sys.executable).resolve().parent
+        # Current installers ship plugins only under _internal/.../bundled_official
+        # (via PyInstaller datas). Keep exe-dir fallbacks for older sidecars.
         candidates.append(exe_dir / "official-plugins-bundle")
         candidates.append(exe_dir / "bundled_official")
     # Dev tree: backend/packaging/official-plugins-bundle

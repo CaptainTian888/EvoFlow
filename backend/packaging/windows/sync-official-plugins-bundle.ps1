@@ -11,6 +11,10 @@
     1. -Source / EVOFLOW_OFFICIAL_PLUGINS_SOURCE
     2. ~/.evoflow-dev/data/plugins/cache/evoflow-plugins-official
     3. ~/.evoflow/data/plugins/cache/evoflow-plugins-official
+
+  CI / clean machines: use packaging/fetch-official-plugins-bundle.sh with
+  EVOFLOW_OFFICIAL_PLUGINS_URL or EVOFLOW_OFFICIAL_PLUGINS_RELEASE instead.
+  To publish the archive: packaging/pack-official-plugins-bundle.sh
 #>
 param(
   [string]$Source = "",

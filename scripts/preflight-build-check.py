@@ -12,6 +12,9 @@ Environment variables (all default to "1" = enabled):
     CHECK_HIDDEN_IMPORTS   .spec hiddenimports reachability
     CHECK_GITIGNORE        gitignore cross-check
     CHECK_OFFICIAL_PLUGINS packaging/official-plugins-bundle product plugins
+
+CI: run packaging/fetch-official-plugins-bundle.sh before this script
+(set EVOFLOW_OFFICIAL_PLUGINS_URL or EVOFLOW_OFFICIAL_PLUGINS_RELEASE).
 """
 
 from __future__ import annotations
@@ -358,14 +361,20 @@ def check_official_plugins_bundle() -> None:
 
     bundle = REPO_ROOT / "backend" / "packaging" / "official-plugins-bundle"
     if not bundle.is_dir():
-        _e(f"missing {bundle.relative_to(REPO_ROOT)} — run packaging/windows/sync-official-plugins-bundle.ps1")
+        _e(
+            f"missing {bundle.relative_to(REPO_ROOT)} — run "
+            "packaging/fetch-official-plugins-bundle.sh "
+            "(or sync-official-plugins-bundle.ps1 / .sh)"
+        )
         return
 
     plugin_dirs = [p for p in bundle.iterdir() if p.is_dir()]
     if not plugin_dirs:
         _e(
             "official-plugins-bundle has no plugin directories "
-            "(only .gitignore?) — run packaging/windows/sync-official-plugins-bundle.ps1"
+            "(only .gitignore?) — run packaging/fetch-official-plugins-bundle.sh "
+            "with EVOFLOW_OFFICIAL_PLUGINS_URL / EVOFLOW_OFFICIAL_PLUGINS_RELEASE, "
+            "or sync from a local cache"
         )
         return
 

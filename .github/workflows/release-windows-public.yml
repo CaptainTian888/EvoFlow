@@ -79,6 +79,21 @@ jobs:
           }
           throw 'uv sync failed after 3 attempts'
 
+      - name: Fetch official plugins bundle
+        shell: pwsh
+        env:
+          # Prefer a direct archive URL secret, else a release tag var
+          # (asset name: official-plugins-bundle.tar.gz). GITHUB_TOKEN covers
+          # private/same-repo release downloads when EVOFLOW_OFFICIAL_PLUGINS_TOKEN
+          # is unset (see fetch-official-plugins-bundle.sh).
+          EVOFLOW_OFFICIAL_PLUGINS_URL: ${{ secrets.EVOFLOW_OFFICIAL_PLUGINS_URL }}
+          EVOFLOW_OFFICIAL_PLUGINS_RELEASE: ${{ vars.EVOFLOW_OFFICIAL_PLUGINS_RELEASE }}
+          EVOFLOW_OFFICIAL_PLUGINS_TOKEN: ${{ secrets.EVOFLOW_OFFICIAL_PLUGINS_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & ./backend/packaging/windows/fetch-official-plugins-bundle.ps1
+
       - name: Pre-flight build validation
         working-directory: backend
         run: uv run python ../scripts/preflight-build-check.py

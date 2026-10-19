@@ -187,14 +187,18 @@ try {
 
   Copy-Item -Path (Join-Path $DistDir "*") -Destination $OutputAbs -Recurse -Force
 
-  # Sidecar copy for frozen discovery (exe_dir/official-plugins-bundle) in addition
-  # to PyInstaller datas → evoflow/plugins/bundled_official.
+  # Official plugins ship once via PyInstaller datas → _internal/evoflow/plugins/bundled_official.
+  # Do not also copy packaging/official-plugins-bundle next to the exe (was a ~53MB duplicate).
   $OfficialTarget = Join-Path $OutputAbs "official-plugins-bundle"
   if (Test-Path -LiteralPath $OfficialTarget) {
     Remove-Item -LiteralPath $OfficialTarget -Recurse -Force
+    Write-Host "[gateway-build] removed duplicate sidecar official-plugins-bundle (using in-package bundled_official)"
   }
-  Copy-Item -LiteralPath $OfficialBundle -Destination $OfficialTarget -Recurse -Force
-  Write-Host "[gateway-build] bundled official plugins -> $OfficialTarget"
+  $BundledOfficial = Join-Path $OutputAbs "_internal\evoflow\plugins\bundled_official"
+  if (-not (Test-Path -LiteralPath $BundledOfficial)) {
+    throw "[gateway-build] in-package bundled_official missing under $OutputAbs — check gateway.spec datas"
+  }
+  Write-Host "[gateway-build] official plugins in-package -> $BundledOfficial"
 
   $AbBundle = Join-Path $BackendDir "packaging\agent-browser-bundle"
   $AbTarget = Join-Path $OutputAbs "tools\agent-browser"

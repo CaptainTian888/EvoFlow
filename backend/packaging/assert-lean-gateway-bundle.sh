@@ -41,6 +41,43 @@ if [[ "${allow_whisper}" != "1" && -d "${whisper}" ]]; then
   fail "Whisper ASR bundled at ${whisper}. Unset EVOFLOW_BUNDLE_WHISPER and rebuild."
 fi
 
+# Official plugins: single in-package copy only (no sidecar duplicate).
+sidecar_dup="${GATEWAY_DIR}/official-plugins-bundle"
+if [[ -d "${sidecar_dup}" ]]; then
+  fail "duplicate official-plugins-bundle sidecar present (use _internal/evoflow/plugins/bundled_official only)"
+fi
+
+# PyInstaller onefile-folder layout uses _internal/; some trees may nest evoflow under Contents.
+official_bundle=""
+for candidate in \
+  "${GATEWAY_DIR}/_internal/evoflow/plugins/bundled_official" \
+  "${GATEWAY_DIR}/evoflow/plugins/bundled_official"
+do
+  if [[ -d "${candidate}" ]]; then
+    official_bundle="${candidate}"
+    break
+  fi
+done
+
+required_official=(
+  browser-use computer-use node-repl-host documents pdf
+  presentations spreadsheets image-search plugin-creator skill-creator
+)
+if [[ -z "${official_bundle}" ]]; then
+  fail "bundled_official missing under ${GATEWAY_DIR} (sync official-plugins-bundle before PyInstaller)"
+else
+  for name in "${required_official[@]}"; do
+    if [[ ! -d "${official_bundle}/${name}" ]]; then
+      fail "official plugin missing from bundled_official: ${name}"
+    fi
+  done
+  helper_entry="${official_bundle}/cua-helper/runtime/dist/windows-helper.js"
+  helper_addon="${official_bundle}/cua-helper/runtime/build/Release/ax_native.node"
+  if [[ ! -f "${helper_entry}" || ! -f "${helper_addon}" ]]; then
+    fail "cua-helper runtime incomplete under bundled_official (need windows-helper.js + ax_native.node)"
+  fi
+fi
+
 total_kb=$(du -sk "${GATEWAY_DIR}" 2>/dev/null | awk '{print $1}')
 total_mb=$(( total_kb / 1024 ))
 if [[ "${allow_chromium}" != "1" && "${allow_local_embed}" != "1" && "${allow_whisper}" != "1" && "${total_mb}" -gt 900 ]]; then

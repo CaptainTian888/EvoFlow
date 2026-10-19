@@ -103,14 +103,20 @@ _docs_knowledge = (
 if _docs_knowledge.is_dir():
     datas.append((str(_docs_knowledge), "evoflow/assets/builtin_knowledge_vaults/ops-knowledge"))
 
-# Official product plugins (browser-use / computer-use / …). Run
-# packaging/windows/sync-official-plugins-bundle.ps1 before building.
+# Official product plugins (browser-use / computer-use / …) — single in-package
+# copy only. Sync/fetch packaging/official-plugins-bundle before building;
+# do not also place a sidecar official-plugins-bundle next to the exe.
 _official_plugins = backend_root / "packaging" / "official-plugins-bundle"
 _official_plugin_dirs = [
     p for p in _official_plugins.iterdir() if p.is_dir()
 ] if _official_plugins.is_dir() else []
-if _official_plugin_dirs:
-    datas.append((str(_official_plugins), "evoflow/plugins/bundled_official"))
+if not _official_plugin_dirs:
+    raise SystemExit(
+        "[gateway.spec] official-plugins-bundle is empty — run "
+        "packaging/fetch-official-plugins-bundle.sh (or sync-official-plugins-bundle) "
+        "before PyInstaller"
+    )
+datas.append((str(_official_plugins), "evoflow/plugins/bundled_official"))
 
 # Fallback CUA visual bridge + node-repl preload (non-.py siblings of plugins/).
 _plugins_pkg = _harness_evoflow / "plugins"

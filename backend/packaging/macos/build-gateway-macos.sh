@@ -15,6 +15,37 @@ cd "${BACKEND_DIR}"
 bash "${BACKEND_DIR}/packaging/install-agent-browser-bundle.sh"
 bash "${BACKEND_DIR}/packaging/install-ripgrep-bundle.sh"
 
+# Official product plugins (gitignored) — fetch/sync before PyInstaller datas.
+OFFICIAL_BUNDLE="${BACKEND_DIR}/packaging/official-plugins-bundle"
+force_sync=0
+case "${EVOFLOW_SYNC_OFFICIAL_PLUGINS:-}" in 1|true|TRUE|yes|YES|on|ON) force_sync=1 ;; esac
+plugin_dirs=0
+if [[ -d "${OFFICIAL_BUNDLE}" ]]; then
+  plugin_dirs="$(find "${OFFICIAL_BUNDLE}" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')"
+fi
+if [[ "${force_sync}" == "1" || "${plugin_dirs}" == "0" ]]; then
+  echo "[gateway-build-macos] ensuring official-plugins-bundle..."
+  bash "${BACKEND_DIR}/packaging/fetch-official-plugins-bundle.sh"
+fi
+required_official=(
+  browser-use computer-use node-repl-host documents pdf
+  presentations spreadsheets image-search plugin-creator skill-creator
+)
+missing=()
+for name in "${required_official[@]}"; do
+  [[ -d "${OFFICIAL_BUNDLE}/${name}" ]] || missing+=("${name}")
+done
+helper_entry="${OFFICIAL_BUNDLE}/cua-helper/runtime/dist/windows-helper.js"
+helper_addon="${OFFICIAL_BUNDLE}/cua-helper/runtime/build/Release/ax_native.node"
+if [[ ! -f "${helper_entry}" || ! -f "${helper_addon}" ]]; then
+  missing+=("cua-helper/runtime")
+fi
+if [[ ${#missing[@]} -gt 0 ]]; then
+  echo "[gateway-build-macos] ERROR: official-plugins-bundle incomplete (missing: ${missing[*]})" >&2
+  exit 1
+fi
+echo "[gateway-build-macos] official-plugins-bundle OK"
+
 AB_BUNDLE="${BACKEND_DIR}/packaging/agent-browser-bundle"
 echo "[gateway-build-macos] clearing quarantine xattrs on agent-browser bundle"
 xattr -cr "${AB_BUNDLE}" 2>/dev/null || true
@@ -30,6 +61,12 @@ fi
 rm -rf "${OUTPUT_PATH}"
 mkdir -p "${OUTPUT_PATH}"
 cp -R "${DIST_DIR}/." "${OUTPUT_PATH}/"
+
+# Do not ship a second copy next to the binary — plugins live in-package only.
+if [[ -d "${OUTPUT_PATH}/official-plugins-bundle" ]]; then
+  rm -rf "${OUTPUT_PATH}/official-plugins-bundle"
+  echo "[gateway-build-macos] removed duplicate sidecar official-plugins-bundle"
+fi
 
 AB_TARGET="${OUTPUT_PATH}/tools/agent-browser"
 if [[ -d "${AB_BUNDLE}" ]]; then

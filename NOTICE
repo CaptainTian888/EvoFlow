@@ -92,6 +92,28 @@ identified above. It does **not** change this repository's primary
 PolyForm Noncommercial 1.0.0 license for the rest of EvoFlow, and it does
 not grant any party the right to use the Z.AI trademarks.
 
+Z.ai / ZCode official plugins (installer bundle)
+------------------------------------------------
+
+EvoFlow desktop installers may ship a curated set of official plugins under
+``evoflow/plugins/bundled_official`` (built from
+``backend/packaging/official-plugins-bundle``, which is populated at build time
+and is not committed as binary blobs). Those plugins are Z.ai (ZCode) product
+artifacts redistributed with the installer so the in-app marketplace is usable
+offline on first launch.
+
+Typical plugin ids and stated licenses (from each plugin's ``plugin.json``;
+verify against the packaged copy):
+
+* browser-use, computer-use, node-repl-host, plugin-creator, skill-creator — MIT
+* documents, pdf, presentations, spreadsheets, image-search — Apache-2.0
+
+Publisher metadata in those manifests identifies Z.ai. Redistribution here is
+for EvoFlow product packaging only; it does **not** grant trademark rights in
+Z.AI / ZCode names or logos, and it does not change this repository's primary
+license for non-plugin portions of EvoFlow. If you redistribute installers,
+retain this notice and the license texts shipped inside each plugin package.
+
 Bundled document skills note
 ----------------------------
 

@@ -1,0 +1,3 @@
+# Built archives for CI (upload as release assets; do not commit blobs).
+official-plugins-bundle.tar.gz
+official-plugins-bundle.zip
